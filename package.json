@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "EasySwitch demo: bring providers from anywhere into one harness, without replacing its native gateway.",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22.18"
   },

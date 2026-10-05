@@ -57,3 +57,7 @@ npm test             # 单元测试 + 端到端测试
 ## 来源
 
 本仓库的代码均为原创，借鉴记录见 [PROVENANCE.md](PROVENANCE.md)。
+
+## 许可证
+
+[Apache-2.0](LICENSE)
