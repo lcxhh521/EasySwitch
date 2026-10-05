@@ -12,7 +12,7 @@ const HARNESS = {
   codex: { name: "ChatGPT", icon: "openai", protocol: "Responses" },
   claude: { name: "Claude Code", icon: "claudecode-color", protocol: "Anthropic Messages" },
 };
-const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样转发", "chat-translate": "协议转换" };
+const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样转发", "chat-translate": "协议转换", pool: "按池里的顺序" };
 const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_agent_v1": "子 agent 工具" };
 
 let state = null;
@@ -115,7 +115,8 @@ function agentMeta(id) {
   return HARNESS[id] ?? agentList?.find(a => a.id === id) ?? { name: id, icon: `letter:${id[0]?.toUpperCase() ?? "?"}` };
 }
 
-const providerById = id => state.providers.find(p => p.id === id);
+const POOL_PROVIDER = { id: "pool", name: "模型池", icon: "letter:池", models: [] };
+const providerById = id => (id === "pool" ? POOL_PROVIDER : state.providers.find(p => p.id === id));
 const modelsOf = p => (p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : []);
 const sessionsOf = h => (state.sessionDetails ?? []).filter(s => s.harness === h);
 
@@ -262,46 +263,46 @@ function chatgptCard() {
       <div class="controls"><button class="btn" data-chatgpt-go="${chatgptConfirm}">确认，重启 ChatGPT</button><button class="btn secondary" data-chatgpt-cancel>取消</button></div>
     </div>` : "";
   return `
-    <div class="card" style="margin-top:12px"><div class="row">
-      ${icon("openai", "lg")}
-      <div class="grow"><div class="title">ChatGPT 桌面端</div><div class="sub">每次启动单独指向 EasySwitch，不改 ~/.codex；退回只要普通地重新打开</div></div>
-      ${chip}
-      ${c.enhanced ? `<button class="btn secondary" data-chatgpt-ask="native">退回普通启动</button>` : `<button class="btn" data-chatgpt-ask="enhance">用 EasySwitch 启动</button>`}
-    </div>${notice}</div>`;
+    <div class="row agent">
+      <div class="id">${icon("openai", "lg")}
+        <div class="grow"><div class="title">ChatGPT 桌面端</div><div class="sub">每次启动单独指向 EasySwitch，不改 ~/.codex；退回只要普通地重新打开</div></div>
+      </div>
+      <div class="acts">${chip}
+      ${c.enhanced ? `<button class="btn secondary" data-chatgpt-ask="native">退回普通启动</button>` : `<button class="btn" data-chatgpt-ask="enhance">用 EasySwitch 启动</button>`}</div>
+    </div>${notice}`;
 }
 
 /** The wider catalog under the two ready rows: what is installed here, then the rest. */
-function agentCatalog() {
-  if (!agentList) return "";
-  const rest = agentList.filter(a => a.support !== "ready");
-  const row = a => {
-    const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
-    const binding = state.bindings?.[a.id];
-    const provider = binding && providerById(binding.providerId);
-    const face = binding && provider
-      ? `${icon(provider.icon)}<span class="label" title="${esc(provider.name)}">${esc(binding.model)}</span>`
-      : `<span class="label">选个模型</span>`;
-    return `
-    <div class="row agent">
-      <div class="id">${icon(a.icon, "lg")}
-        <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div></div>
-      </div>
-      ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button></div>` : ""}
-      ${can ? agentControls(a.id) : ""}
-      <div class="acts">
-        ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
-        ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
-      </div>
-    </div>${can ? agentEditor(a.id) : ""}`;
-  };
-  const here = rest.filter(a => a.installed);
-  const other = rest.filter(a => !a.installed);
+function genericAgentRow(a) {
+  const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
+  const binding = state.bindings?.[a.id];
+  const provider = binding && providerById(binding.providerId);
+  const face = binding && provider
+    ? `${icon(provider.icon)}<span class="label" title="${esc(provider.name)}">${esc(binding.model)}</span>`
+    : `<span class="label">选个模型</span>`;
   return `
-    <div class="section-head"><h2>更多 Agent</h2><span class="aside">${agentList.length} 个；你这台 Mac 上装了 ${agentList.filter(a => a.installed).length} 个</span></div>
-    <div class="card">${here.map(row).join("") || `<div class="empty">还没检测到其他 agent</div>`}</div>
-    <details class="card" data-keep="agents-other" ${keepOpen("agents-other")} style="margin-top:12px"><summary class="row" style="cursor:pointer"><span class="grow title">还没安装的（${other.length}）</span></summary>${other.map(row).join("")}</details>
-    <p class="hint">「接入中」的 agent 都支持按次启动时指向 EasySwitch，正在逐个接入；「只能打开」的是闭源或绑定登录的，没有可改的端点，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>`;
+  <div class="row agent">
+    <div class="id">${icon(a.icon, "lg")}
+      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div></div>
+    </div>
+    ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button></div>` : ""}
+    ${can ? agentControls(a.id) : ""}
+    <div class="acts">
+      ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
+      ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
+    </div>
+  </div>${can ? agentEditor(a.id) : ""}`;
 }
+
+/** Every agent except the two with their own rows, split into installed and not. */
+function otherAgents() {
+  const rest = (agentList ?? []).filter(a => a.id !== "codex" && a.id !== "claude");
+  // Those EasySwitch can start come first.
+  const rank = a => (a.can?.interactive ? 0 : a.can ? 1 : 2);
+  const by = (x, y) => rank(x) - rank(y);
+  return { installed: rest.filter(a => a.installed).sort(by), missing: rest.filter(a => !a.installed).sort(by) };
+}
+
 
 const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
 const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
@@ -353,8 +354,8 @@ function renderTasks() {
 }
 
 function renderAgents() {
-  const rows = Object.keys(HARNESS).map(agentRow).join("");
   if (PANEL) {
+    const rows = Object.keys(HARNESS).map(agentRow).join("");
     return `
       <div class="card">${rows}</div>
       <div class="panel-foot">
@@ -364,13 +365,25 @@ function renderAgents() {
         </span>
       </div>`;
   }
+  const others = otherAgents();
+  const codexHere = Boolean(state.codexPath);
+  const claudeHere = Boolean(state.claudePath);
+  const inst = [
+    ...(codexHere ? [agentRow("codex"), chatgptCard()] : []),
+    ...(claudeHere ? [agentRow("claude")] : []),
+    ...others.installed.map(genericAgentRow),
+  ];
+  const missing = [
+    ...(codexHere ? [] : agentList?.filter(a => a.id === "codex").map(genericAgentRow) ?? []),
+    ...(claudeHere ? [] : agentList?.filter(a => a.id === "claude").map(genericAgentRow) ?? []),
+    ...others.missing.map(genericAgentRow),
+  ];
   return `
-    <div class="section-head"><h2>Agent</h2><span class="aside">每个 agent 平时都走原生；增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
-    <div class="card">${rows}</div>
-    ${chatgptCard()}
-    <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT和 Claude Code 永远不受影响。</p>
+    <div class="section-head"><h2>已安装</h2><span class="aside">${inst.length ? `${agentList ? agentList.filter(a => a.installed).length : inst.length} 个` : ""}；每个 agent 平时都走原生，增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
+    <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
+    <p class="hint">在每个 agent 那一行里选主模型、想得多深、后台小任务和子 agent 用的模型，再点「启动」。会话里输入 <code>/model</code> 可以随时换。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT 和 Claude Code 永远不受影响。「接入中」的 agent 正在逐个接入；「只能打开」的是闭源或绑定登录的，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>
     ${state.providers.length ? "" : onboarding()}
-    ${agentCatalog()}`;
+    ${missing.length ? `<div class="section-head"><h2>未安装</h2><span class="aside">${missing.length} 个</span></div><div class="card">${missing.join("")}</div>` : ""}`;
 }
 
 let autoConfirm = false; // the inline terms notice for auto pick is open
@@ -474,6 +487,11 @@ function openPicker(anchor, target) {
         if (q && !m.toLowerCase().includes(q) && !p.name.toLowerCase().includes(q)) continue;
         out.push({ provider: p, model: m, route });
       }
+    }
+    // Pools are models too: they sit at the end of the list.
+    if (!only) for (const pool of state.pools ?? []) {
+      if (q && !pool.name.toLowerCase().includes(q) && !"模型池 pool".includes(q)) continue;
+      out.push({ provider: POOL_PROVIDER, model: pool.id, route: "pool" });
     }
     return out;
   };
@@ -710,6 +728,47 @@ function planCard() {
     <p class="hint">ChatGPT 这边用 Codex 的登录身份一步完成（Hermes、opencodex 也是这样做的；这不是 OpenAI 给第三方工具的官方登记方式，所以 OpenAI 以后可能调整）。GitHub Copilot 同理，用的是 VS Code Copilot 插件的登录身份，GitHub 对 Copilot 在官方客户端之外的用法管得比较严，高频自动化调用有被限流的可能。额度和你的 ChatGPT 订阅共用，登录只在这台电脑上，令牌存在钥匙串里。Claude 的订阅不在这里用。</p>`;
 }
 
+let poolForm = null; // { id?, name, strategy, members: [] } while the pool form is open
+let poolConfirmDel = null;
+
+/** Model pools: one name for several places to get a model from; a failing member is skipped. */
+function poolsCard() {
+  const pools = state.pools ?? [];
+  // The same model offered by several sources: a pool is the obvious thing to make of it.
+  const seen = new Map();
+  for (const p of state.providers) for (const m of modelsOf(p)) { const k = m.toLowerCase(); (seen.get(k) ?? seen.set(k, []).get(k)).push(`${p.id}/${m}`); }
+  const taken = new Set(pools.map(p => p.name.toLowerCase()));
+  const suggestions = [...seen.entries()].filter(([name, list]) => list.length >= 2 && !taken.has(name)).slice(0, 4);
+  const nameOf = key => { const i = key.indexOf("/"); const p = providerById(key.slice(0, i)); return `${key.slice(i + 1)}${p ? `（${p.name}）` : ""}`; };
+  const row = p => `
+    <div class="row">
+      <span class="ic lg" style="display:grid;place-items:center;background:var(--pill);border-radius:10px;width:34px;height:34px">▦</span>
+      <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "rotate" ? "轮流用" : "按顺序，前面的挂了再用后面的"}</span></div>
+        <div class="sub">${p.members.map(m => esc(nameOf(m))).join(" → ")}${p.live.length < p.members.length ? " · <b>有来源已经不存在了</b>" : ""}</div></div>
+      <button class="btn secondary" data-pool-edit="${esc(p.id)}">编辑</button>
+      <button class="btn secondary" data-pool-del="${esc(p.id)}">${poolConfirmDel === p.id ? "再点一次删除" : "删除"}</button>
+    </div>`;
+  const options = state.providers.map(p => `
+    <div class="field"><label>${esc(p.name)}</label>
+      <div class="controls">${modelsOf(p).map(m => `<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="members" value="${esc(`${p.id}/${m}`)}" ${poolForm?.members.includes(`${p.id}/${m}`) ? "checked" : ""}>${esc(m)}</label>`).join("") || `<span class="hint">还没有模型</span>`}</div></div>`).join("");
+  const form = poolForm ? `
+    <form class="form" data-pool-form>
+      <div class="field"><label>名字（agent 里会看到 pool/名字）</label><input type="text" name="name" value="${esc(poolForm.name)}" required placeholder="比如 sonnet"></div>
+      <div class="field"><label>怎么选</label><select name="strategy"><option value="order" ${poolForm.strategy === "order" ? "selected" : ""}>按顺序：先用勾在前面的，它挂了再用后面的</option><option value="rotate" ${poolForm.strategy === "rotate" ? "selected" : ""}>轮流：大家轮着来，分摊额度</option></select></div>
+      ${options}
+      <div class="controls"><button class="btn" type="submit">保存</button><button class="btn secondary" type="button" data-pool-cancel>取消</button></div>
+      ${poolForm.error ? `<p class="hint" style="color:var(--bad)">${esc(poolForm.error)}</p>` : ""}
+    </form>` : "";
+  return `
+    <div class="section-head"><h2>模型池</h2><span class="aside">同一个模型有多个来源时合成一个名字，一个挂了自动换下一个</span></div>
+    <div class="card">
+      ${pools.map(row).join("")}
+      ${suggestions.map(([name, list]) => `<div class="row"><div class="grow"><div class="title">${esc(name)}</div><div class="sub">在 ${list.length} 个来源里都有：可以合成一个池</div></div><button class="btn secondary" data-pool-merge="${esc(name)}">合成一个池</button></div>`).join("")}
+      ${form}
+      ${poolForm ? "" : `<button class="add-row" data-pool-new>＋ 新建模型池</button>`}
+    </div>`;
+}
+
 function renderProviders() {
   return `
     ${planCard()}
@@ -718,7 +777,8 @@ function renderProviders() {
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
       ${ocxImport ? renderOcxImport() : ""}
       ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-ocx-open>从 opencodex 导入</button>`}
-    </div>`;
+    </div>
+    ${state.providers.length ? poolsCard() : ""}`;
 }
 
 async function submitAdd(form) {
@@ -970,7 +1030,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || ocxImport || importFormOpen || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || ocxImport || importFormOpen || poolForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1152,6 +1212,27 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
+  if (t.closest("[data-pool-new]")) { poolForm = { name: "", strategy: "order", members: [] }; render(); return; }
+  if (t.closest("[data-pool-cancel]")) { poolForm = null; render(); return; }
+  const poolEdit = t.closest("[data-pool-edit]");
+  if (poolEdit) { const p = (state.pools ?? []).find(x => x.id === poolEdit.dataset.poolEdit); if (p) { poolForm = { id: p.id, name: p.name, strategy: p.strategy, members: [...p.members] }; render(); } return; }
+  const poolMerge = t.closest("[data-pool-merge]");
+  if (poolMerge) {
+    const name = poolMerge.dataset.poolMerge;
+    const members = state.providers.flatMap(p => modelsOf(p).filter(m => m.toLowerCase() === name).map(m => `${p.id}/${m}`));
+    try { await call("POST", "/api/pools", { name, strategy: "order", members }); toast(`已合成 pool/${name}，顺序是来源列表的顺序，可以再编辑`); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const poolDel = t.closest("[data-pool-del]");
+  if (poolDel) {
+    const id = poolDel.dataset.poolDel;
+    if (poolConfirmDel !== id) { poolConfirmDel = id; render(); return; }
+    poolConfirmDel = null;
+    try { await call("DELETE", `/api/pools/${id}`); toast("已删除模型池；绑定了它的 agent 回到原生"); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
   const lvEdit = t.closest("[data-levels-edit]");
   if (lvEdit) { levelsEditor = lvEdit.dataset.levelsEdit; render(); return; }
   if (t.closest("[data-levels-cancel]")) { levelsEditor = null; render(); return; }
@@ -1302,6 +1383,21 @@ document.addEventListener("submit", async e => {
     } catch (error) {
       msg.className = "msg bad";
       msg.textContent = error.message;
+    }
+    await refresh(true);
+    return;
+  }
+  const poolFormEl = e.target.closest("form[data-pool-form]");
+  if (poolFormEl) {
+    e.preventDefault();
+    const f = new FormData(poolFormEl);
+    const body = { name: f.get("name"), strategy: f.get("strategy"), members: f.getAll("members") };
+    try {
+      await call(poolForm?.id ? "PUT" : "POST", poolForm?.id ? `/api/pools/${poolForm.id}` : "/api/pools", body);
+      poolForm = null;
+      toast("模型池已保存");
+    } catch (error) {
+      poolForm = { ...poolForm, name: body.name, strategy: body.strategy, members: body.members, error: error.message };
     }
     await refresh(true);
     return;

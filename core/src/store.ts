@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
 import type { SiwcAccount, SiwcStorage } from "./siwc.ts";
-import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Provider, Settings } from "./types.ts";
+import { catalogModels, type CatalogModel } from "./catalog.ts";
+import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
 
 interface StateFile {
   version: 1;
@@ -16,6 +17,7 @@ interface StateFile {
   /** Signed-in ChatGPT plan accounts (tokens are in the Keychain, never here). */
   siwc?: SiwcAccount[];
   siwcHostId?: string;
+  pools?: Pool[];
   /** Per agent, apart from its main model: thinking level and the other models it runs (sub-agent, small tasks). */
   prefs?: Record<string, AgentPrefs>;
 }
@@ -132,6 +134,43 @@ export class Store {
   removeAccount(id: string): void {
     this.state.accounts = (this.state.accounts ?? []).filter(a => a.id !== id);
     this.save();
+  }
+
+  pools(): Pool[] {
+    return structuredClone(this.state.pools ?? []);
+  }
+
+  pool(id: string): Pool | undefined {
+    const found = (this.state.pools ?? []).find(p => p.id === id);
+    return found ? structuredClone(found) : undefined;
+  }
+
+  upsertPool(pool: Pool): void {
+    const list = this.state.pools ?? [];
+    const at = list.findIndex(p => p.id === pool.id);
+    if (at >= 0) list[at] = structuredClone(pool); else list.push(structuredClone(pool));
+    this.state.pools = list;
+    this.save();
+  }
+
+  removePool(id: string): void {
+    this.state.pools = (this.state.pools ?? []).filter(p => p.id !== id);
+    this.state.bindings = this.state.bindings.filter(b => !(b.providerId === "pool" && b.model === id));
+    this.save();
+  }
+
+  /** Every model an agent can be given: each provider's, then the pools. */
+  catalog(): CatalogModel[] {
+    const own = catalogModels(this.state.providers);
+    const have = new Set(own.map(m => `${m.providerId}/${m.model}`));
+    const pools: CatalogModel[] = (this.state.pools ?? []).map(pool => {
+      const lists = pool.members.filter(m => have.has(m)).map(member => own.find(m => `${m.providerId}/${m.model}` === member)!.efforts);
+      return {
+        providerId: "pool", providerName: "模型池", model: pool.id,
+        efforts: lists.length ? lists[0]!.filter(l => lists.every(x => x.includes(l))) : [],
+      };
+    }).filter(p => this.state.pools!.find(x => x.id === p.model)!.members.some(m => have.has(m)));
+    return [...own, ...pools];
   }
 
   prefs(agent: string): AgentPrefs {

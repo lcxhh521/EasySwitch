@@ -184,9 +184,9 @@ export function codexCatalog(template: Json, models: readonly CatalogModel[]): J
 
 /** Writes the catalog for the next Codex launch; undefined when no template could be made. */
 export async function writeCodexCatalog(
-  codexPath: string, dataDir: string, providers: readonly Provider[], opts: { includeNative?: boolean } = {},
+  codexPath: string, dataDir: string, providers: readonly Provider[], opts: { includeNative?: boolean; models?: readonly CatalogModel[] } = {},
 ): Promise<string | undefined> {
-  const models = catalogModels(providers);
+  const models = opts.models ?? catalogModels(providers);
   if (!models.length) return undefined;
   const native = await nativeCatalog(codexPath, dataDir);
   const template = native ? pickTemplate(native) : undefined;

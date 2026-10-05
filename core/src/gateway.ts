@@ -3,6 +3,7 @@ import { withKey } from "./keypool.ts";
 import { applyEffort, quirksFor, reasoningMemory, shapeChat, upstreamModelId, type Quirks } from "./quirks.ts";
 import { agentOf } from "./gateway-chat.ts";
 import { modelEfforts } from "./model-efforts.ts";
+import { liveMembers, poolOf } from "./pools.ts";
 import { sendChat, sendResponses } from "./upstream-chat.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
@@ -22,6 +23,12 @@ export interface GatewayDeps {
 
 /** `<provider id>/<upstream model>`: the provider is everything before the first slash. */
 export function resolveModel(store: Store, exposed: string): { provider: Provider; model: string } | undefined {
+  // A pool stands for its first member wherever a single model is needed (validation, defaults); requests themselves are spread over the members by runWithPool.
+  const pool = poolOf(store, exposed);
+  if (pool) {
+    const first = liveMembers(store, pool)[0];
+    return first ? resolveModel(store, first) : undefined;
+  }
   const slash = exposed.indexOf("/");
   if (slash <= 0) return undefined;
   const provider = store.provider(exposed.slice(0, slash));
@@ -53,7 +60,7 @@ export function applyThinking(chat: ChatRequest, store: Store, agent: string, re
 }
 
 export function listExposedModels(store: Store, anthropic = false): Json {
-  const models = catalogModels(store.providers());
+  const models = store.catalog();
   if (anthropic) return anthropicModelList(models);
   return { object: "list", data: models.map(m => ({ id: `${m.providerId}/${m.model}`, object: "model", owned_by: m.providerId })) };
 }

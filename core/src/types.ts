@@ -57,6 +57,16 @@ export interface Provider {
   createdAt: string;
 }
 
+/** A model pool: one name for several places to get the model from (see pools.ts). */
+export interface Pool {
+  id: string;
+  name: string;
+  strategy: "order" | "rotate";
+  /** `<provider>/<model>`, in the order they are tried under "order". */
+  members: string[];
+  createdAt: string;
+}
+
 /** USD per million tokens. */
 export interface Rates {
   input: number;

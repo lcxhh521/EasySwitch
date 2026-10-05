@@ -101,7 +101,7 @@ export async function handleChatgptModels(req: IncomingMessage, res: ServerRespo
   }
   const native = Array.isArray(list.models) ? (list.models as Json[]) : [];
   const template = pickTemplate(native);
-  const ours = template ? (codexCatalog(template, catalogModels(deps.store.providers())).models as Json[]) : [];
+  const ours = template ? (codexCatalog(template, deps.store.catalog()).models as Json[]) : [];
   const taken = new Set(native.map(m => String(m.slug)));
   const merged = [...native, ...ours.filter(m => !taken.has(String(m.slug)))];
   const tag = `"${createHash("sha256").update(`${upstream.headers.get("etag") ?? JSON.stringify(native.map(m => m.slug))}|${ours.map(m => m.slug).join(",")}`).digest("hex").slice(0, 24)}"`;

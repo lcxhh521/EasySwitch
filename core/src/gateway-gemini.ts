@@ -28,7 +28,7 @@ function geminiError(res: ServerResponse, status: number, message: string, state
 
 export function listGeminiModels(deps: GatewayDeps): Json {
   return {
-    models: catalogModels(deps.store.providers()).map(m => ({
+    models: deps.store.catalog().map(m => ({
       name: `models/${m.providerId}/${m.model}`,
       displayName: m.model,
       description: `${m.providerName} · 经 EasySwitch`,

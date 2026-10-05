@@ -74,7 +74,7 @@ async function callTool(name: string, args: Json, depth: number, caller: string,
     return text(agents.length ? agents.map(a => `- ${a.id}: ${a.name}${a.model ? ` (model ${a.model})` : " (no model chosen yet)"}`).join("\n") : "No agent can take a task right now.");
   }
   if (name === "list_models") {
-    const models = catalogModels(deps.store.providers());
+    const models = deps.store.catalog();
     return text(models.length ? models.map(m => `${m.providerId}/${m.model}`).join("\n") : "No models are configured.");
   }
   if (name === "run_agent") {
