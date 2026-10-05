@@ -82,6 +82,15 @@ main { max-width: 980px; margin: 0 auto; padding: 8px 20px 60px; display: grid; 
 .row .grow { flex: 1; min-width: 0; }
 .row .title { font-weight: 550; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row .sub { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An agent's row holds everything about it: who, main model, thinking level, other models, actions. */
+.row.agent { align-items: flex-end; flex-wrap: wrap; row-gap: 10px; }
+.row.agent .id { display: flex; align-items: center; gap: 12px; flex: 1 1 170px; min-width: 160px; align-self: center; }
+.row.agent .acts { display: flex; gap: 8px; align-self: flex-end; }
+.ctl { display: grid; gap: 3px; }
+.ctl > small { font-size: 11px; color: var(--muted); padding-left: 2px; }
+.ctl .popbtn { min-width: 118px; max-width: 150px; padding: 7px 8px; gap: 6px; }
+.ctl select { min-width: 100px; max-width: 130px; padding: 7px 6px; }
+.ctl .btn.secondary { padding: 7px 10px; }
 .row.clickable { cursor: pointer; }
 .row.clickable:hover { background: color-mix(in srgb, var(--pill) 55%, transparent); }
 .chev { color: var(--faint); transition: transform .2s; }

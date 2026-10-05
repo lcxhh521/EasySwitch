@@ -169,8 +169,11 @@ function openGuard(anchor) {
 const ALL_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 let levelsEditor = null; // "providerId/model" whose levels are being edited
 
-/** Under an agent's row: its thinking level and the other models it runs next to the main one. Independent of the main model, which can stay native. */
-function agentSettings(id) {
+/**
+ * An agent's own controls, in the agent's row: thinking level and the other models it runs next to the main one
+ * (sub-agent, small tasks), each with a small label above. They do not depend on the main model, which can stay native.
+ */
+function agentControls(id) {
   const binding = state.bindings?.[id];
   const can0 = (agentList ?? []).find(a => a.id === id)?.can;
   if (!can0) return "";
@@ -180,35 +183,36 @@ function agentSettings(id) {
   // With a model of ours the levels are the model's that the agent can say (or all of the model's, for an agent with none of its own); on a native model, the agent's own.
   const own = can0.efforts ?? [];
   const levels = modelKey ? (can0.anyEffort ? modelHas : own.filter(l => modelHas.includes(l))) : own;
-  const tiers = can0.tiers ?? [];
-  if (!levels.length && !tiers.length && !(modelKey && can0.anyEffort !== undefined)) return "";
-  const tierBtn = t => {
+  const tierCtl = t => {
     const name = prefs.tiers?.[t.id];
     const slash = name ? name.indexOf("/") : -1;
     const provider = name && providerById(name.slice(0, slash));
     const face = provider
-      ? `${icon(provider.icon)}<span class="label">${esc(name.slice(slash + 1))}<small>${esc(provider.name)}</small></span>`
-      : `<span class="label">跟随主模型<small>点一下可以换</small></span>`;
-    return `<span class="hint" title="${esc(t.hint)}">${esc(t.label)}</span><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}" title="${esc(t.hint)}">${face}<span class="caret">▾</span></button>`;
+      ? `${icon(provider.icon)}<span class="label">${esc(name.slice(slash + 1))}</span>`
+      : `<span class="label">跟随主模型</span>`;
+    return `<div class="ctl" title="${esc(t.hint)}"><small>${esc(t.label)}</small><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}">${face}<span class="caret">▾</span></button></div>`;
   };
   const effort = levels.length
-    ? `<span class="hint">想得多深</span><select data-effort-select="${esc(id)}" title="只对这个 agent 生效">
-      ${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${EFFORT_LABEL[l] ?? l}${l ? `（${esc(l)}）` : "（它自己的默认）"}</option>`).join("")}</select>`
+    ? `<div class="ctl"><small>想得多深</small><select data-effort-select="${esc(id)}" title="只对这个 agent 生效">
+        ${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${l ? `${EFFORT_LABEL[l] ?? l}（${esc(l)}）` : "默认"}</option>`).join("")}</select></div>`
     : modelKey
       // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
-      ? `<span class="hint">想得多深</span><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="这个模型没有已知的思考档位；告诉 EasySwitch 它有哪些">${esc(binding.model)} 的档位：未知，点这里设置</button>`
+      ? `<div class="ctl"><small>想得多深</small><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="${esc(binding.model)} 没有已知的思考档位；告诉 EasySwitch 它有哪些">档位未知，设置</button></div>`
       : "";
-  const editor = levelsEditor && levelsEditor === modelKey ? `
-    <div class="row settings" style="padding-top:0;gap:10px;flex-wrap:wrap" data-levels-editor="${esc(modelKey)}">
-      <span class="grow"></span><span class="hint">这个模型有哪些档位：</span>
-      ${ALL_LEVELS.map(l => `<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" value="${l}" ${(modelHas ?? []).includes(l) ? "checked" : ""}>${esc(EFFORT_LABEL[l] ?? l)}</label>`).join("")}
+  return effort + (can0.tiers ?? []).map(tierCtl).join("");
+}
+
+/** The levels editor for the bound model, shown under the row it was opened from. */
+function agentEditor(id) {
+  const binding = state.bindings?.[id];
+  const modelKey = binding ? `${binding.providerId}/${binding.model}` : null;
+  if (!modelKey || levelsEditor !== modelKey) return "";
+  const has = state.modelEfforts?.[modelKey] ?? [];
+  return `<div class="row settings" style="padding-top:0;gap:10px;flex-wrap:wrap" data-levels-editor="${esc(modelKey)}">
+      <span class="grow"></span><span class="hint">${esc(binding.model)} 有哪些档位：</span>
+      ${ALL_LEVELS.map(l => `<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" value="${l}" ${has.includes(l) ? "checked" : ""}>${esc(EFFORT_LABEL[l] ?? l)}</label>`).join("")}
       <button class="btn" data-levels-save="${esc(modelKey)}">保存</button><button class="btn secondary" data-levels-cancel>取消</button>
-    </div>` : "";
-  return `<div class="row settings" style="padding-top:0;gap:10px;flex-wrap:wrap">
-    <span class="grow"></span>
-    ${effort}
-    ${tiers.map(tierBtn).join("")}
-  </div>${editor}`;
+    </div>`;
 }
 
 function agentRow(harness) {
@@ -218,23 +222,24 @@ function agentRow(harness) {
   const binary = harness === "codex" ? state.codexPath : state.claudePath;
   const sessions = sessionsOf(harness).length;
   const face = binding && provider
-    ? `${icon(provider.icon)}<span class="label">${esc(binding.model)}<small>${esc(provider.name)}</small></span>`
-    : `<span class="ic sm"></span><span class="label">原生<small>不经过 EasySwitch</small></span>`;
+    ? `${icon(provider.icon)}<span class="label" title="${esc(provider.name)}">${esc(binding.model)}</span>`
+    : `<span class="ic sm"></span><span class="label" title="不经过 EasySwitch">原生</span>`;
   const sub = !binary
     ? `没有找到 ${meta.name} 的命令`
-    : binding ? `平时打开：原生 · 增强会话：${esc(binding.providerId)}/${esc(binding.model)}${harness === "claude" && state.claudeLogin ? " · /model 里 Claude 原生模型也都在" : ""}`
-    : harness === "claude" && state.claudeLogin ? "增强会话保留你自己的 Claude 登录：/model 里 Claude 原生模型和你加的模型一起出现"
-    : "平时打开：原生 · 选一个模型就能开增强会话";
+    : harness === "claude" && state.claudeLogin ? "保留你的 Claude 登录，/model 里两类模型都在"
+    : binding ? "增强会话用右边的模型" : "选一个模型就能开增强会话";
   return `
-    <div class="row" data-harness="${harness}">
-      ${icon(meta.icon, "lg")}
-      <div class="grow">
-        <div class="title">${meta.name}${sessions ? `<button class="chip accent" data-go="sessions">${sessions} 个增强会话运行中</button>` : ""}</div>
-        <div class="sub">${sub}</div>
+    <div class="row agent" data-harness="${harness}">
+      <div class="id">${icon(meta.icon, "lg")}
+        <div class="grow">
+          <div class="title">${meta.name}${sessions ? `<button class="chip accent" data-go="sessions">${sessions} 个增强会话运行中</button>` : ""}</div>
+          <div class="sub">${sub}</div>
+        </div>
       </div>
-      <button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button>
-      <button class="btn launch" data-launch="${harness}" ${(binding || (harness === "claude" && state.claudeLogin)) && binary ? "" : "disabled"}>启动增强会话</button>
-    </div>${agentSettings(harness)}`;
+      <div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button></div>
+      ${agentControls(harness)}
+      <div class="acts"><button class="btn launch" data-launch="${harness}" title="在 EasySwitch 上启动一个增强会话（只在那个终端窗口里生效）" ${(binding || (harness === "claude" && state.claudeLogin)) && binary ? "" : "disabled"}>启动</button></div>
+    </div>${agentEditor(harness)}`;
 }
 
 const SUPPORT_CHIP = {
@@ -274,17 +279,20 @@ function agentCatalog() {
     const binding = state.bindings?.[a.id];
     const provider = binding && providerById(binding.providerId);
     const face = binding && provider
-      ? `${icon(provider.icon)}<span class="label">${esc(binding.model)}<small>${esc(provider.name)}</small></span>`
-      : `<span class="label">选个模型<small>用哪个模型来源</small></span>`;
+      ? `${icon(provider.icon)}<span class="label" title="${esc(provider.name)}">${esc(binding.model)}</span>`
+      : `<span class="label">选个模型</span>`;
     return `
-    <div class="row">
-      ${icon(a.icon, "lg")}
-      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span></div><div class="sub">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div></div>
-      ${SUPPORT_CHIP[a.support]}
-      ${can ? `<button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>` : ""}
-      ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
-      ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
-    </div>${can ? agentSettings(a.id) : ""}`;
+    <div class="row agent">
+      <div class="id">${icon(a.icon, "lg")}
+        <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div></div>
+      </div>
+      ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button></div>` : ""}
+      ${can ? agentControls(a.id) : ""}
+      <div class="acts">
+        ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
+        ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
+      </div>
+    </div>${can ? agentEditor(a.id) : ""}`;
   };
   const here = rest.filter(a => a.installed);
   const other = rest.filter(a => !a.installed);
