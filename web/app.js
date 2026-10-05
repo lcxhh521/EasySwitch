@@ -159,7 +159,7 @@ function renderAgents() {
   return `
     <div class="section-head"><h2>Agent</h2><span class="aside">每个 agent 平时都走原生；增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${rows}</div>
-    <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。选「原生」就是不用 EasySwitch；你平时直接打开的 Codex 和 Claude Code 永远不受影响。</p>
+    <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 Codex 和 Claude Code 永远不受影响。</p>
     ${state.providers.length ? "" : `<div class="card empty">还没有模型来源。<button class="btn secondary" data-go="providers">去添加</button></div>`}`;
 }
 

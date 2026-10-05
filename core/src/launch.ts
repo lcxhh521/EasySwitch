@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { claudeModelId, fromClaudeModelId } from "./catalog.ts";
 import type { SessionInfo } from "./types.ts";
 
 const run = promisify(execFile);
@@ -30,10 +31,12 @@ export async function findCodex(): Promise<string | undefined> {
  * The Codex argv for one augmented session. Everything rides on `-c`
  * overrides for this process only; ~/.codex/config.toml is never written.
  */
-export function codexArgs(port: number, exposedModel: string): string[] {
+export function codexArgs(port: number, exposedModel: string, catalogPath?: string): string[] {
   return [
     "-c", 'model_provider="easyswitch"',
     "-c", `${SESSION_MARKER}={name="EasySwitch",base_url="http://127.0.0.1:${port}/v1",wire_api="responses"}`,
+    // Codex's own /model menu then lists every EasySwitch model (a JSON string is a valid TOML string).
+    ...(catalogPath ? ["-c", `model_catalog_json=${JSON.stringify(catalogPath)}`] : []),
     "-m", exposedModel,
   ];
 }
@@ -55,15 +58,22 @@ export async function findClaude(): Promise<string | undefined> {
   return undefined;
 }
 
-/** Environment for one augmented Claude Code session; every model tier maps to the bound model. */
+/**
+ * Environment for one augmented Claude Code session. Every model tier maps to
+ * the bound model, and gateway model discovery makes Claude Code's own /model
+ * menu list every EasySwitch model, so switching mid-session works.
+ */
 export function claudeEnv(port: number, exposedModel: string, sessionToken: string): Record<string, string> {
+  const slash = exposedModel.indexOf("/");
+  const id = slash > 0 ? claudeModelId(exposedModel.slice(0, slash), exposedModel.slice(slash + 1)) : exposedModel;
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: sessionToken,
-    ANTHROPIC_MODEL: exposedModel,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: exposedModel,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: exposedModel,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: exposedModel,
+    ANTHROPIC_MODEL: id,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: id,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: id,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: id,
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
     [CLAUDE_SESSION_MARKER]: "1",
   };
 }
@@ -86,8 +96,8 @@ function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
-export function codexCommandLine(codexPath: string, port: number, exposedModel: string): string {
-  return [codexPath, ...codexArgs(port, exposedModel)].map(shellQuote).join(" ");
+export function codexCommandLine(codexPath: string, port: number, exposedModel: string, catalogPath?: string): string {
+  return [codexPath, ...codexArgs(port, exposedModel, catalogPath)].map(shellQuote).join(" ");
 }
 
 function appleScriptString(text: string): string {
@@ -118,7 +128,7 @@ export async function sessionDetails(): Promise<SessionInfo[]> {
       const harness = command.includes(SESSION_MARKER) ? "codex" : "claude";
       const model = harness === "codex"
         ? /\s-m\s+(\S+)/.exec(command)?.[1]
-        : /"ANTHROPIC_MODEL":"([^"]+)"/.exec(command)?.[1];
+        : (id => id && (fromClaudeModelId(id) ?? id))(/"ANTHROPIC_MODEL":"([^"]+)"/.exec(command)?.[1]);
       const startedAt = new Date(started);
       out.push({
         pid: Number(pid), harness,

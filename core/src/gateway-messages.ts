@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { AnthropicStream, chatToMessage, estimateTokens, messagesToChat } from "./anthropic.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import type { GatewayLogEntry } from "./types.ts";
+import { fromClaudeModelId } from "./catalog.ts";
 import { resolveModel } from "./gateway.ts";
 import { anthropicHeaders } from "./probe.ts";
 import { authHeaders, describeFailure, joinUrl, sseData } from "./upstream.ts";
@@ -33,7 +34,9 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     anthropicError(res, 400, "invalid_request_error", "request body is not JSON");
     return;
   }
-  const exposed = String(body.model ?? "");
+  // The /model menu hands back es-claude ids; logs and errors use the plain name.
+  const asked = String(body.model ?? "");
+  const exposed = fromClaudeModelId(asked) ?? asked;
   const resolved = resolveModel(deps.store, exposed);
   if (!resolved) {
     anthropicError(res, 404, "not_found_error", `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`);

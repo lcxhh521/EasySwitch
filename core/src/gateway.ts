@@ -1,3 +1,4 @@
+import { anthropicModelList, catalogModels } from "./catalog.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
@@ -32,12 +33,11 @@ function errorBody(message: string, type = "easyswitch_error") {
   return { error: { message, type } };
 }
 
-export function listExposedModels(store: Store): Json {
-  const data = store.providers().flatMap(p => {
-    const models = p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : [];
-    return models.map(m => ({ id: `${p.id}/${m}`, object: "model", owned_by: p.id }));
-  });
-  return { object: "list", data };
+/** OpenAI's list shape by default; Anthropic's ModelInfo list when Claude Code asks. */
+export function listExposedModels(store: Store, anthropic = false): Json {
+  const models = catalogModels(store.providers());
+  if (anthropic) return anthropicModelList(models);
+  return { object: "list", data: models.map(m => ({ id: `${m.providerId}/${m.model}`, object: "model", owned_by: m.providerId })) };
 }
 
 export async function handleResponses(req: IncomingMessage, res: ServerResponse, rawBody: string, deps: GatewayDeps): Promise<void> {

@@ -11,6 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { promisify } from "node:util";
+import { claudeModelId, fromClaudeModelId } from "../src/catalog.ts";
 import { claudeArgs, claudeEnv, findClaude } from "../src/launch.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
@@ -111,6 +112,28 @@ test("the real Claude Code binary completes a Bash round trip through the gatewa
   const turns = relay.requests.slice(before) as Json[];
   const toolTurn = turns.find(r => (r.messages as Json[]).some(m => m.role === "tool" && String(m.content).includes(SHELL_MARKER)));
   assert.ok(toolTurn, "the Bash output came back to the relay as a tool message");
+
+  // Gateway model discovery: Claude Code fetched EasySwitch's list for its own
+  // /model menu and cached it under its config dir, keyed by the gateway address.
+  const cache = JSON.parse(readFileSync(join(home, ".claude", "cache", "gateway-models.json"), "utf8")) as { baseUrl: string; models: Json[] };
+  assert.equal(cache.baseUrl, `http://127.0.0.1:${port}`);
+  assert.deepEqual(cache.models.map(m => m.id), [claudeModelId("mock-relay", "mock-coder"), claudeModelId("mock-relay", "mock-mini")]);
+});
+
+test("picker ids survive any model name and route back to their provider", async () => {
+  for (const model of ["mock-mini", "org/weird~model", "a--b"]) {
+    assert.equal(fromClaudeModelId(claudeModelId("mock-relay", model)), `mock-relay/${model}`);
+  }
+  assert.equal(fromClaudeModelId("claude-sonnet-4-5"), undefined);
+  // Picking another model in /model mid-session: the request names it by its picker id.
+  const before = relay.requests.length;
+  const response = await fetch(`${base}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: "Bearer es-session-test" },
+    body: JSON.stringify({ model: claudeModelId("mock-relay", "mock-mini"), max_tokens: 100, messages: [{ role: "user", content: "Reply with exactly the word: pong" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((relay.requests[before] as Json).model, "mock-mini");
 });
 
 test("EasySwitch leaves no trace in the user's real Claude Code settings", () => {

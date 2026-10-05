@@ -16,6 +16,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { promisify } from "node:util";
+import { writeCodexCatalog } from "../src/catalog.ts";
 import { codexArgs, findCodex, SESSION_MARKER } from "../src/launch.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
@@ -44,6 +45,7 @@ function realCodexConfigHash(): string {
 }
 
 let relay: Awaited<ReturnType<typeof startMockRelay>>;
+let store: Store;
 let server: Server;
 let port: number;
 let base: string;
@@ -62,7 +64,8 @@ before(async () => {
   relay = await startMockRelay(0, { apiKey: "test-key" });
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-home-"))), secrets: createSecretStore(), port });
+  store = new Store(mkdtempSync(join(tmpdir(), "es-home-")));
+  server = createEasySwitchServer({ store, secrets: createSecretStore(), port });
   await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
 });
 
@@ -98,6 +101,24 @@ test("a binding yields a Codex command that touches nothing but this one process
   const { json } = await api("GET", "/api/launch/codex");
   assert.equal(json.model, "mock-relay/mock-coder");
   assert.match(String(json.command), new RegExp(SESSION_MARKER.replace(".", "\\.")));
+  if (await findCodex()) assert.ok(String(json.command).includes(join(store.dir, "codex-catalog.json")), "the catalog lives in EasySwitch's own data dir");
+});
+
+test("Codex's own model list in an augmented session is every EasySwitch model", async t => {
+  const codex = await findCodex();
+  if (!codex) {
+    t.skip("codex not installed");
+    return;
+  }
+  const catalog = await writeCodexCatalog(codex, store.dir, store.providers());
+  assert.ok(catalog, "a catalog was generated from the installed Codex");
+  const codexHome = mkdtempSync(join(tmpdir(), "es-codex-home-"));
+  // `codex debug models` renders the catalog the /model menu is built from.
+  const configOnly = codexArgs(port, "mock-relay/mock-coder", catalog).slice(0, -2); // `debug models` takes no -m
+  const { stdout } = await run(codex, ["debug", "models", ...configOnly],
+    { cwd: codexHome, env: { ...process.env, HOME: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "" }, timeout: 60_000 });
+  const listed = ((JSON.parse(stdout) as Json).models as Json[]).filter(m => m.visibility === "list").map(m => m.slug);
+  assert.deepEqual(listed, ["mock-relay/mock-coder", "mock-relay/mock-mini"]);
 });
 
 test("the real Codex binary completes a tool round trip through the gateway", async t => {
@@ -111,9 +132,11 @@ test("the real Codex binary completes a tool round trip through the gateway", as
   const before = relay.requests.length;
   // A throwaway HOME as well as CODEX_HOME: even a helper that ignored
   // CODEX_HOME could not reach the user's real files from here.
+  // With the catalog, as a real launch has it: the round trip must survive the swapped model metadata.
+  const catalog = await writeCodexCatalog(codex, store.dir, store.providers());
   const pending = run(codex, [
     "exec", "--skip-git-repo-check",
-    ...codexArgs(port, "mock-relay/mock-coder"),
+    ...codexArgs(port, "mock-relay/mock-coder", catalog),
     "Run the shell command you are given and report what it printed.",
   ], { cwd: work, env: { ...process.env, HOME: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "" }, timeout: 120_000 });
   // `codex exec` waits for more prompt text on an open stdin pipe.

@@ -16,8 +16,11 @@ const EMPTY: StateFile = { version: 1, providers: [], bindings: [] };
 export class Store {
   private state: StateFile;
   private readonly file: string;
+  /** Where this store lives; files EasySwitch generates (the Codex catalog) go next to it. */
+  readonly dir: string;
 
   constructor(dir: string = dataDir()) {
+    this.dir = dir;
     mkdirSync(dir, { recursive: true });
     this.file = join(dir, "state.json");
     this.state = this.load();

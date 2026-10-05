@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeCodexCatalog } from "./catalog.ts";
 import { handleResponses, listExposedModels } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
@@ -229,8 +230,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const exposed = `${binding.providerId}/${binding.model}`;
+      const catalog = harness === "codex" ? await writeCodexCatalog(binary, store.dir, store.providers()) : undefined;
       const command = harness === "codex"
-        ? codexCommandLine(binary, port, exposed)
+        ? codexCommandLine(binary, port, exposed, catalog)
         : claudeCommandLine(binary, claudeEnv(port, exposed, `es-session-${randomUUID()}`));
       if (method === "POST") {
         await launchInTerminal(command, `EasySwitch 增强会话（${label}）：${exposed}（只在这个窗口生效，关掉窗口即回到原生）`);
@@ -283,7 +285,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
-        json(res, 200, listExposedModels(store));
+        // Claude Code's gateway model discovery sends Anthropic headers.
+        json(res, 200, listExposedModels(store, req.headers["anthropic-version"] !== undefined));
         return;
       }
       if (path.startsWith("/api/")) {

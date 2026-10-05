@@ -20,6 +20,7 @@ commit, license and how far the code was changed.
 | Live routing diagram with plain-language reasons for each decision | Magpie's Routing page | `web/app.js` sessions page |
 | Usage tiles, per-day bars and range switch | Magpie's Usage page; opencodex dashboard figures | `web/app.js` usage page |
 | Status chips in the header, compact menu-bar panel | opencodex dashboard; Magpie's tray panel | `web/index.html`, `menubar/main.swift` |
+| Feeding a harness's own `/model` menu: a Codex catalog via `model_catalog_json`; Claude Code ids that contain `claude` but do not start with `claude-` | opencodex (MIT), `src/codex/catalog*`, `src/claude/alias.ts` | `core/src/catalog.ts`; our catalog is per launch (opencodex writes it into the global config), our id encoding is our own (`es-claude-<provider>--<model>`) |
 
 ## Behaviour observed, not copied
 
@@ -29,6 +30,8 @@ commit, license and how far the code was changed.
 | The Messages request Claude Code sends to a custom base URL | Captured from Claude Code 2.1.289 against a local capture server | Shape summarised in `docs/claude-code-request-shape.md`; drives `core/src/anthropic.ts` and its tests |
 | `wire_api = "chat"` is no longer accepted by Codex | Error strings in the codex-cli 0.160.0 binary | Why the gateway must speak Responses to Codex |
 | How existing tools wire Claude Code and Claude Desktop | Public documentation of opencodex (MIT) | Design input only: why EasySwitch does not replace a harness's gateway |
+| Fields Codex 0.160 requires in a catalog entry; newer GPT entries use `tool_mode = "code_mode_only"`, under which a non-GPT model never calls a tool | `codex debug models` and parse errors from codex-cli 0.160.0 | Entries start from a classic-tool model of the installed Codex at runtime; nothing from Codex is stored here |
+| With `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, Claude Code 2.1.289 sends `GET /v1/models?limit=1000` with `anthropic-version` and caches the answer in `<config dir>/cache/gateway-models.json`, keyed by the gateway address | Traced against a local logging proxy | `/v1/models` answers Anthropic's list shape to that header; the e2e test checks the cache |
 
 ## Rules
 
