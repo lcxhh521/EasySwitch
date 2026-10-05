@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://easyswitch.dev/contracts/binding.schema.json",
+  "title": "HarnessBinding",
+  "description": "Which provider model a harness uses inside an EasySwitch augmented session.",
+  "type": "object",
+  "required": ["harness", "providerId", "model"],
+  "properties": {
+    "harness": { "enum": ["codex"] },
+    "providerId": { "type": "string" },
+    "model": { "type": "string" }
+  },
+  "additionalProperties": false
+}

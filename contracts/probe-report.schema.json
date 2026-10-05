@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://easyswitch.dev/contracts/probe-report.schema.json",
+  "title": "ProbeReport",
+  "description": "Result of the conformance checks run when a provider is added or re-tested.",
+  "type": "object",
+  "required": ["at", "model", "checks", "recommendedRoute"],
+  "properties": {
+    "at": { "type": "string", "format": "date-time" },
+    "model": { "type": "string" },
+    "recommendedRoute": { "enum": ["responses-native", "chat-translate"] },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "status", "detail"],
+        "properties": {
+          "id": { "enum": ["models", "chat", "chat-stream", "tools", "responses"] },
+          "label": { "type": "string" },
+          "status": { "enum": ["pass", "fail", "skip"] },
+          "latencyMs": { "type": "integer", "minimum": 0 },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,20 @@
+{
+  "name": "easyswitch",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "EasySwitch demo: bring providers from anywhere into one harness, without replacing its native gateway.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node core/src/main.ts",
+    "mock-relay": "node core/test/mock-relay.ts",
+    "test": "node --test core/test/*.test.ts",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
+  }
+}

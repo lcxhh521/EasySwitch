@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://easyswitch.dev/contracts/provider.schema.json",
+  "title": "Provider",
+  "description": "A model source the user brought in. Secrets are never part of this document; they live in the macOS Keychain under the provider id.",
+  "type": "object",
+  "required": ["id", "name", "baseUrl", "models", "route", "routePinned", "streamUsage", "createdAt"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$", "description": "Slug; exposed model ids are <id>/<upstream model>." },
+    "name": { "type": "string" },
+    "baseUrl": { "type": "string", "pattern": "^https?://" },
+    "defaultModel": { "type": "string" },
+    "models": { "type": "array", "items": { "type": "string" } },
+    "route": { "enum": ["responses-native", "chat-translate"] },
+    "routePinned": { "type": "boolean" },
+    "streamUsage": { "type": "boolean" },
+    "probe": { "$ref": "probe-report.schema.json" },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

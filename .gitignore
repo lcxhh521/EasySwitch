@@ -1,0 +1,4 @@
+node_modules/
+menubar/build/
+*.log
+.DS_Store
