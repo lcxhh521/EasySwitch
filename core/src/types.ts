@@ -144,4 +144,6 @@ export interface ProviderPreset {
   keyUrl?: string;
   /** One line of guidance shown under the preset (where to get a key, etc.). */
   note?: string;
+  /** Group heading in the picker. */
+  category?: string;
 }

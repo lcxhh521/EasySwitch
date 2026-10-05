@@ -395,12 +395,30 @@ function providerRow(p) {
     </div>${detail}`;
 }
 
+let presetQuery = "";
+
+/** Presets grouped by category, filtered by the search box. */
+function presetGroups() {
+  const q = presetQuery.trim().toLowerCase();
+  const hit = x => !q || `${x.name} ${x.id} ${x.note ?? ""} ${x.baseUrl}`.toLowerCase().includes(q);
+  const order = [...new Set(presets.map(x => x.category ?? "其他"))];
+  const preset = addForm?.preset;
+  const html = order.map(cat => {
+    const items = presets.filter(x => (x.category ?? "其他") === cat && hit(x));
+    return items.length ? `
+      <div class="hint" style="margin:10px 0 4px">${esc(cat)}</div>
+      <div class="presets">${items.map(x => `
+        <button class="preset ${preset?.id === x.id ? "on" : ""}" data-preset="${esc(x.id)}" title="${esc(x.note ?? x.baseUrl)}">${icon(x.icon, "lg")}<span>${esc(x.name)}</span></button>`).join("")}
+      </div>` : "";
+  }).join("");
+  return `<div id="preset-groups">${html || `<div class="empty">没有匹配的预设；可以选「自定义中转站」手动填</div>`}</div>`;
+}
+
 function renderAddForm() {
   const preset = addForm.preset;
   return `
-    <div class="presets">${presets.map(x => `
-      <button class="preset ${preset?.id === x.id ? "on" : ""}" data-preset="${esc(x.id)}">${icon(x.icon, "lg")}<span>${esc(x.name)}</span></button>`).join("")}
-    </div>
+    <div class="field"><input type="search" id="preset-search" placeholder="搜索 ${presets.length} 个预设：DeepSeek、Kimi、中转站、本地……" value="${esc(presetQuery)}" autocomplete="off"></div>
+    ${presetGroups()}
     <form class="form" id="add-form">
       <div class="field"><label>名称</label><input type="text" name="name" required value="${esc(preset && preset.id !== "relay" ? preset.name : "")}" placeholder="例如：我的中转站"></div>
       <div class="field"><label>OpenAI 兼容地址</label><input type="url" name="baseUrl" required value="${esc(preset?.baseUrl ?? "")}" placeholder="https://relay.example.com/v1"></div>
@@ -851,6 +869,11 @@ document.addEventListener("click", async e => {
 
 document.addEventListener("input", e => {
   if (e.target.matches("#import-form textarea")) importFormOpen = true;
+  if (e.target.id === "preset-search") {
+    presetQuery = e.target.value;
+    const box = $("#preset-groups");
+    if (box) box.outerHTML = presetGroups();
+  }
 });
 document.addEventListener("submit", async e => {
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
