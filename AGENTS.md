@@ -81,3 +81,28 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 
 - 如果复制或改编了别的项目的代码：保留它的许可证——在文件头注释里写明来源项目、许可证、来源提交和版权行，许可证原文放 `third_party/<项目>/LICENSE`；并在最后的说明里列出这些文件，方便维护者核对。
 - 不要把任何密钥、令牌、OAuth client secret 写进仓库。
+
+<!-- private:start -->
+## 出处、分工与发布（私有仓库内；发布公开版时由发布脚本整段剥离）
+
+**这个仓库永远是私有的，绝不改成公开。** 公开时用 `~/workspace/easyswitch-private/` 里的发布脚本：从最终文件树生成一份清理过的快照，作为**新仓库的首次提交**发布；这个仓库的历史不会进入公开仓库。仓库有本地 `pre-push` 钩子，推送前会向 GitHub 查可见性，是公开仓库就拦。
+
+### 借鉴代码
+
+- 可以直接复制别人的代码再适配迭代（用户已确认），也可以在文档、注释、提交信息里写明参照了谁，不用避讳。
+- **复制或改编必须在文件头声明**：来源项目、许可证、来源提交、版权行；许可证原文放 `third_party/<项目>/LICENSE`。这样公开前用搜索就能把它们全部找出来。
+- 每复制或改编一个文件，就在 `PROVENANCE.md` 末尾的「公开前待重写清单」加一行（文件、来源、现状、状态）。
+- **公开之前**：台账里逐项按功能和协议事实重写（不逐行改写；一人提取协议事实清单、另一人照清单实现）、换掉第三方图标，然后跑发布脚本的检查，全部通过才发布。
+- 来源（opencodex、Magpie、CC Switch、lobe-icons 等）核实过都是 MIT：只要求带版权声明；协议事实（端点、字段、格式）不受版权保护。
+
+### 其他厂商订阅的适配（用户已全部交给 GPT，Claude 不碰）
+
+- Cursor 是 connect+protobuf over HTTP/2（`agent.v1.AgentService/Run`，PKCE poll 登录）；Kiro 是 AWS CodeWhisperer eventstream（kiro-cli sqlite 导入）；Antigravity 是 Cloud Code Assist envelope（Google OAuth）。协议事实已从 opencodex 调研完毕，可以直接移植它的代码再按 EasySwitch 的接口适配（保留许可证、文件头声明、台账记一行）。
+- Antigravity 的 OAuth client secret **不得**写进仓库（会触发密钥扫描），运行时从用户本机读。
+
+### 分工与分支
+
+- `main`（`~/workspace/EasySwitch`）：GPT 的工作区，风险档适配和协议层重构在这里。
+- `dev`（`~/workspace/EasySwitch-dev`，独立 worktree）：Claude 的工作区。避开 GPT 正在改的文件（`gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层）。合入前保证测试全过。
+- 提交信息不加署名行（沿用用户的 PR 工作规则）。
+<!-- private:end -->
