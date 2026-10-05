@@ -74,16 +74,23 @@ export async function findClaude(): Promise<string | undefined> {
  * the bound model, and gateway model discovery makes Claude Code's own /model
  * menu list every EasySwitch model, so switching mid-session works.
  */
-export function claudeEnv(port: number, exposedModel: string, sessionToken: string): Record<string, string> {
-  const slash = exposedModel.indexOf("/");
-  const id = slash > 0 ? claudeModelId(exposedModel.slice(0, slash), exposedModel.slice(slash + 1)) : exposedModel;
+export function claudeEnv(port: number, exposedModel: string, sessionToken: string, tiers: Record<string, string> = {}): Record<string, string> {
+  const toId = (name: string) => {
+    const at = name.indexOf("/");
+    return at > 0 ? claudeModelId(name.slice(0, at), name.slice(at + 1)) : name;
+  };
+  const id = toId(exposedModel);
+  const small = tiers.small ? toId(tiers.small) : id;
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: sessionToken,
     ANTHROPIC_MODEL: id,
     ANTHROPIC_DEFAULT_OPUS_MODEL: id,
     ANTHROPIC_DEFAULT_SONNET_MODEL: id,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: id,
+    // Claude Code runs titles, summaries and other small requests on the haiku tier, and sub-agents on their own setting.
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: small,
+    ...(tiers.small ? { ANTHROPIC_SMALL_FAST_MODEL: small } : {}),
+    ...(tiers.subagent ? { CLAUDE_CODE_SUBAGENT_MODEL: toId(tiers.subagent) } : {}),
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
     [CLAUDE_SESSION_MARKER]: "1",
   };

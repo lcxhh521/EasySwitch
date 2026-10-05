@@ -140,12 +140,19 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const model = input.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
     if (!model || !resolveModel(store, model)) throw new Error("还没有可用的模型：先在「模型来源」里添加一个");
     const efforts = LAUNCHERS[id]?.efforts ?? [];
-    const effort = input.effort && efforts.includes(input.effort) ? input.effort : undefined;
+    const wanted = input.effort ?? b?.effort;
+    const effort = wanted && efforts.includes(wanted) ? wanted : undefined;
     const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}) });
-    const done = runHeadless(id, { bin, port, model, task: input.task, ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const done = runHeadless(id, { bin, port, model, task: input.task, tiers: tiersFor(id), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
     return { task, done };
+  }
+
+  /** The agent's saved extra models that still exist, by tier id. */
+  function tiersFor(id: string): Record<string, string> {
+    const known = new Set((LAUNCHERS[id]?.tiers ?? []).map(t => t.id));
+    return Object.fromEntries(Object.entries(store.binding(id)?.tiers ?? {}).filter(([tier, name]) => known.has(tier) && resolveModel(store, name)));
   }
 
   /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
@@ -159,11 +166,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const first = catalogModels(store.providers())[0];
     const model = opts.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
     if (!model || !resolveModel(store, model)) return { status: 409, error: "还没有可用的模型：先在「模型来源」里添加一个" };
-    const effort = opts.effort && (launcher.efforts ?? []).includes(opts.effort) ? opts.effort : undefined;
+    const wanted = opts.effort ?? b?.effort;
+    const effort = wanted && (launcher.efforts ?? []).includes(wanted) ? wanted : undefined;
+    const tiers = tiersFor(id);
     const sessionDir = newSessionDir();
     const token = sessionToken(id);
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers()) : undefined;
-    const spec = launcher.interactive({ bin, port, model, token, sessionDir, ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
+    const spec = launcher.interactive({ bin, port, model, token, sessionDir, tiers, ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
     materialize(spec, sessionDir);
     return { spec, sessionDir, model, name: known.name };
   }
@@ -739,8 +748,39 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 400, { error: "需要选择模型来源和模型" });
         return;
       }
-      store.setBinding({ harness, providerId: provider.id, model });
+      const before = store.binding(harness);
+      store.setBinding({ harness, providerId: provider.id, model, ...(before?.effort ? { effort: before.effort } : {}), ...(before?.tiers ? { tiers: before.tiers } : {}) });
       json(res, 200, store.binding(harness));
+      return;
+    }
+    const bindingEffort = /^\/api\/bindings\/([a-z0-9-]+)\/effort$/.exec(path);
+    if (bindingEffort && method === "PUT") {
+      const id = bindingEffort[1] ?? "";
+      const cur = store.binding(id);
+      if (!cur) { json(res, 409, { error: "先给这个 agent 选一个模型" }); return; }
+      const level = String(body.effort ?? "");
+      if (level && !(LAUNCHERS[id]?.efforts ?? []).includes(level)) { json(res, 400, { error: "这个 agent 没有这一档" }); return; }
+      const { effort: _drop, ...rest } = cur;
+      store.setBinding(level ? { ...rest, effort: level } : rest);
+      json(res, 200, store.binding(id));
+      return;
+    }
+    const bindingTier = /^\/api\/bindings\/([a-z0-9-]+)\/tiers\/([a-z0-9-]+)$/.exec(path);
+    if (bindingTier && (method === "PUT" || method === "DELETE")) {
+      const [, id = "", tier = ""] = bindingTier;
+      const cur = store.binding(id);
+      if (!cur) { json(res, 409, { error: "先给这个 agent 选一个模型" }); return; }
+      if (!(LAUNCHERS[id]?.tiers ?? []).some(t => t.id === tier)) { json(res, 404, { error: "这个 agent 没有这一项" }); return; }
+      const tiers = { ...(cur.tiers ?? {}) };
+      if (method === "DELETE") delete tiers[tier];
+      else {
+        const name = `${String(body.providerId ?? "")}/${String(body.model ?? "")}`;
+        if (!catalogModels(store.providers()).some(m => `${m.providerId}/${m.model}` === name)) { json(res, 400, { error: "没有这个模型" }); return; }
+        tiers[tier] = name;
+      }
+      const { tiers: _old, ...rest } = cur;
+      store.setBinding(Object.keys(tiers).length ? { ...rest, tiers } : rest);
+      json(res, 200, store.binding(id));
       return;
     }
 

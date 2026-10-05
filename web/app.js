@@ -166,6 +166,28 @@ function openGuard(anchor) {
 
 // ---------------------------------------------------------------- agents
 
+/** Under an agent's row: its reasoning level and the other models it runs next to the main one. */
+function agentSettings(id) {
+  const binding = state.bindings?.[id];
+  const can = (agentList ?? []).find(a => a.id === id)?.can;
+  if (!binding || !can || (!can.efforts?.length && !can.tiers?.length)) return "";
+  const tierBtn = t => {
+    const name = binding.tiers?.[t.id];
+    const slash = name ? name.indexOf("/") : -1;
+    const provider = name && providerById(name.slice(0, slash));
+    const face = provider
+      ? `${icon(provider.icon)}<span class="label">${esc(name.slice(slash + 1))}<small>${esc(provider.name)}</small></span>`
+      : `<span class="label">跟随主模型<small>点一下可以换</small></span>`;
+    return `<span class="hint" title="${esc(t.hint)}">${esc(t.label)}</span><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}" title="${esc(t.hint)}">${face}<span class="caret">▾</span></button>`;
+  };
+  return `<div class="row settings" style="padding-top:0;gap:10px;flex-wrap:wrap">
+    <span class="grow"></span>
+    ${can.efforts?.length ? `<span class="hint">想得多深</span><select data-effort-select="${esc(id)}" title="只对这个 agent 生效；档位是它自己的">
+      ${["", ...can.efforts].map(l => `<option value="${esc(l)}" ${(binding.effort ?? "") === l ? "selected" : ""}>${EFFORT_LABEL[l] ?? l}${l ? `（${esc(l)}）` : "（它自己的默认）"}</option>`).join("")}</select>` : ""}
+    ${(can.tiers ?? []).map(tierBtn).join("")}
+  </div>`;
+}
+
 function agentRow(harness) {
   const meta = agentMeta(harness);
   const binding = state.bindings?.[harness];
@@ -187,7 +209,7 @@ function agentRow(harness) {
       </div>
       <button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button>
       <button class="btn launch" data-launch="${harness}" ${binding && binary ? "" : "disabled"}>启动增强会话</button>
-    </div>`;
+    </div>${agentSettings(harness)}`;
 }
 
 const SUPPORT_CHIP = {
@@ -237,7 +259,7 @@ function agentCatalog() {
       ${can ? `<button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>` : ""}
       ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
       ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
-    </div>`;
+    </div>${can ? agentSettings(a.id) : ""}`;
   };
   const here = rest.filter(a => a.installed);
   const other = rest.filter(a => !a.installed);
@@ -388,9 +410,12 @@ function onboarding() {
     </div>`;
 }
 
-function openPicker(anchor, harness) {
+function openPicker(anchor, target) {
   closePopover();
-  const binding = state.bindings?.[harness];
+  const [harness, tier] = target.split("@");
+  const main = state.bindings?.[harness];
+  const tierName = tier ? main?.tiers?.[tier] : undefined;
+  const binding = tier ? (tierName ? { providerId: tierName.slice(0, tierName.indexOf("/")), model: tierName.slice(tierName.indexOf("/") + 1) } : undefined) : main;
   const el = document.createElement("div");
   el.className = "popover";
   el.innerHTML = `
@@ -428,7 +453,7 @@ function openPicker(anchor, harness) {
       if (o.native) {
         const on = !binding;
         return `<button class="opt native ${i === kb ? "kb" : ""}" data-i="${i}">${icon(agentMeta(harness).icon)}
-          <span class="name">原生</span><span class="meta">${agentMeta(harness).name} 自带的，不经过 EasySwitch</span><span class="tick">${on ? "✓" : ""}</span></button>`;
+          <span class="name">${tier ? "跟随主模型" : "原生"}</span><span class="meta">${tier ? "不单独指定，和主模型一样" : `${agentMeta(harness).name} 自带的，不经过 EasySwitch`}</span><span class="tick">${on ? "✓" : ""}</span></button>`;
       }
       const head = o.provider.id !== lastGroup ? `<div class="group">${esc(o.provider.name)}</div>` : "";
       lastGroup = o.provider.id;
@@ -443,7 +468,11 @@ function openPicker(anchor, harness) {
   const choose = async o => {
     closePopover();
     try {
-      if (o.native) {
+      if (tier) {
+        if (o.native) await call("DELETE", `/api/bindings/${harness}/tiers/${tier}`);
+        else await call("PUT", `/api/bindings/${harness}/tiers/${tier}`, { providerId: o.provider.id, model: o.model });
+        toast(o.native ? "已改为跟随主模型" : `已设为 ${o.model}，下次启动生效`);
+      } else if (o.native) {
         await call("DELETE", `/api/bindings/${harness}`);
         toast(`${agentMeta(harness).name}：增强会话已关闭，只用原生`);
       } else {
@@ -888,6 +917,15 @@ function syncTaskForm() {
   taskForm.cwd = f.elements.cwd?.value ?? "";
 }
 document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
+document.addEventListener("change", async e => {
+  const sel = e.target.closest?.("[data-effort-select]");
+  if (!sel) return;
+  try {
+    await call("PUT", `/api/bindings/${sel.dataset.effortSelect}/effort`, { effort: sel.value });
+    toast(sel.value ? `推理档位设为 ${sel.value}，下次启动生效` : "推理档位恢复为它自己的默认");
+  } catch (error) { toast(error.message); }
+  await refresh(true);
+});
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
 

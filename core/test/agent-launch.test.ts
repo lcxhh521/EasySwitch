@@ -124,3 +124,37 @@ test("a reasoning level becomes each agent's own flag, and nothing when none is 
   assert.ok(args("hermes", "low").join(" ").includes("--reasoning low"));
   for (const id of ["claude", "codex", "hermes"]) assert.ok(!args(id).join(" ").match(/effort|--reasoning/), `${id}: no flag unless asked`);
 });
+
+test("an agent's extra models become its own per-launch settings: sub-agents, small tasks", () => {
+  const input = { bin: "/bin/x", port: 7, model: "a/main", token: "es-session-t", sessionDir: "/tmp/s", task: "do", tiers: { small: "b/tiny", subagent: "c/helper" } };
+  const claude = LAUNCHERS.claude!.headless!(input);
+  assert.match(claude.env.ANTHROPIC_DEFAULT_HAIKU_MODEL!, /b--tiny/, "titles and summaries run on the small model");
+  assert.match(claude.env.ANTHROPIC_SMALL_FAST_MODEL!, /b--tiny/);
+  assert.match(claude.env.CLAUDE_CODE_SUBAGENT_MODEL!, /c--helper/);
+  assert.match(claude.env.ANTHROPIC_MODEL!, /a--main/, "the main model is untouched");
+  const plain = LAUNCHERS.claude!.headless!({ ...input, tiers: {} });
+  assert.equal(plain.env.CLAUDE_CODE_SUBAGENT_MODEL, undefined, "no tier, no variable: it follows the main model");
+  assert.ok(LAUNCHERS.codex!.headless!(input).args.join(" ").includes('agents.default_subagent_model="c/helper"'));
+  const oc = JSON.parse(LAUNCHERS.opencode!.headless!(input).env.OPENCODE_CONFIG_CONTENT!) as { small_model: string; provider: { easyswitch: { models: Record<string, unknown> } } };
+  assert.equal(oc.small_model, "easyswitch/b/tiny");
+  assert.ok(oc.provider.easyswitch.models["b/tiny"], "the small model is also declared as a provider model");
+});
+
+test("effort and extra models are saved on the agent, survive a model change, and are checked", async () => {
+  const H = { "content-type": "application/json", "x-easyswitch": "1" };
+  const api = (m: string, p: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${p}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
+  await api("PUT", "/api/bindings/claude", { providerId, model: "mock-coder" });
+  assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "turbo" })).status, 400, "only the agent's own levels");
+  assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "high" })).status, 200);
+  assert.equal((await api("PUT", "/api/bindings/claude/tiers/subagent", { providerId, model: "mock-coder" })).status, 200);
+  assert.equal((await api("PUT", "/api/bindings/claude/tiers/nonsense", { providerId, model: "mock-coder" })).status, 404);
+  assert.equal((await api("PUT", "/api/bindings/claude/tiers/small", { providerId, model: "no-such-model" })).status, 400);
+  await api("PUT", "/api/bindings/claude", { providerId, model: "mock-coder" });
+  const b = (await (await api("GET", "/api/state")).json()) as { bindings: Record<string, { effort?: string; tiers?: Record<string, string> }> };
+  assert.equal(b.bindings.claude?.effort, "high", "changing the main model keeps the level");
+  assert.equal(b.bindings.claude?.tiers?.subagent, `${providerId}/mock-coder`);
+  const cmd = (await (await api("POST", "/api/agents/claude/command", {})).json()) as { args: string[]; env: Record<string, string> };
+  assert.ok(cmd.args.join(" ").includes("--effort high"), "the saved level is used when launching");
+  assert.ok(cmd.env.CLAUDE_CODE_SUBAGENT_MODEL, "and so is the saved sub-agent model");
+  assert.equal((await api("DELETE", "/api/bindings/claude/tiers/subagent")).status, 200);
+});

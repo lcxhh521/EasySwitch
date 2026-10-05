@@ -34,6 +34,8 @@ export interface LaunchInput {
   sessionDir: string;
   /** Present for the headless form. */
   task?: string;
+  /** Extra models for this launch, by the launcher's tier ids (`<provider>/<model>`). */
+  tiers?: Record<string, string>;
   /** Codex only: the merged model catalog to hand it (see catalog.ts). */
   catalog?: string;
   /** Reasoning level for this launch, one of the launcher's `efforts`. */
@@ -54,6 +56,8 @@ export interface LaunchSpec {
 
 export interface AgentLauncher {
   verified: boolean;
+  /** Other models this agent can run next to its main one, in the user's words. */
+  tiers?: Array<{ id: string; label: string; hint: string }>;
   /** The reasoning levels this agent can be started with, in its own words. Empty or absent: it has no such setting. */
   efforts?: string[];
   interactive?: (i: LaunchInput) => LaunchSpec;
@@ -95,18 +99,23 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   codex: {
     verified: true,
     efforts: ["minimal", "low", "medium", "high", "xhigh"],
-    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp), ...(i.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(i.effort)}`] : [])], env: {} }),
-    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, undefined, i.mcp), ...(i.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(i.effort)}`] : []), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
+    tiers: [{ id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" }],
+    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp), ...codexExtras(i)], env: {} }),
+    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, i.catalog, i.mcp), ...codexExtras(i), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
   },
   claude: {
     verified: true,
     efforts: ["low", "medium", "high", "xhigh", "max"],
+    tiers: [
+      { id: "small", label: "后台小任务", hint: "标题、摘要这类轻量请求用这个模型" },
+      { id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" },
+    ],
     interactive: i => {
-      const env = claudeEnv(i.port, i.model, i.token);
+      const env = claudeEnv(i.port, i.model, i.token, i.tiers);
       return { command: i.bin, args: [...(i.effort ? ["--effort", i.effort] : []), ...claudeArgs(env, i.mcp)], env };
     },
     headless: i => {
-      const env = claudeEnv(i.port, i.model, i.token);
+      const env = claudeEnv(i.port, i.model, i.token, i.tiers);
       return { command: i.bin, args: ["-p", i.task ?? "", ...(i.effort ? ["--effort", i.effort] : []), ...claudeArgs(env, i.mcp)], env, unset: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] };
     },
   },
@@ -138,6 +147,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
   opencode: {
     verified: false,
+    tiers: [{ id: "small", label: "小任务", hint: "标题、摘要这类轻量请求用这个模型" }],
     interactive: i => ({ command: i.bin, args: ["--model", `easyswitch/${i.model}`], env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(i) } }),
     headless: i => ({ command: i.bin, args: ["run", "--model", `easyswitch/${i.model}`, i.task ?? ""], env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(i) } }),
   },
@@ -152,6 +162,14 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
     headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: copilotEnv(i) }),
   },
 };
+
+/** Codex: reasoning level and the model its sub-agents use, as per-launch -c overrides. */
+function codexExtras(i: LaunchInput): string[] {
+  return [
+    ...(i.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(i.effort)}`] : []),
+    ...(i.tiers?.subagent ? ["-c", `agents.default_subagent_model=${JSON.stringify(i.tiers.subagent)}`] : []),
+  ];
+}
 
 function hermesFiles(i: LaunchInput): Record<string, string> {
   return {
@@ -189,15 +207,16 @@ function opencodeConfig(i: LaunchInput): string {
         npm: "@ai-sdk/openai-compatible",
         name: "EasySwitch",
         options: { baseURL: `${gateway(i)}/v1`, apiKey: i.token },
-        models: { [i.model]: { name: i.model.slice(i.model.indexOf("/") + 1) } },
+        models: Object.fromEntries([i.model, ...(i.tiers?.small ? [i.tiers.small] : [])].map(m => [m, { name: m.slice(m.indexOf("/") + 1) }])),
       },
     },
+    ...(i.tiers?.small ? { small_model: `easyswitch/${i.tiers.small}` } : {}),
   });
 }
 
-export function hasLauncher(agentId: string): { interactive: boolean; headless: boolean; verified: boolean; efforts: string[] } | undefined {
+export function hasLauncher(agentId: string): { interactive: boolean; headless: boolean; verified: boolean; efforts: string[]; tiers: Array<{ id: string; label: string; hint: string }> } | undefined {
   const l = LAUNCHERS[agentId];
-  return l ? { interactive: Boolean(l.interactive), headless: Boolean(l.headless), verified: l.verified, efforts: l.efforts ?? [] } : undefined;
+  return l ? { interactive: Boolean(l.interactive), headless: Boolean(l.headless), verified: l.verified, efforts: l.efforts ?? [], tiers: l.tiers ?? [] } : undefined;
 }
 
 export function newSessionDir(): string {

@@ -152,6 +152,10 @@ export interface HarnessBinding {
   harness: Harness;
   providerId: string;
   model: string;
+  /** Reasoning level for this agent, one of the agent's own levels. */
+  effort?: string;
+  /** Other models this agent uses next to its main one: tier id → `<provider>/<model>` (e.g. subagent, small). */
+  tiers?: Record<string, string>;
 }
 
 export interface GatewayLogEntry {
