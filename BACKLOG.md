@@ -11,7 +11,7 @@
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
 
 - [x] B1 · 能力矩阵：每个 agent × 每个功能都有明确状态，界面可见 — 来源：「前面让你实现的功能你也只是在一两个agent上实现了，好像没有扩展到对应模块的全部agent」（10-06）· 验证：提交 d040764，capabilities.test.ts，Agent 页覆盖表
-- [~] B2 · 补全 CLI 的启动方式和后台任务（现有 19 个没写，Kimi/Pi/OMP/Droid/Cline/Goose/Crush/Grok/MiniMax/Qoder/CodeBuddy/OpenClaw/Trae Agent/AtomCode 等）— 来源：同上（10-06）· 备注：事实表放在 research/（第 3 批已到：atomcode、openclaw 可做；trae-agent 部分可行；CodeBuddy CLI 疑似不能重定向；Amp 只能检测打开），第 2 批已到（goose、crush、grok、minimax、qoder：配置格式齐，启动命令多为推测；Qoder 自定义模型需登录账号含 BYOK）；第 1 批（Kimi、Pi、OMP、Droid、Cline）被意外中止，已重新派出；补充批在路上；之后按表实现并用独立目录装来实测
+- [~] B2 · 补全 CLI 的启动方式和后台任务（现有 19 个没写，Kimi/Pi/OMP/Droid/Cline/Goose/Crush/Grok/MiniMax/Qoder/CodeBuddy/OpenClaw/Trae Agent/AtomCode 等）— 来源：同上（10-06）· 备注：事实表放在 research/（第 3 批已到：atomcode、openclaw 可做；trae-agent 部分可行；CodeBuddy CLI 疑似不能重定向；Amp 只能检测打开），第 2 批已到（goose、crush、grok、minimax、qoder：配置格式齐，启动命令多为推测；Qoder 自定义模型需登录账号含 BYOK）；第 1 批（Kimi、Pi、OMP、Droid、Cline）也到了：五个都能用私有目录启动，Droid 可能仍要求登录；补充批在路上；之后按表实现并用独立目录装来实测
 - [ ] B3 · 每个支持“按次指定 MCP”的 agent 都挂上 EasySwitch 的 MCP（现在只有 Codex、Claude Code），不支持的写明原因 — 来源：「agents calling agents」产品定义 + 同上（10-06）
 - [ ] B4 · 每个 agent 的思考档位和子 agent/小任务模型：能设的都设，不能设的写明原因 — 来源：「每个agent都应该有自己的推理程度、子模型、小任务模型」（10-05）+ 同上（10-06）
 - [ ] B5 · 把“按文档写的、没实测”的启动方式逐个实测（Gemini CLI、Qwen Code、OpenCode、Copilot CLI、Aider）：用独立目录临时安装，不动系统环境 — 来源：盘点发现 Gemini CLI 被多报为已接入（10-06）
