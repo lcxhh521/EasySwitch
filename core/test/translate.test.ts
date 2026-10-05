@@ -65,8 +65,8 @@ test("custom tools become a one-string function and are remembered for the way b
 
 test("tools Chat cannot express are dropped and reported, Responses-only fields are not forwarded", () => {
   const { chat, dropped } = responsesToChat(CODEX_REQUEST, "mock-coder", { streamUsage: true });
-  assert.deepEqual(dropped.sort(), ["tool:namespace:multi_agent_v1", "tool:web_search"]);
-  assert.equal(chat.tools?.length, 2);
+  assert.deepEqual(dropped, ["tool:web_search"], "namespaces are flattened, not dropped");
+  assert.equal(chat.tools?.length, 3);
   const raw = chat as unknown as Json;
   for (const key of ["include", "store", "reasoning", "prompt_cache_key", "instructions", "input"]) assert.equal(raw[key], undefined, key);
   assert.deepEqual(chat.stream_options, { include_usage: true });
@@ -110,4 +110,21 @@ test("streamed tool-call fragments are reassembled into function_call and custom
   assert.deepEqual(done[0], { id: done[0]!.id, type: "function_call", call_id: "call_x", name: "exec_command", arguments: "{\"cmd\":\"ls\"}", status: "completed" });
   assert.deepEqual(done[1], { id: done[1]!.id, type: "custom_tool_call", call_id: "call_y", name: "apply_patch", input: "*** Begin Patch", status: "completed" });
   assert.equal(((events.at(-1)!.response as Json).output as Json[]).length, 2);
+});
+
+test("namespace tools (MCP servers) travel as flat functions and come back as namespace + name", () => {
+  const { chat, namespaced } = responsesToChat({ model: "m", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }, { type: "function_call", call_id: "c1", namespace: "mcp__easyswitch", name: "list_agents", arguments: "{}" }, { type: "function_call_output", call_id: "c1", output: "ok" }], tools: [{ type: "namespace", name: "mcp__easyswitch", tools: [{ type: "function", name: "list_agents", description: "d", parameters: { type: "object", properties: {} } }] }] }, "m", { streamUsage: false });
+  const flat = ((chat.tools![0] as unknown) as { function: { name: string } }).function.name;
+  assert.equal(flat, "mcp__easyswitch__list_agents");
+  assert.equal(chat.messages.find(m => m.tool_calls)!.tool_calls![0]!.function.name, flat, "earlier calls in the history use the flat name too");
+  assert.deepEqual(namespaced.get(flat), { namespace: "mcp__easyswitch", name: "list_agents" });
+  let out = "";
+  const stream = new ResponsesStream("m", new Set(), c => (out += c), namespaced);
+  stream.start();
+  stream.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: flat, arguments: "{}" } }] } }] });
+  stream.finish();
+  const done = out.trim().split("\n\n").map(b => JSON.parse(b.split("\n")[1]!.slice(6)) as Json).find(e => e.type === "response.output_item.done");
+  const item = done?.item as unknown as Json;
+  assert.equal(item.namespace, "mcp__easyswitch");
+  assert.equal(item.name, "list_agents");
 });

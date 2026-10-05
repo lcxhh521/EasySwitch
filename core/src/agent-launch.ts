@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { sessionToken } from "./gateway-chat.ts";
+import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
+import { mcpEndpoint } from "./mcp.ts";
 
 const run = promisify(execFile);
 
@@ -32,6 +34,8 @@ export interface LaunchInput {
   sessionDir: string;
   /** Present for the headless form. */
   task?: string;
+  /** The EasySwitch MCP server to attach for this launch, so this agent can call the others. */
+  mcp?: McpAttach;
 }
 
 export interface LaunchSpec {
@@ -81,6 +85,19 @@ function dshPatch(i: LaunchInput): string {
 }
 
 export const LAUNCHERS: Record<string, AgentLauncher> = {
+  // The two built-in agents. Headless forms run with the harness' own read-only defaults.
+  codex: {
+    verified: true,
+    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, undefined, i.mcp), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
+  },
+  claude: {
+    verified: true,
+    headless: i => {
+      const env = claudeEnv(i.port, i.model, i.token);
+      return { command: i.bin, args: ["-p", i.task ?? "", ...claudeArgs(env, i.mcp)], env, unset: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] };
+    },
+  },
+
   // Run here against the real programs.
   dsh: {
     verified: true,
@@ -168,11 +185,17 @@ export interface RunResult {
  * agent runs in `cwd` (the user's project) with a private session directory
  * that is removed afterwards; output is capped so a runaway agent cannot fill memory.
  */
-export async function runHeadless(agentId: string, input: Omit<LaunchInput, "token" | "sessionDir">, opts: { cwd?: string; timeoutMs?: number; maxBytes?: number } = {}): Promise<RunResult> {
+export async function runHeadless(
+  agentId: string, input: Omit<LaunchInput, "token" | "sessionDir" | "mcp">,
+  opts: { cwd?: string; timeoutMs?: number; maxBytes?: number; depth?: number; attachMcp?: boolean; signal?: AbortSignal } = {},
+): Promise<RunResult> {
   const launcher = LAUNCHERS[agentId];
   if (!launcher?.headless) throw new Error("这个 agent 还没有无界面的调用方式");
   const sessionDir = newSessionDir();
-  const spec = launcher.headless({ ...input, token: sessionToken(agentId), sessionDir });
+  const token = sessionToken(agentId);
+  // The called agent can call one level further down (the depth rides in the MCP headers).
+  const mcp = opts.attachMcp === false ? undefined : mcpEndpoint(input.port, token, opts.depth ?? 1);
+  const spec = launcher.headless({ ...input, token, sessionDir, ...(mcp ? { mcp } : {}) });
   materialize(spec, sessionDir);
   const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
   for (const name of spec.unset ?? []) delete env[name];
@@ -186,6 +209,11 @@ export async function runHeadless(agentId: string, input: Omit<LaunchInput, "tok
       child.stdout.on("data", add);
       child.stderr.on("data", add);
       const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, opts.timeoutMs ?? 300_000);
+      // A stop request ends the run: politely first, then for good.
+      opts.signal?.addEventListener("abort", () => {
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 3000).unref();
+      }, { once: true });
       child.on("close", code => { clearTimeout(timer); resolve({ exitCode: code, output: output.trim(), timedOut }); });
       child.on("error", error => { clearTimeout(timer); resolve({ exitCode: null, output: String(error.message), timedOut }); });
     });

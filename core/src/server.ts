@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { writeCodexCatalog } from "./catalog.ts";
 import { handleChatgpt, handleChatgptUpgrade, isChatgptPath } from "./chatgpt-gateway.ts";
 import { handleChatCompletions } from "./gateway-chat.ts";
+import { GEMINI_PATH, handleGemini, listGeminiModels } from "./gateway-gemini.ts";
+import { handleMcp, mcpEndpoint, type McpDeps } from "./mcp.ts";
 import { handleResponses, listExposedModels, resolveModel } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
@@ -17,6 +19,7 @@ import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "./agent-launch.ts";
+import { TaskBook, type Task } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
 import { costOf, ratesFor } from "./pricing/cost.ts";
@@ -116,6 +119,47 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     ledger?.append(entry);
     console.log(`[gateway] ${entry.status} ${entry.route} ${entry.model} ${entry.ms}ms${entry.note ? ` (${entry.note})` : ""}`);
   };
+  /** The executable for an agent: the two built-ins have their own finders, the rest come from detection. */
+  async function agentBinary(id: string): Promise<string | undefined> {
+    if (id === "codex") return findCodex();
+    if (id === "claude") return findClaude();
+    const found = (agentCache?.list ?? (agentCache = { at: Date.now(), list: await detectAgents() }).list).find(a => a.id === id);
+    return found?.installed && found.where && !found.where.endsWith(".app") ? found.where : undefined;
+  }
+
+  const tasks = new TaskBook(store.dir);
+
+  /** Hands a task to an agent: records it, runs it headlessly in the background, records how it ended. */
+  async function startTask(id: string, input: { task: string; model?: string; cwd?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
+    const bin = await agentBinary(id);
+    if (!bin) throw new Error(`没有找到 ${id} 的命令`);
+    const b = store.binding(id);
+    const model = input.model ?? (b ? `${b.providerId}/${b.model}` : "");
+    if (!model || !resolveModel(store, model)) throw new Error(`${id} 还没有选模型：在 EasySwitch 里给它选一个，或者在调用时传 model（用 list_models 看有哪些）`);
+    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}) });
+    const done = runHeadless(id, { bin, port, model, task: input.task }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+      .then(r => tasks.finish(task.id, r)!)
+      .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
+    return { task, done };
+  }
+
+  const mcpDeps: McpDeps = {
+    store, secrets, log: pushLog,
+    async agents() {
+      const out: Array<{ id: string; name: string; model?: string }> = [];
+      for (const a of AGENTS) {
+        if (!LAUNCHERS[a.id]?.headless || !(await agentBinary(a.id))) continue;
+        const b = store.binding(a.id);
+        out.push({ id: a.id, name: a.name, ...(b ? { model: `${b.providerId}/${b.model}` } : {}) });
+      }
+      return out;
+    },
+    async run(id, input) {
+      const { done } = await startTask(id, input);
+      const t = await done;
+      return { exitCode: t.exitCode ?? null, output: t.output ?? "", timedOut: t.status === "timeout", model: t.model };
+    },
+  };
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
 
   /** Adds a provider, lists models, then probes with the best model available. */
@@ -208,9 +252,42 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         accounts: store.accounts().map(publicAccount),
         accountSettings: store.accountSettings(),
         display: store.display(),
+        settings: store.settings(),
         native: nativeFiles(),
         log,
       });
+      return;
+    }
+
+    // --- tasks: hand work to an agent, watch it, read what came back ---------
+    if (path === "/api/tasks" && method === "GET") {
+      json(res, 200, { tasks: tasks.list(), running: tasks.running() });
+      return;
+    }
+    if (path === "/api/tasks" && method === "DELETE") {
+      json(res, 200, { cleared: tasks.clearFinished() });
+      return;
+    }
+    if (path === "/api/tasks" && method === "POST") {
+      const agent = String(body.agent ?? "");
+      const text = String(body.task ?? "").trim();
+      if (!agent || !text) { json(res, 400, { error: "需要选一个 agent，并写清楚任务" }); return; }
+      if (!LAUNCHERS[agent]?.headless) { json(res, 409, { error: "这个 agent 还没有无界面的调用方式" }); return; }
+      try {
+        const { task } = await startTask(agent, {
+          task: text, from: "console", depth: 1,
+          ...(typeof body.model === "string" && body.model ? { model: body.model } : {}),
+          ...(typeof body.cwd === "string" && body.cwd.startsWith("/") ? { cwd: body.cwd } : {}),
+        });
+        json(res, 202, { task });
+      } catch (error) {
+        json(res, 409, { error: String((error as Error).message ?? error) });
+      }
+      return;
+    }
+    const taskStop = /^\/api\/tasks\/(t-[a-z0-9]+)\/stop$/.exec(path);
+    if (taskStop && method === "POST") {
+      json(res, tasks.stop(taskStop[1] ?? "") ? 200 : 404, { ok: tasks.get(taskStop[1] ?? "")?.status === "running" });
       return;
     }
 
@@ -245,6 +322,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const result = await restartChatgpt(launcher);
       json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: Boolean(launcher), staticCatalog: status.staticCatalog } : { error: result.error });
       return;
+    }
+
+    if (path === "/api/settings") {
+      if (method === "GET") { json(res, 200, store.settings()); return; }
+      if (method === "PUT") {
+        json(res, 200, store.setSettings(typeof body.agentCalls === "boolean" ? { agentCalls: body.agentCalls } : {}));
+        return;
+      }
     }
 
     // --- billing: display currency, per-provider billing mode and prices ----
@@ -288,18 +373,19 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null })) });
       return;
     }
-    const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|run)$/.exec(path);
+    const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/launch$/.exec(path);
     if (agentAction && method === "POST") {
-      const [, id, action] = agentAction as unknown as [string, string, "launch" | "run"];
+      const id = agentAction[1] ?? "";
       const found = (agentCache?.list ?? await detectAgents()).find(a => a.id === id);
       const launcher = LAUNCHERS[id];
       const binding = store.binding(id);
-      if (!found?.installed || !found.where || found.where.endsWith(".app")) {
+      const bin = await agentBinary(id);
+      if (!found || !bin) {
         json(res, 404, { error: "没有检测到这个 agent 的命令" });
         return;
       }
-      if (!launcher || !(action === "launch" ? launcher.interactive : launcher.headless)) {
-        json(res, 409, { error: action === "launch" ? "这个 agent 还没有接入交互启动" : "这个 agent 还没有无界面的调用方式" });
+      if (!launcher?.interactive) {
+        json(res, 409, { error: "这个 agent 还没有接入交互启动" });
         return;
       }
       const model = typeof body.model === "string" && body.model ? body.model : binding ? `${binding.providerId}/${binding.model}` : "";
@@ -307,20 +393,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 409, { error: "先给这个 agent 选一个模型" });
         return;
       }
-      if (action === "run") {
-        const task = String(body.task ?? "").trim();
-        if (!task) { json(res, 400, { error: "需要任务内容" }); return; }
-        const cwd = typeof body.cwd === "string" && body.cwd.startsWith("/") ? body.cwd : undefined;
-        try {
-          const result = await runHeadless(id, { bin: found.where, port, model, task }, { ...(cwd ? { cwd } : {}) });
-          json(res, 200, { ...result, agent: id, model, verified: launcher.verified });
-        } catch (error) {
-          json(res, 500, { error: String((error as Error).message ?? error) });
-        }
-        return;
-      }
       const sessionDir = newSessionDir();
-      const spec = launcher.interactive!({ bin: found.where, port, model, token: sessionToken(id), sessionDir });
+      const token = sessionToken(id);
+      const spec = launcher.interactive({ bin, port, model, token, sessionDir, ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
       materialize(spec, sessionDir);
       await launchInTerminal(commandLine(spec), `${found.name} · ${model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`);
       json(res, 200, { ok: true, model, verified: launcher.verified });
@@ -664,9 +739,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       const exposed = `${binding.providerId}/${binding.model}`;
       const catalog = harness === "codex" ? await writeCodexCatalog(binary, store.dir, store.providers()) : undefined;
+      const token = sessionToken(harness);
+      const mcp = store.settings().agentCalls ? mcpEndpoint(port, token, 0) : undefined;
       const command = harness === "codex"
-        ? codexCommandLine(binary, port, exposed, catalog)
-        : claudeCommandLine(binary, claudeEnv(port, exposed, `es-session-${randomUUID()}`));
+        ? codexCommandLine(binary, port, exposed, catalog, mcp)
+        : claudeCommandLine(binary, claudeEnv(port, exposed, token), mcp);
       if (method === "POST") {
         await launchInTerminal(command, `EasySwitch 增强会话（${label}）：${exposed}（只在这个窗口生效，关掉窗口即回到原生）`);
       }
@@ -712,6 +789,19 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         await handleResponses(req, res, await readBody(req), { store, secrets, log: pushLog });
+        return;
+      }
+      if (path === "/mcp") {
+        await handleMcp(req, res, req.method === "POST" ? await readBody(req) : "", mcpDeps);
+        return;
+      }
+      if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
+        json(res, 200, listGeminiModels({ store, secrets, log: pushLog }));
+        return;
+      }
+      const geminiMatch = req.method === "POST" ? GEMINI_PATH.exec(path) : null;
+      if (geminiMatch) {
+        await handleGemini(req, res, geminiMatch, await readBody(req), { store, secrets, log: pushLog });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {

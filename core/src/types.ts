@@ -122,6 +122,12 @@ export interface Account {
   restUntil?: string;
 }
 
+/** Switches that apply to every launch. */
+export interface Settings {
+  /** Augmented sessions get the EasySwitch MCP server, so any agent can hand work to the others. */
+  agentCalls: boolean;
+}
+
 /** How money is shown: USD as priced, or converted at the user's own rate. */
 export interface DisplaySettings {
   currency: "USD" | "CNY";

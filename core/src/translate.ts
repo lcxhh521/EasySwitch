@@ -40,12 +40,21 @@ export interface ChatRequest {
   top_p?: number;
 }
 
+/** Codex groups some tools (MCP servers, its sub-agent tools) into `namespace` tools; Chat only has flat functions. */
+export type NamespaceMap = ReadonlyMap<string, { namespace: string; name: string }>;
+
+export function flatToolName(namespace: string, name: string): string {
+  return `${namespace}__${name}`;
+}
+
 export interface Translation {
   chat: ChatRequest;
   /** Tool names that were `custom` (freeform) tools in the original request. */
   customTools: Set<string>;
   /** What could not be carried over, for the log and the UI. */
   dropped: string[];
+  /** Flattened function name → the namespace and bare name Codex knows it by. */
+  namespaced: NamespaceMap;
 }
 
 function textOf(content: unknown): string {
@@ -116,7 +125,10 @@ export function responsesToChat(body: Json, upstreamModel: string, opts: { strea
         pushToolCall({
           id: String(item.call_id ?? item.id),
           type: "function",
-          function: { name: String(item.name), arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}) },
+          function: {
+            name: typeof item.namespace === "string" && item.namespace ? flatToolName(item.namespace, String(item.name)) : String(item.name),
+            arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
+          },
         });
         break;
       case "custom_tool_call":
@@ -139,9 +151,17 @@ export function responsesToChat(body: Json, upstreamModel: string, opts: { strea
   }
 
   const tools: Json[] = [];
+  const namespaced = new Map<string, { namespace: string; name: string }>();
   for (const raw of Array.isArray(body.tools) ? body.tools : []) {
     const tool = raw as Json;
-    if (tool.type === "function") {
+    if (tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) {
+      for (const inner of tool.tools as Json[]) {
+        if (inner.type !== "function") { dropped.push(`tool:namespace:${tool.name}:${String(inner.type)}`); continue; }
+        const flat = flatToolName(tool.name, String(inner.name));
+        namespaced.set(flat, { namespace: tool.name, name: String(inner.name) });
+        tools.push({ type: "function", function: { name: flat, description: inner.description ?? "", parameters: inner.parameters ?? { type: "object", properties: {} } } });
+      }
+    } else if (tool.type === "function") {
       tools.push({
         type: "function",
         function: { name: tool.name, description: tool.description ?? "", parameters: tool.parameters ?? { type: "object", properties: {} } },
@@ -179,7 +199,7 @@ export function responsesToChat(body: Json, upstreamModel: string, opts: { strea
   if (typeof body.max_output_tokens === "number") chat.max_tokens = body.max_output_tokens;
   if (typeof body.temperature === "number") chat.temperature = body.temperature;
   if (typeof body.top_p === "number") chat.top_p = body.top_p;
-  return { chat, customTools, dropped };
+  return { chat, customTools, dropped, namespaced };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,12 +262,20 @@ export class ResponsesStream {
   private readonly callIds: string[] = [];
   private readonly model: string;
   private readonly customTools: ReadonlySet<string>;
+  private readonly namespaced: NamespaceMap;
   private readonly write: (chunk: string) => void;
 
-  constructor(model: string, customTools: ReadonlySet<string>, write: (chunk: string) => void) {
+  constructor(model: string, customTools: ReadonlySet<string>, write: (chunk: string) => void, namespaced: NamespaceMap = new Map()) {
     this.model = model;
     this.customTools = customTools;
     this.write = write;
+    this.namespaced = namespaced;
+  }
+
+  /** The function_call fields for a tool the model named: Codex wants namespace and bare name back. */
+  private callFields(name: string): { name: string; namespace?: string } {
+    const ns = this.namespaced.get(name);
+    return ns ? { namespace: ns.namespace, name: ns.name } : { name };
   }
 
   private emit(type: string, payload: Json): void {
@@ -337,7 +365,7 @@ export class ResponsesStream {
           output_index: state.outputIndex,
           item: state.custom
             ? { id: state.itemId, type: "custom_tool_call", call_id: state.callId, name: state.name, input: "", status: "in_progress" }
-            : { id: state.itemId, type: "function_call", call_id: state.callId, name: state.name, arguments: "", status: "in_progress" },
+            : { id: state.itemId, type: "function_call", call_id: state.callId, ...this.callFields(state.name), arguments: "", status: "in_progress" },
         });
       } else if (typeof fn.name === "string" && fn.name && !state.name) {
         state.name = fn.name;
@@ -366,7 +394,7 @@ export class ResponsesStream {
       } else {
         const args = state.args || "{}";
         this.emit("response.function_call_arguments.done", { item_id: state.itemId, output_index: state.outputIndex, arguments: args });
-        item = { id: state.itemId, type: "function_call", call_id: state.callId, name: state.name, arguments: args, status: "completed" };
+        item = { id: state.itemId, type: "function_call", call_id: state.callId, ...this.callFields(state.name), arguments: args, status: "completed" };
       }
       this.output[state.outputIndex] = item;
       this.emit("response.output_item.done", { output_index: state.outputIndex, item });

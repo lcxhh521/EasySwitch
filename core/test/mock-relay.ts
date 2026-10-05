@@ -36,6 +36,9 @@ function decide(body: Json): Reply {
   const user = lastUserText(messages);
   const last = messages[messages.length - 1] as Json | undefined;
   if (tools.includes("get_weather") && last?.role === "user") return { toolCall: { name: "get_weather", arguments: JSON.stringify({ city: "Paris" }) } };
+  // EasySwitch's own MCP tool as an agent exposes it (the prefix differs between harnesses).
+  const listAgents = tools.find(t => typeof t === "string" && /list_agents$/.test(t));
+  if (listAgents && last?.role === "user" && /list the agents/i.test(user)) return { toolCall: { name: listAgents as string, arguments: "{}" } };
   if (/pong/.test(user) && !tools.length) return { text: "pong" };
   if (/Count from 1 to 5/.test(user)) return { text: "1 2 3 4 5" };
   if (tools.includes("exec_command") && last?.role === "user") {

@@ -28,8 +28,9 @@ let chatgptConfirm = null; // "enhance" | "native" while the restart notice is o
 const openDetails = new Set();
 const keepOpen = id => (openDetails.has(id) ? "open" : "");
 
-let taskOpen = null; // agent id whose "hand it a task" form is open
-const taskResults = {}; // agent id -> { running, output, exitCode, timedOut }
+let taskList = null; // /api/tasks
+const taskOpenIds = new Set(); // task ids whose output is expanded
+let taskNote = "";
 let agentList = null; // every agent we know of, from /api/agents
 let ocxImport = null; // { candidates, chosen:Set } while the opencodex import panel is open
 let presets = [];
@@ -228,7 +229,6 @@ function agentCatalog() {
     const face = binding && provider
       ? `${icon(provider.icon)}<span class="label">${esc(binding.model)}<small>${esc(provider.name)}</small></span>`
       : `<span class="label">选个模型<small>用哪个模型来源</small></span>`;
-    const result = taskResults[a.id];
     return `
     <div class="row">
       ${icon(a.icon, "lg")}
@@ -236,15 +236,8 @@ function agentCatalog() {
       ${SUPPORT_CHIP[a.support]}
       ${can ? `<button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>` : ""}
       ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
-      ${can?.headless ? `<button class="btn secondary" data-agent-task="${esc(a.id)}" ${binding ? "" : "disabled"}>交给它一个任务</button>` : ""}
       ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
-    </div>
-    ${taskOpen === a.id ? `<form class="form" data-run-form="${esc(a.id)}" style="padding:0 18px 14px">
-      <div class="field"><label>任务（它会在这个文件夹里直接动手，默认是一个空的临时目录）</label><textarea name="task" rows="3" placeholder="例如：读一下 README，总结这个项目是做什么的"></textarea></div>
-      <div class="field"><label>工作目录（可选，绝对路径）</label><input type="text" name="cwd" placeholder="/Users/你/项目"></div>
-      <div class="controls"><button class="btn" type="submit" ${result?.running ? "disabled" : ""}>${result?.running ? "运行中…" : "运行"}</button><button class="btn secondary" type="button" data-agent-task-close>收起</button></div>
-      ${result?.output !== undefined ? `<pre class="mono" style="white-space:pre-wrap;max-height:320px;overflow:auto;background:var(--pill);padding:10px;border-radius:9px">${esc(result.output || "(没有输出)")}</pre><p class="hint">${result.timedOut ? "超时已停止 · " : ""}退出码 ${result.exitCode ?? "—"}</p>` : ""}
-    </form>` : ""}`;
+    </div>`;
   };
   const here = rest.filter(a => a.installed);
   const other = rest.filter(a => !a.installed);
@@ -253,6 +246,42 @@ function agentCatalog() {
     <div class="card">${here.map(row).join("") || `<div class="empty">还没检测到其他 agent</div>`}</div>
     <details class="card" data-keep="agents-other" ${keepOpen("agents-other")} style="margin-top:12px"><summary class="row" style="cursor:pointer"><span class="grow title">还没安装的（${other.length}）</span></summary>${other.map(row).join("")}</details>
     <p class="hint">「接入中」的 agent 都支持按次启动时指向 EasySwitch，正在逐个接入；「只能打开」的是闭源或绑定登录的，没有可改的端点，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>`;
+}
+
+const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已停止", ""], timeout: ["超时", "warn"] };
+
+function renderTasks() {
+  const agents = (agentList ?? []).filter(a => a.installed && a.can?.headless && !a.where?.endsWith(".app"));
+  const models = (state.providers ?? []).flatMap(p => modelsOf(p).map(m => `${p.id}/${m}`));
+  const list = taskList?.tasks ?? [];
+  const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
+  const form = agents.length ? `
+    <form class="form card" data-task-form style="padding:16px 18px">
+      <div class="field"><label>交给谁</label><select name="agent">${agents.map(a => `<option value="${esc(a.id)}">${esc(a.name)}${state.bindings?.[a.id] ? "" : "（还没选模型）"}</option>`).join("")}</select></div>
+      <div class="field"><label>任务（把背景写全，它看不到你们之前的对话）</label><textarea name="task" rows="3" required placeholder="例如：读一下 README，总结这个项目是做什么的"></textarea></div>
+      <div class="field"><label>用哪个模型（可选，不选就用它自己的）</label><select name="model"><option value="">它自己的模型</option>${models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("")}</select></div>
+      <div class="field"><label>工作目录（可选，绝对路径；不填是一个空的临时目录）</label><input type="text" name="cwd" placeholder="/Users/你/项目"></div>
+      <div class="controls"><button class="btn" type="submit">派出去</button></div>
+      ${taskNote ? `<p class="hint" style="color:var(--bad)">${esc(taskNote)}</p>` : ""}
+    </form>` : `<div class="card empty">${agentList ? "还没有可以接活的 agent：到 Agent 页确认已安装并选好模型" : "正在检测…"}</div>`;
+  const row = t => {
+    const [label, tone] = TASK_STATUS[t.status] ?? [t.status, ""];
+    const open = taskOpenIds.has(t.id);
+    return `
+    <div class="row" style="cursor:pointer" data-task-toggle="${esc(t.id)}">
+      <div class="grow"><div class="title">${esc(t.task.length > 80 ? t.task.slice(0, 80) + "…" : t.task)}</div>
+        <div class="sub">${t.from === "console" ? "你" : esc(nameOf(t.from))} → ${esc(nameOf(t.agent))} · ${esc(t.model)} · ${new Date(t.at).toLocaleTimeString()}${t.ms ? ` · ${(t.ms / 1000).toFixed(1)} 秒` : ""}</div></div>
+      <span class="chip ${tone}">${label}</span>
+      ${t.status === "running" ? `<button class="btn secondary" data-task-stop="${esc(t.id)}">停止</button>` : ""}
+    </div>
+    ${open ? `<div style="padding:0 18px 14px">${t.status === "running" ? `<p class="hint">正在做，做完会出现在这里。</p>` : `<pre class="mono" style="white-space:pre-wrap;max-height:360px;overflow:auto;background:var(--pill);padding:10px;border-radius:9px">${esc(t.output || "(没有输出)")}</pre>`}</div>` : ""}`;
+  };
+  return `
+    <div class="section-head"><h2>交给 Agent 一个任务</h2><span class="aside">它在后台做，你和其他 agent 都能看到进度</span></div>
+    ${form}
+    <div class="section-head"><h2>任务</h2><span class="aside">${list.length ? `${list.length} 条${taskList.running ? `，${taskList.running} 条在运行` : ""}` : ""} ${list.some(t => t.status !== "running") ? `<button class="btn secondary" data-task-clear>清空已完成</button>` : ""}</span></div>
+    <div class="card">${list.map(row).join("") || `<div class="empty">还没有任务。你在这里派的、以及 agent 之间互相派的，都会记在这里。</div>`}</div>
+    <p class="hint">任务里的 agent 按它们各自默认的只读权限运行：能读文件、搜索、思考，不会擅自改文件。</p>`;
 }
 
 function renderAgents() {
@@ -827,7 +856,7 @@ function render() {
     main.innerHTML = `<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
     return;
   }
-  const views = { agents: renderAgents, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage };
+  const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage };
   main.innerHTML = (views[page] ?? renderAgents)();
   if (page === "sessions") requestAnimationFrame(drawFlowLines);
   if (page === "usage") requestAnimationFrame(drawChart);
@@ -835,7 +864,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || ocxImport || importFormOpen || taskOpen || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || ocxImport || importFormOpen || document.activeElement?.matches("input, select, textarea");
 }
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
@@ -847,6 +876,10 @@ async function refresh(force = false) {
     state = null;
   }
   if (page === "agents" && !PANEL) chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
+  if (page === "tasks") {
+    taskList = await call("GET", "/api/tasks").catch(() => taskList);
+    if (!agentList) agentList = await call("GET", "/api/agents").then(r => r.agents).catch(() => null);
+  }
   if (page === "agents" && !PANEL && !agentList) {
     agentList = await call("GET", "/api/agents").then(r => r.agents).catch(() => null);
     if (agentList) force = true;
@@ -959,9 +992,11 @@ document.addEventListener("click", async e => {
     try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { toast(error.message); }
     return;
   }
-  const agentTask = t.closest("[data-agent-task]");
-  if (agentTask) { taskOpen = taskOpen === agentTask.dataset.agentTask ? null : agentTask.dataset.agentTask; render(); return; }
-  if (t.closest("[data-agent-task-close]")) { taskOpen = null; render(); return; }
+  const taskToggle = t.closest("[data-task-toggle]");
+  if (taskToggle) { const id = taskToggle.dataset.taskToggle; if (taskOpenIds.has(id)) taskOpenIds.delete(id); else taskOpenIds.add(id); render(); return; }
+  const taskStop = t.closest("[data-task-stop]");
+  if (taskStop) { await call("POST", `/api/tasks/${taskStop.dataset.taskStop}/stop`).catch(() => {}); await refresh(true); return; }
+  if (t.closest("[data-task-clear]")) { await call("DELETE", "/api/tasks").catch(() => {}); await refresh(true); return; }
 
   const agentOpen = t.closest("[data-agent-open]");
   if (agentOpen) {
@@ -1104,20 +1139,20 @@ document.addEventListener("submit", async e => {
     await refresh(true);
     return;
   }
-  const runForm = e.target.closest("form[data-run-form]");
+  const runForm = e.target.closest("form[data-task-form]");
   if (runForm) {
     e.preventDefault();
-    const id = runForm.dataset.runForm;
     const f = new FormData(runForm);
-    taskResults[id] = { running: true };
-    render();
+    taskNote = "";
     try {
-      const r = await call("POST", `/api/agents/${id}/run`, { task: f.get("task"), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) });
-      taskResults[id] = { output: r.output, exitCode: r.exitCode, timedOut: r.timedOut };
+      const body = { agent: f.get("agent"), task: f.get("task"), ...(f.get("model") ? { model: f.get("model") } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
+      const r = await call("POST", "/api/tasks", body);
+      taskOpenIds.add(r.task.id);
+      runForm.reset();
     } catch (error) {
-      taskResults[id] = { output: `出错：${error.message}`, exitCode: null };
+      taskNote = `没有派出去：${error.message}`;
     }
-    render();
+    await refresh(true);
     return;
   }
   const priceForm = e.target.closest("form[data-price-form]");

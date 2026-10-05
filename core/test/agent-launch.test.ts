@@ -76,10 +76,32 @@ test("the real DeepSeek Harness, handed a task headlessly, answers through the g
   assert.ok(relay.requests.length > before, "the request went through the gateway to the provider");
 });
 
-test("the run endpoint refuses without a model or a task, and never touches an agent that is not installed", async () => {
+test("the task endpoint refuses without a task, and never touches an agent that is not installed", async () => {
   const H = { "content-type": "application/json", "x-easyswitch": "1" };
-  const missing = await fetch(`http://127.0.0.1:${port}/api/agents/aider/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "x", model: `${providerId}/mock-coder` }) });
-  assert.equal(missing.status, 404, "aider is not installed here");
+  const empty = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST", headers: H, body: JSON.stringify({ agent: "dsh", task: "  " }) });
+  assert.equal(empty.status, 400);
+  const missing = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST", headers: H, body: JSON.stringify({ agent: "aider", task: "x", model: `${providerId}/mock-coder` }) });
+  assert.equal(missing.status, 409, "aider is not installed here");
   const unknown = await fetch(`http://127.0.0.1:${port}/api/bindings/not-an-agent`, { method: "PUT", headers: H, body: JSON.stringify({ providerId, model: "mock-coder" }) });
   assert.equal(unknown.status, 404);
+});
+
+test("a task handed over from the console is recorded, runs in the background and ends with its answer", async t => {
+  if (!existsSync(DSH)) { t.skip("DeepSeek Harness not installed"); return; }
+  const H = { "content-type": "application/json", "x-easyswitch": "1" };
+  const started = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST", headers: H, body: JSON.stringify({ agent: "dsh", task: "Reply with exactly the word: pong", model: `${providerId}/mock-coder` }) });
+  assert.equal(started.status, 202);
+  const { task } = (await started.json()) as { task: { id: string; status: string; from: string } };
+  assert.equal(task.status, "running");
+  assert.equal(task.from, "console");
+  let final: { status: string; output?: string } | undefined;
+  for (let i = 0; i < 120 && !final; i++) {
+    const list = (await (await fetch(`http://127.0.0.1:${port}/api/tasks`)).json()) as { tasks: Array<{ id: string; status: string; output?: string }> };
+    const mine = list.tasks.find(x => x.id === task.id);
+    if (mine && mine.status !== "running") final = mine;
+    else await new Promise(r => setTimeout(r, 500));
+  }
+  assert.equal(final?.status, "done");
+  assert.match(final?.output ?? "", /Hello from the mock relay|pong/i);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/tasks/${task.id}/stop`, { method: "POST", headers: H })).status, 404, "a finished task cannot be stopped");
 });

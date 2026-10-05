@@ -89,7 +89,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     return;
   }
 
-  const { chat, customTools, dropped } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
+  const { chat, customTools, dropped, namespaced } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
   shapeChat(chat, {
     quirks: quirksFor(provider.baseUrl, model),
     ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}),
@@ -117,7 +117,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   }
 
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-  const stream = new ResponsesStream(model, customTools, chunk => res.write(chunk));
+  const stream = new ResponsesStream(model, customTools, chunk => res.write(chunk), namespaced);
   stream.start();
   try {
     for await (const data of sseData(upstream.body)) {
