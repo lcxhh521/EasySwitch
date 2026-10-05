@@ -23,6 +23,7 @@ import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
+import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
 import { AUTO_AGENT, describeWhen, matchingRules, parseRule, type TaskFacts } from "./dispatch.ts";
 import { isMimoFree } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
@@ -694,7 +695,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/agents" && method === "GET") {
       if (!agentCache || Date.now() - agentCache.at > 30_000) agentCache = { at: Date.now(), list: await detectAgents() };
       await Promise.all(agentCache.list.filter(a => a.installed && LAUNCHERS[a.id]).map(a => levelsOf(a.id)));
-      json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null })) });
+      const matrix = capabilityMatrix(agentCache.list);
+      json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null, caps: matrix[a.id] })), coverage: coverage(matrix), features: FEATURES });
       return;
     }
     const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|command)$/.exec(path);

@@ -236,3 +236,15 @@ body.panel .panel-foot button:hover { color: var(--fg); background: var(--pill);
 .ic.letter.sm { font-size: 10px; border-radius: 5px; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ic.letter { background: hsl(var(--h) 35% 24%); color: hsl(var(--h) 70% 82%); } }
 :root[data-theme="dark"] .ic.letter { background: hsl(var(--h) 35% 24%); color: hsl(var(--h) 70% 82%); }
+
+/* ---- capability dots and the coverage table ---- */
+.caps { display: flex; gap: 6px; margin-top: 3px; font-size: 11px; line-height: 1; }
+.cap { cursor: default; }
+.cap.ok { color: var(--green); } .cap.doc { color: var(--accent); } .cap.man { color: #8a5cc2; }
+.cap.no { color: var(--faint); } .cap.todo { color: var(--amber); } .cap.na { color: var(--faint); opacity: .5; }
+.chip.cap-ok { background: var(--green-soft); color: var(--green); }
+.chip.cap-doc { background: var(--accent-soft); color: var(--accent); }
+.chip.cap-man { background: #efe6f8; color: #8a5cc2; }
+.chip.cap-no { background: var(--pill); color: var(--muted); }
+.chip.cap-todo { background: var(--amber-soft); color: var(--amber); }
+.chip.cap-na { background: none; color: var(--faint); }

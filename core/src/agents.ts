@@ -48,10 +48,11 @@ export const AGENTS: AgentInfo[] = [
   // Ready
   A("codex", "ChatGPT", "OpenAI", "desktop", "ready", ["responses"], "openai", "命令行和桌面端；每次启动单独指向 EasySwitch，不改 ~/.codex", { bins: ["codex"], apps: ["ChatGPT"] }),
   A("claude", "Claude Code", "Anthropic", "cli", "ready", ["anthropic"], "claudecode-color", "环境变量 + --settings，只对这一次启动生效；Claude 订阅流量不经过 EasySwitch", { bins: ["claude"], paths: [join(homedir(), ".local/bin/claude")] }),
+  A("claude-desktop", "Claude 桌面端", "Anthropic", "desktop", "open", [], "claude-color", "模型菜单由 claude.ai 账号决定，没有官方扩展口；我们不拦截、不注入，只检测并打开", { apps: ["Claude"] }),
 
   // Planned: open protocol, per-launch override exists
   A("qwen-code", "Qwen Code", "阿里", "cli", "planned", ["chat"], "qwen-color", "OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL", { bins: ["qwen"] }),
-  A("gemini-cli", "Gemini CLI", "Google", "cli", "ready", ["gemini"], "gemini-color", "GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY（网关已提供 Gemini 协议入口）", { bins: ["gemini"] }),
+  A("gemini-cli", "Gemini CLI", "Google", "cli", "planned", ["gemini"], "gemini-color", "GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY（网关已提供 Gemini 协议入口）", { bins: ["gemini"] }),
   A("opencode", "opencode", "sst", "cli", "planned", ["chat", "anthropic", "responses"], "opencode", "OPENCODE_CONFIG_CONTENT 内联配置", { bins: ["opencode"] }),
   A("dsh", "DeepSeek Harness", "深度求索", "cli", "planned", ["chat"], "deepseek-harness", "dsh --patch 每次启动叠加一层配置", { bins: ["dsh"], apps: ["DeepSeek Harness"], paths: ["/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"] }),
   A("kimi-cli", "Kimi Code", "月之暗面", "cli", "planned", ["chat"], "kimi-color", "KIMI_CODE_HOME 临时目录 + 配置", { bins: ["kimi"] }),

@@ -32,6 +32,51 @@ let taskList = null; // /api/tasks
 const taskOpenIds = new Set(); // task ids whose output is expanded
 let taskNote = "";
 let agentList = null; // every agent we know of, from /api/agents
+let agentCoverage = null; // { coverage, features } from the same call: what is done for which agent
+async function loadAgents() {
+  const r = await call("GET", "/api/agents").catch(() => null);
+  if (!r) return null;
+  agentCoverage = { coverage: r.coverage ?? [], features: r.features ?? [] };
+  return r.agents;
+}
+
+const CAP_STATE = {
+  verified: { label: "已实测", cls: "ok", dot: "●" },
+  documented: { label: "按文档做了，未实测", cls: "doc", dot: "◐" },
+  manual: { label: "手动配置", cls: "man", dot: "◆" },
+  impossible: { label: "做不了", cls: "no", dot: "✕" },
+  todo: { label: "还没做", cls: "todo", dot: "○" },
+  na: { label: "不适用", cls: "na", dot: "·" },
+};
+
+/** One small dot per feature under an agent's name; hover for the state and the reason. */
+function capStrip(a) {
+  if (!a.caps || !agentCoverage) return "";
+  return `<div class="caps">${agentCoverage.features.map(f => {
+    const c = a.caps[f.id];
+    const st = CAP_STATE[c.state];
+    return `<span class="cap ${st.cls}" title="${esc(f.label)}：${esc(st.label)}${c.note ? ` — ${esc(c.note)}` : ""}">${st.dot}</span>`;
+  }).join("")}</div>`;
+}
+
+/** The whole picture: every agent against every feature, so nothing hides behind the one or two that work. */
+function coverageCard() {
+  if (!agentList || !agentCoverage?.features.length) return "";
+  const feats = agentCoverage.features;
+  const summary = agentCoverage.coverage.map(r => `<div class="tile"><div class="v">${r.settled}<small>/${r.applies}</small></div><div class="l">${esc(r.label)}</div><div class="d">实测 ${r.counts.verified} · 按文档 ${r.counts.documented} · 做不了 ${r.counts.impossible} · <b>没做 ${r.counts.todo}</b></div></div>`).join("");
+  const cell = (a, f) => {
+    const c = a.caps[f.id];
+    const st = CAP_STATE[c.state];
+    return `<td><span class="chip cap-${st.cls}" title="${esc(c.note ?? st.label)}">${st.label.replace("按文档做了，未实测", "按文档").replace("手动配置", "手动")}</span></td>`;
+  };
+  return `
+    <details class="card" data-keep="coverage" ${keepOpen("coverage")} style="margin-top:12px">
+      <summary class="row" style="cursor:pointer"><span class="grow title">覆盖情况：每个功能在每个 agent 上做到哪了</span><span class="hint">已定 = 已做或明确做不了；「没做」是欠的账</span></summary>
+      <div class="tiles" style="grid-template-columns:repeat(3,1fr)">${summary}</div>
+      <div style="overflow-x:auto"><table class="tbl"><tr><th>Agent</th>${feats.map(f => `<th title="${esc(f.hint)}">${esc(f.label)}</th>`).join("")}</tr>
+        ${agentList.map(a => `<tr><td>${icon(a.icon, "sm")} ${esc(a.name)}</td>${feats.map(f => cell(a, f)).join("")}</tr>`).join("")}</table></div>
+    </details>`;
+}
 let ocxImport = null; // { candidates, chosen:Set } while the opencodex import panel is open
 let presets = [];
 let popover = null;
@@ -283,7 +328,7 @@ function genericAgentRow(a) {
   return `
   <div class="row agent">
     <div class="id">${icon(a.icon, "lg")}
-      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div></div>
+      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div>${capStrip(a)}</div>
     </div>
     ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button></div>` : ""}
     ${can ? agentControls(a.id) : ""}
@@ -457,6 +502,7 @@ function renderAgents() {
     <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
     <p class="hint">在每个 agent 那一行里选主模型、想得多深、后台小任务和子 agent 用的模型，再点「启动」。会话里输入 <code>/model</code> 可以随时换。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT 和 Claude Code 永远不受影响。「接入中」的 agent 正在逐个接入；「只能打开」的是闭源或绑定登录的，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>
     ${state.providers.length ? "" : onboarding()}
+    ${coverageCard()}
     ${missing.length ? `<div class="section-head"><h2>未安装</h2><span class="aside">${missing.length} 个</span></div><div class="card">${missing.join("")}</div>` : ""}`;
 }
 
@@ -1141,10 +1187,10 @@ async function refresh(force = false) {
   if (page === "agents" && !PANEL) chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
   if (page === "tasks") {
     taskList = await call("GET", "/api/tasks").catch(() => taskList);
-    if (!agentList) agentList = await call("GET", "/api/agents").then(r => r.agents).catch(() => null);
+    if (!agentList) agentList = await loadAgents();
   }
   if (page === "agents" && !PANEL && !agentList) {
-    agentList = await call("GET", "/api/agents").then(r => r.agents).catch(() => null);
+    agentList = await loadAgents();
     if (agentList) force = true;
   }
   if (page === "usage" && (force || !usage)) await loadUsage();
