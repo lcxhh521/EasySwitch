@@ -72,7 +72,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 - **B7 其余 agent 的订阅当来源**：逐个调研，能接就接，不能接写明原因。
 - **B10 Vertex**、**B11 MiMo**（免 key 版已做；官方 API 预设在不在要核对）、**B12 DeepSeek/Kimi 的档位界面**、**B13 花费预算**、**B30 网关鉴权令牌**、**B31 原生 Keychain API**（现在用 `security` 命令）、**B32 README 刷新**（还有借鉴描述，要写成面向用户的）。
 - **B33 公开前清单**：见第 7 节。
-- **委托给本地 GPT、你不要碰**：**B20** Cursor、Kiro、Antigravity 的订阅适配；**B21** 协议层重构（按出站来源选适配器）。它们在用户本机的 `main` 工作区里进行，会改 `gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层。**你改动前先看这些文件在 `dev` 上是否被动过，避免冲突。**
+- **这两项原本是本地 GPT 的，用户 2026-10-06 改给你（Dot）**：**B20** Cursor、Kiro、Antigravity 的订阅适配；**B21** 协议层重构（按出站来源选适配器）。**注意：本地 GPT 在用户 Mac 的 `main` 工作区里已经做了一部分，还没提交**（B44 在让用户叫它推到云端分支 `gpt-wip`）。开工前先看云端有没有 `gpt-wip`（或类似）分支，有就以它为起点，别从零重做；没有就问用户。这两项会改 `gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层。**你改动前先看这些文件在 `dev` 上是否被动过，避免冲突。**
 
 ## 5. 借鉴别人代码的规矩
 
@@ -80,7 +80,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 
 ## 6. 工作方式
 
-- **分支**：开发在 `dev`；`main` 是 GPT 在本机的工作区。合 `dev` → `main` 要等 GPT 到停点，`main` 里有它未提交的改动和未跟踪的 `AGENTS.md`/`CLAUDE.md`/`PROVENANCE.md`，会撞名。
+- **分支**：开发在 `dev`；`main` 是本地 GPT 在用户 Mac 上的工作区（它的进展见 B44）。合 `dev` → `main` 要等 GPT 到停点或进展已推到云端，`main` 里有它未提交的改动和未跟踪的 `AGENTS.md`/`CLAUDE.md`/`PROVENANCE.md`，会撞名。
 - **提交前**：`npm run typecheck && npm test`；测试需要 `--test-force-exit`（已写在 `npm test` 里）；macOS 没有 `timeout`，限时用 `perl -e 'alarm N; exec @ARGV' -- cmd`。有些测试会起真实的 Hermes / dsh / Claude Code，云端没有这些程序时会自动跳过。
 - **改启动器就改测试**：`core/test/capabilities.test.ts` 会检查每个私有目录启动器：路径都在会话目录内、不碰用户主目录、JSON 合法、没有 MCP 时不写 MCP 条目。新增一个会挂 MCP 的启动器，要把它的 id 加进那个测试里的期望清单（这是故意的，防止悄悄多报）。
 - **档位语义**：agent 没有自己的档位参数时，不要在启动器里写死 `efforts`（会把“模型有 ultra 就能设 ultra”限死，`plan-provider.test.ts` 专门测这个）；agent 有自己的档位（有 flag）才在 `efforts` 里写它自己的词。

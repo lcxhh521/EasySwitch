@@ -1,6 +1,6 @@
 # EasySwitch 待办与开发计划
 
-唯一的需求清单，Claude 和 GPT 共用。规则：
+唯一的需求清单，所有在这个项目上干活的 agent（Claude、Dot、本地 GPT）共用。规则：
 
 1. **用户在对话里提的每个需求、变更、决定，立刻写进这里**（一条一行，带用户原话和日期），再动手。
 2. **收工前对照这份清单**：做完的标 `[x]` 并写“验证：”（提交号 / 测试名 / 实测结果）；没做完的保持原样；最后的回复里说清“做完几条、还剩几条、哪些是新增的”。
@@ -35,11 +35,13 @@
 - [x] B40 · 差异化写成长期方向：借鉴 Magpie 的地方不能变成“长得一样”，要走出自己的路；写进交接单和规则 — 来源：「虽然我们借鉴了magpie，但是我们一定要走出差异化的」（10-06）· 验证：HANDOVER.md 第 1.5 节、AGENTS.md 私有段
 - [ ] B41 · 差异化评审：把界面、信息架构、命名、功能逐项和 Magpie / opencodex 对一遍，列出相同点和我们的不同点，相同又没有理由的要改（现在 4 页界面和菜单栏面板是照它们的样子重做的）— 来源：同上（10-06）
 - [x] B42 · 新版 Claude Code 下 `es claude` 的真实测试失败 — 来源：全套测试发现（10-06）· 原因：不是 Claude Code 升级，是我加的 Stop 钩子（项目 .claude/settings.json）把在本仓库目录里运行的无界面 Claude 拦住了，因为待办里有「进行中」条目 · 验证：钩子改为跳过 EasySwitch 启动的会话（ANTHROPIC_BASE_URL 指向 127.0.0.1 或令牌以 es-session- 开头），capabilities.test.ts 新增用例，es-cli.test.ts 5/5 通过；旧提交 d040764 对照实验证明是这次引入的
+- [~] B43 · Claude 桌面端的本机实测由 Claude 自己做；Cursor/Kiro/Antigravity 原本说给 GPT 做（Claude 不碰，B20）— 来源：「claude桌面端实测这个也让claude自己测吧，然后之前说给gpt那几个也让他做」（10-06）· 备注：实测前后对比真实的 ~/Library/Application Support/Claude* 目录，证明没被改动
 
-## 委托 GPT（Claude 不碰）
+## 委托 Dot（Claude 不碰）
 
-- [~] B20 · Cursor、Kiro、Antigravity 的订阅适配 — 来源：「这几个我都交给gpt了」（10-05）· 备注：在 main 工作区进行
-- [ ] B21 · GPT 的协议层重构（按出站来源选适配器）— 来源：AGENTS.md 硬性原则 5 · 备注：在 main 进行
+- [ ] B20 · Cursor、Kiro、Antigravity 的订阅适配 — 来源：「这几个我都交给gpt了」（10-05），2026-10-06 改给 Dot：「是给gpt做的那个给dot做」· 备注：本地 GPT 在 main 工作区已有未提交的进展（见 B44）；协议事实在 AGENTS.md 私有段
+- [ ] B21 · 协议层重构（按出站来源选适配器）— 来源：AGENTS.md 硬性原则 5；原本是 GPT 的，2026-10-06 改给 Dot · 备注：本地 GPT 在 main 工作区已有未提交的进展，要先推到云端分支（见 B44）
+- [ ] B44 · 把本地 GPT 在 main 工作区里未提交的进展（风险档适配、协议层重构的 WIP）提交并推到云端一个分支（建议 `gpt-wip`），让 Dot 能看到再接着做，避免重复或丢失 — 来源：「是给gpt做的那个给dot做」（10-06）· 备注：需要用户让本地 GPT 去提交推送；Claude 不碰那个工作区
 
 ## 加固与发布
 
@@ -47,6 +49,6 @@
 - [ ] B31 · 原生 Keychain API（现在用 `security` 命令）— 来源：同上（10-05）
 - [ ] B32 · README 刷新（还有借鉴描述）— 来源：同上（10-06）
 - [ ] B33 · 公开前清单：按 PROVENANCE.md 逐项重写、换第三方图标，`make-public-snapshot.sh` 检查到 0 发现，再作为新仓库首次提交发布 — 来源：「等公开的时候一次性重写」「同意」（10-06）· 备注：当前基线 63 条
-- [ ] B34 · dev 合入 main：等 GPT 到停点，先处理 main 里未跟踪的 AGENTS.md / CLAUDE.md / PROVENANCE.md — 来源：分支分工（10-06）
+- [ ] B34 · dev 合入 main：等本地 GPT 到停点（或它的进展已推到云端），先处理 main 里未跟踪的 AGENTS.md / CLAUDE.md / PROVENANCE.md — 来源：分支分工（10-06）
 - [x] B35 · 两仓库发布策略、推送拦截钩子、发布检查脚本 — 来源：「同意」（10-06）· 验证：提交 898ff15，钩子 5 种情况实测，release-check 基线
 - [x] B36 · 待办机制：本文件 + 检查脚本 + 两个钩子 — 来源：「后面我们的待办和开发计划还是要列起来，每次收工前要自动检查…每次提的需求也全部都立刻写入待办」（10-06）· 验证：npm run backlog -- --check 通过；钩子见 .claude/settings.json

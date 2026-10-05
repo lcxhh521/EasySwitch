@@ -87,17 +87,17 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   cursor: {
     launch: { state: "impossible", note: NO_ENDPOINT },
     task: { state: "impossible", note: NO_ENDPOINT },
-    source: { state: "todo", note: "订阅适配由 GPT 在做" },
+    source: { state: "todo", note: "订阅适配由 Dot 接手（本地 GPT 已做的部分待推到云端）" },
   },
   kiro: {
     launch: { state: "impossible", note: "绑定 AWS 登录，没有本地可改的端点" },
     task: { state: "impossible", note: "绑定 AWS 登录，没有本地可改的端点" },
-    source: { state: "todo", note: "订阅适配由 GPT 在做" },
+    source: { state: "todo", note: "订阅适配由 Dot 接手（本地 GPT 已做的部分待推到云端）" },
   },
   antigravity: {
     launch: { state: "impossible", note: "绑定 Google 登录，没有自定义端点" },
     task: { state: "impossible", note: "绑定 Google 登录，没有自定义端点" },
-    source: { state: "todo", note: "订阅适配由 GPT 在做" },
+    source: { state: "todo", note: "订阅适配由 Dot 接手（本地 GPT 已做的部分待推到云端）" },
   },
   windsurf: {
     launch: { state: "impossible", note: "闭源，没有自定义端点" },
