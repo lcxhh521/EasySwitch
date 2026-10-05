@@ -22,6 +22,14 @@ export function authBase(): string {
   return process.env.EASYSWITCH_OPENAI_AUTH ?? "https://auth.openai.com";
 }
 
+/** The client of the Codex CLI. Signing in as it is one step for the user, and is what Hermes and opencodex do too. */
+export const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+/** ChatGPT's Codex backend, where a Codex-identity login is used (the same address the ChatGPT app's gateway forwards to). */
+export function codexBase(): string {
+  return (process.env.EASYSWITCH_CHATGPT_UPSTREAM ?? "https://chatgpt.com/backend-api/codex").replace(/\/+$/, "");
+}
+
 export function apiBase(): string {
   return process.env.EASYSWITCH_OPENAI_API ?? "https://api.openai.com/v1";
 }
@@ -32,6 +40,8 @@ const AGENT_NAME = "EasySwitch";
 
 export interface SiwcAccount {
   id: string;
+  /** "codex": signed in as the Codex client (device code), used on the Codex backend. Absent or "open": OpenAI's open route. */
+  kind?: "codex" | "open";
   /** What the user sees: their label, else the email. */
   label: string;
   email?: string;
@@ -86,7 +96,7 @@ async function getJson(url: string): Promise<Record<string, unknown>> {
 }
 
 /** Checks an ID token's signature against OpenAI's published keys, and its issuer, audience, expiry and nonce. */
-export async function validateIdToken(idToken: string, clientId: string, nonce: string): Promise<Claims> {
+export async function validateIdToken(idToken: string, clientId: string, nonce?: string): Promise<Claims> {
   const [h, p, s] = idToken.split(".");
   if (!h || !p || !s) throw new SiwcError("invalid", "the ID token is malformed");
   const header = JSON.parse(Buffer.from(h, "base64url").toString("utf8")) as { alg?: string; kid?: string };
@@ -101,7 +111,7 @@ export async function validateIdToken(idToken: string, clientId: string, nonce: 
   if (claims.iss !== config.issuer) throw new SiwcError("invalid", "the ID token comes from a different issuer");
   if (!aud.includes(clientId)) throw new SiwcError("invalid", "the ID token is for a different client");
   if (!claims.exp || claims.exp * 1000 < Date.now()) throw new SiwcError("invalid", "the ID token has expired");
-  if (claims.nonce !== nonce) throw new SiwcError("invalid", "the ID token's nonce does not match this sign-in");
+  if (nonce !== undefined && claims.nonce !== nonce) throw new SiwcError("invalid", "the ID token's nonce does not match this sign-in");
   if (!claims.sub) throw new SiwcError("invalid", "the ID token has no subject");
   return claims;
 }
@@ -111,6 +121,8 @@ export async function validateIdToken(idToken: string, clientId: string, nonce: 
 export interface SignIn {
   /** Where the browser has to go. */
   url: string;
+  /** Device-code sign-in: the code to type there. */
+  userCode?: string;
   /** Resolves with the saved account once the user has finished in the browser. */
   done: Promise<SiwcAccount>;
   cancel(): void;
@@ -235,9 +247,11 @@ export async function accessToken(deps: { storage: SiwcStorage; secrets: SecretS
   const job = (async () => {
     try {
       if (!tokens.refresh_token) throw new SiwcError("signin_required", "the login cannot be renewed, sign in again");
-      const res = await postForm(`${authBase()}/api/accounts/oauth/token`, {
-        grant_type: "refresh_token", client_id: account.clientId, refresh_token: tokens.refresh_token, resource: apiBase(),
-      });
+      const res = account.kind === "codex"
+        ? await postForm(`${authBase()}/oauth/token`, { grant_type: "refresh_token", client_id: CODEX_CLIENT_ID, refresh_token: tokens.refresh_token })
+        : await postForm(`${authBase()}/api/accounts/oauth/token`, {
+          grant_type: "refresh_token", client_id: account.clientId, refresh_token: tokens.refresh_token, resource: apiBase(),
+        });
       if (res.status !== 200) {
         const terminal = res.status === 400 || res.status === 401;
         if (terminal) deps.storage.save({ ...account, needsSignIn: true });
@@ -258,8 +272,10 @@ export async function accessToken(deps: { storage: SiwcStorage; secrets: SecretS
 }
 
 /** The models this account may use (`GET /v1/models`, entries meant for a picker). */
-export async function listModels(token: string): Promise<Array<{ slug: string; name: string; efforts?: string[] }>> {
-  const res = await fetch(`${apiBase()}/models`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) })
+export async function listModels(token: string, kind: "chatgpt" | "codex" = "chatgpt"): Promise<Array<{ slug: string; name: string; efforts?: string[] }>> {
+  // The Codex backend hides models from a client it thinks is old; ask as the newest possible one.
+  const target = planTarget(kind, token, kind === "codex" ? "/models?client_version=99.0.0" : "/models");
+  const res = await fetch(target.url, { headers: target.headers, signal: AbortSignal.timeout(15_000) })
     .catch((e: Error) => { throw new SiwcError("network", `OpenAI is unreachable: ${e.message}`); });
   if (!res.ok) throw new SiwcError(res.status === 401 ? "signin_required" : res.status === 403 ? "not_eligible" : "network", `the model list answered ${res.status}`);
   const json = (await res.json()) as { models?: Array<{ slug?: string; display_name?: string; visibility?: string; supported_reasoning_levels?: Array<{ effort?: string }> }>; data?: Array<{ id?: string }> };
@@ -291,4 +307,108 @@ export async function signOut(deps: { storage: SiwcStorage; secrets: SecretStore
   await deps.secrets.delete(secretName(id));
   deps.storage.remove(id);
   return { revoked };
+}
+
+// ---------------------------------------------------------------- where a request goes
+
+/** The claims of a JWT, without checking it (the token is ours and was just received from OpenAI). */
+function jwtClaims(token: string): Record<string, unknown> {
+  try { return JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>; } catch { return {}; }
+}
+
+/**
+ * The URL and headers for a call made with a plan login. The open route calls the public API with the
+ * token alone. A Codex-identity login calls ChatGPT's Codex backend, which also wants the workspace
+ * the token belongs to (read from the token itself) and says who the caller is: EasySwitch says so
+ * truthfully in `originator` and `user-agent` rather than posing as the Codex CLI.
+ */
+export function planTarget(kind: "chatgpt" | "codex", token: string, path: string): { url: string; headers: Record<string, string> } {
+  if (kind === "chatgpt") return { url: `${apiBase()}${path}`, headers: { authorization: `Bearer ${token}` } };
+  const auth = (jwtClaims(token)["https://api.openai.com/auth"] ?? {}) as Record<string, unknown>;
+  const account = typeof auth.chatgpt_account_id === "string" ? auth.chatgpt_account_id : "";
+  const residency = String(auth.chatgpt_data_residency ?? auth.chatgpt_compute_residency ?? "").trim();
+  return {
+    url: `${codexBase()}${path}`,
+    headers: {
+      authorization: `Bearer ${token}`, originator: "easyswitch", "user-agent": "EasySwitch/0.0.1",
+      ...(account ? { "ChatGPT-Account-ID": account } : {}),
+      ...(residency ? { "x-openai-internal-codex-residency": residency } : {}),
+    },
+  };
+}
+
+// ---------------------------------------------------------------- sign in as the Codex client
+
+async function postJson(url: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+  const res = await fetch(url, {
+    method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+  }).catch((e: Error) => { throw new SiwcError("network", `OpenAI is unreachable: ${e.message}`); });
+  return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+}
+
+/**
+ * Sign in as the Codex client with a device code: OpenAI shows a short code, the user types it at
+ * auth.openai.com/codex/device, and we collect the result. No local port is needed, and there is
+ * nothing to register. The protocol is the one Codex-compatible tools use for this.
+ */
+export async function beginCodexSignIn(
+  deps: { storage: SiwcStorage; secrets: SecretStore; open?: (url: string) => Promise<void> },
+  opts: { label?: string; pollMs?: number } = {},
+): Promise<SignIn> {
+  const start = await postJson(`${authBase()}/api/accounts/deviceauth/usercode`, { client_id: CODEX_CLIENT_ID });
+  if (start.status === 429) throw new SiwcError("network", "OpenAI is limiting sign-in attempts right now; try again in a minute");
+  if (start.status !== 200 || !start.json.user_code || !start.json.device_auth_id) throw new SiwcError("network", `OpenAI did not give a sign-in code (${start.status})`);
+  const userCode = String(start.json.user_code);
+  const deviceAuthId = String(start.json.device_auth_id);
+  const interval = Math.max(3, Number(start.json.interval ?? 5)) * 1000;
+  const verifyUrl = `${authBase()}/codex/device`;
+
+  let cancelled = false;
+  let finish!: (a: SiwcAccount) => void;
+  let fail!: (e: Error) => void;
+  const done = new Promise<SiwcAccount>((resolve, reject) => { finish = resolve; fail = reject; });
+  done.catch(() => {});
+
+  void (async () => {
+    const deadline = Date.now() + 15 * 60_000;
+    try {
+      let code: { authorization_code?: string; code_verifier?: string } | undefined;
+      while (!cancelled && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, opts.pollMs ?? (Number(process.env.EASYSWITCH_DEVICE_POLL_MS) || interval)));
+        if (cancelled) return;
+        const poll = await postJson(`${authBase()}/api/accounts/deviceauth/token`, { device_auth_id: deviceAuthId, user_code: userCode });
+        if (poll.status === 200) { code = poll.json as typeof code; break; }
+        // 403 and 404 mean "not finished yet"; anything else is a real failure.
+        if (poll.status !== 403 && poll.status !== 404) throw new SiwcError("invalid", `waiting for the sign-in failed (${poll.status})`);
+      }
+      if (cancelled) return;
+      if (!code?.authorization_code || !code.code_verifier) throw new SiwcError("denied", "the sign-in was not finished in time");
+      const token = await postForm(`${authBase()}/oauth/token`, {
+        grant_type: "authorization_code", code: code.authorization_code, redirect_uri: `${authBase()}/deviceauth/callback`,
+        client_id: CODEX_CLIENT_ID, code_verifier: code.code_verifier,
+      });
+      if (token.status !== 200) throw new SiwcError("invalid", `the code could not be exchanged (${String(token.json.error ?? token.status)})`);
+      const tokens = token.json as unknown as Tokens & { expires_in?: number };
+      if (!tokens.access_token || !tokens.id_token) throw new SiwcError("invalid", "OpenAI returned no tokens");
+      const claims = await validateIdToken(tokens.id_token, CODEX_CLIENT_ID);
+      const exp = Number(jwtClaims(tokens.access_token).exp ?? 0) * 1000;
+      const known = deps.storage.accounts().find(a => a.kind === "codex" && a.subject === claims.sub);
+      const id = known?.id ?? `s-${randomBytes(4).toString("hex")}`;
+      const account: SiwcAccount = {
+        id, kind: "codex", subject: claims.sub!, clientId: CODEX_CLIENT_ID, scopes: [], planUsage: true,
+        label: opts.label?.trim() || known?.label || claims.email || "ChatGPT",
+        ...(claims.email ? { email: claims.email } : {}),
+        expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : exp || Date.now() + 3600_000,
+      };
+      await deps.secrets.set(secretName(id), JSON.stringify({ access_token: tokens.access_token, refresh_token: tokens.refresh_token, id_token: tokens.id_token } satisfies Tokens));
+      deps.storage.save(account);
+      finish(account);
+    } catch (error) {
+      fail(error as Error);
+    }
+  })();
+
+  void (deps.open ?? openInBrowser)(verifyUrl).catch(() => {});
+  return { url: verifyUrl, userCode, done, cancel: () => { cancelled = true; fail(new SiwcError("denied", "cancelled")); } };
 }

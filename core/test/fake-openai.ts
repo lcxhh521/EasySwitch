@@ -20,6 +20,12 @@ export interface FakeOpenAI {
   /** Replies for the next /v1/responses call: an HTTP status to return instead of a stream. */
   responsesStatus?: { status: number; body: Json };
   tokenLifetimeSeconds: number;
+  /** Codex client: how many device-code polls answer "not yet" before the user has finished. */
+  devicePending: number;
+  deviceCalls: Array<{ path: string; body: Json }>;
+  codexRequests: Array<{ path: string; headers: Record<string, string | string[] | undefined>; body: Json }>;
+  /** The account the Codex access token says it belongs to. */
+  codexAccountId: string;
   /** What the stream says; defaults to "Hello from the plan". */
   events: (body: Json) => Array<[string, Json]>;
   close(): void;
@@ -28,7 +34,10 @@ export interface FakeOpenAI {
 export async function startFakeOpenAI(): Promise<FakeOpenAI> {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = { ...publicKey.export({ format: "jwk" }), kid: "k1", alg: "RS256", use: "sig" };
-  const fake = { authorizeParams: [], tokenCalls: [], responsesRequests: [], revoked: [], failRefresh: false, tokenLifetimeSeconds: 3600 } as unknown as FakeOpenAI;
+  const fake = { authorizeParams: [], tokenCalls: [], responsesRequests: [], revoked: [], failRefresh: false, tokenLifetimeSeconds: 3600, devicePending: 0, deviceCalls: [], codexRequests: [], codexAccountId: "acct-123" } as unknown as FakeOpenAI;
+  let codexAccess = "";
+  let codexRefresh = "";
+  const CODEX_CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann";
   const sessions = new Map<string, { challenge: string; nonce: string; redirect: string; clientId: string }>();
   let counter = 0;
   let refreshToken = "";
@@ -90,6 +99,54 @@ export async function startFakeOpenAI(): Promise<FakeOpenAI> {
           return send(200, { access_token: accessToken, refresh_token: refreshToken, expires_in: fake.tokenLifetimeSeconds, token_type: "Bearer" });
         }
         return send(400, { error: "unsupported_grant_type" });
+      }
+      // --- the Codex client: device code, its token endpoint, and the Codex backend
+      if (url.pathname === "/api/accounts/deviceauth/usercode" && req.method === "POST") {
+        const body = JSON.parse(raw || "{}") as Json;
+        fake.deviceCalls.push({ path: url.pathname, body });
+        if (body.client_id !== CODEX_CLIENT) return send(400, { error: "bad client" });
+        return send(200, { user_code: "ABCD-1234", device_auth_id: "dev-1", interval: "3" });
+      }
+      if (url.pathname === "/api/accounts/deviceauth/token" && req.method === "POST") {
+        const body = JSON.parse(raw || "{}") as Json;
+        fake.deviceCalls.push({ path: url.pathname, body });
+        if (fake.devicePending > 0) { fake.devicePending -= 1; return send(404, { error: "authorization_pending" }); }
+        return send(200, { authorization_code: "dcode", code_verifier: "dver" });
+      }
+      if (url.pathname === "/oauth/token" && req.method === "POST") {
+        const form = Object.fromEntries(new URLSearchParams(raw)) as Record<string, string>;
+        fake.tokenCalls.push(form);
+        const exp = Math.floor(Date.now() / 1000) + fake.tokenLifetimeSeconds;
+        const access = () => sign({ exp, "https://api.openai.com/auth": { chatgpt_account_id: fake.codexAccountId } });
+        if (form.grant_type === "authorization_code") {
+          if (form.client_id !== CODEX_CLIENT || form.code !== "dcode" || form.code_verifier !== "dver" || form.redirect_uri !== `${fake.base}/deviceauth/callback`) return send(400, { error: "invalid_grant" });
+          codexAccess = access();
+          codexRefresh = `crt-${++counter}`;
+          return send(200, { access_token: codexAccess, refresh_token: codexRefresh, expires_in: fake.tokenLifetimeSeconds, id_token: sign({ iss: fake.base, aud: CODEX_CLIENT, sub: "codex-user-1", email: "codex@example.com", exp: Math.floor(Date.now() / 1000) + 600 }) });
+        }
+        if (form.grant_type === "refresh_token" && form.client_id === CODEX_CLIENT && form.refresh_token === codexRefresh && !fake.failRefresh) {
+          codexAccess = access() + "";
+          codexRefresh = `crt-${++counter}`;
+          return send(200, { access_token: codexAccess, refresh_token: codexRefresh, expires_in: fake.tokenLifetimeSeconds });
+        }
+        return send(400, { error: "invalid_grant" });
+      }
+      if (url.pathname.startsWith("/backend-api/codex/")) {
+        const headers = { ...req.headers };
+        const rest = url.pathname.slice("/backend-api/codex".length);
+        const body = raw ? (JSON.parse(raw) as Json) : {};
+        fake.codexRequests.push({ path: rest, headers, body });
+        if (req.headers.authorization !== `Bearer ${codexAccess}` || req.headers["chatgpt-account-id"] !== fake.codexAccountId) return send(401, { detail: "unauthorized" });
+        if (rest === "/models") return send(200, { models: [{ slug: "gpt-codex-fake", display_name: "Codex Fake", visibility: "list", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }, { effort: "xhigh" }] }] });
+        if (rest === "/responses" && req.method === "POST") {
+          if (!body.instructions) return send(400, { detail: "Instructions are required" });
+          if (body.store !== false || body.stream !== true) return send(400, { detail: "store must be false and stream true" });
+          if ("temperature" in body || "max_output_tokens" in body) return send(400, { detail: "Unsupported parameter" });
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          for (const [event, data] of fake.events(body)) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          return void res.end();
+        }
+        return send(404, {});
       }
       if (url.pathname === "/revoke") {
         fake.revoked.push(String(new URLSearchParams(raw).get("token")));

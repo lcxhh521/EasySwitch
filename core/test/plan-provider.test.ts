@@ -42,7 +42,7 @@ before(async () => {
 after(() => { server.closeAllConnections(); server.close(); fake.close(); });
 
 test("Continue with ChatGPT turns a signed-in plan into a model source with the account's own models and levels", async () => {
-  assert.equal((await api("POST", "/api/plan/signin", { label: "我的订阅" })).status, 200);
+  assert.equal((await api("POST", "/api/plan/signin", { label: "我的订阅", mode: "open" })).status, 200);
   let state: Json = {};
   for (let i = 0; i < 50 && state.signIn?.status !== "done"; i++) {
     state = (await (await api("GET", "/api/plan")).json()) as Json;

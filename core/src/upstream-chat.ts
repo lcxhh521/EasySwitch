@@ -1,5 +1,5 @@
 import { chatToResponses, responsesToChatResponse, shapePlanRequest } from "./responses-upstream.ts";
-import { apiBase } from "./siwc.ts";
+import { planTarget } from "./siwc.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
 import { endpointUrl, upstreamHeaders } from "./upstream.ts";
@@ -14,9 +14,12 @@ export function sendChat(provider: Provider, apiKey: string | undefined, payload
   const chat = payload as ChatRequest;
   if (provider.plan) {
     const { body } = chatToResponses(chat);
-    return fetch(`${apiBase()}/responses`, {
+    // The Codex backend refuses a request with no instructions.
+    if (provider.plan.kind === "codex" && !body.instructions) body.instructions = "You are a helpful assistant.";
+    const target = planTarget(provider.plan.kind, apiKey ?? "", "/responses");
+    return fetch(target.url, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "text/event-stream", authorization: `Bearer ${apiKey ?? ""}` },
+      headers: { "content-type": "application/json", accept: "text/event-stream", ...target.headers },
       body: JSON.stringify(body),
       signal,
     }).then(upstream => (upstream.ok ? responsesToChatResponse(upstream, { stream: chat.stream, model: chat.model }) : upstream)).catch((error: Error) => error);
@@ -33,9 +36,10 @@ export function sendChat(provider: Provider, apiKey: string | undefined, payload
 export function sendResponses(provider: Provider, apiKey: string | undefined, body: Record<string, unknown>, accept: string, signal: AbortSignal): Promise<Response | Error> {
   if (provider.plan) {
     const shaped = shapePlanRequest(body).body;
-    return fetch(`${apiBase()}/responses`, {
+    const target = planTarget(provider.plan.kind, apiKey ?? "", "/responses");
+    return fetch(target.url, {
       method: "POST",
-      headers: { "content-type": "application/json", accept, authorization: `Bearer ${apiKey ?? ""}` },
+      headers: { "content-type": "application/json", accept, ...target.headers },
       body: JSON.stringify(shaped),
       signal,
     }).catch((error: Error) => error);

@@ -20,7 +20,7 @@ import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts"
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
-import { accessToken, apiBase, beginSignIn, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
+import { accessToken, apiBase, beginCodexSignIn, beginSignIn, codexBase, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
 import { discoverEfforts } from "./efforts.ts";
@@ -210,17 +210,18 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       throw new Error(String((error as Error).message));
     }
   });
-  let planSignIn: { status: "waiting" | "done" | "error"; url: string; message?: string; cancel: () => void } | undefined;
+  let planSignIn: { status: "waiting" | "done" | "error"; url: string; userCode?: string; message?: string; cancel: () => void } | undefined;
 
   /** Makes sure the account has a provider, and brings its models (and each model's own levels) up to date. */
   async function syncPlanProvider(account: SiwcAccount): Promise<Provider> {
     let provider = store.providers().find(p => p.plan?.accountId === account.id);
-    const models = account.planUsage ? await listPlanModels(await accessToken({ storage: siwcStore, secrets }, account.id)) : [];
+    const kind = account.kind === "codex" ? "codex" : "chatgpt";
+    const models = account.planUsage ? await listPlanModels(await accessToken({ storage: siwcStore, secrets }, account.id), kind) : [];
     const name = `ChatGPT 订阅 · ${account.label}`;
     if (!provider) {
       provider = {
-        id: slugify(name, store.providers().map(p => p.id)), name, baseUrl: apiBase(), models: [], route: "responses-native", routePinned: true,
-        streamUsage: false, billing: "subscription", plan: { kind: "chatgpt", accountId: account.id }, icon: "openai", createdAt: new Date().toISOString(),
+        id: slugify(name, store.providers().map(p => p.id)), name, baseUrl: kind === "codex" ? codexBase() : apiBase(), models: [], route: "responses-native", routePinned: true,
+        streamUsage: false, billing: "subscription", plan: { kind, accountId: account.id }, icon: "openai", createdAt: new Date().toISOString(),
       };
     }
     provider.name = name;
@@ -354,8 +355,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- ChatGPT plan: Continue with ChatGPT --------------------------------
     if (path === "/api/plan" && method === "GET") {
       json(res, 200, {
-        accounts: siwcStore.accounts().map(a => ({ id: a.id, label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true })),
-        signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
+        accounts: siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true })),
+        signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.userCode ? { userCode: planSignIn.userCode } : {}), ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
       });
       return;
     }
@@ -363,8 +364,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       planSignIn?.cancel();
       if (body.cancelOnly === true) { planSignIn = undefined; json(res, 200, { ok: true }); return; }
       try {
-        const si = await beginSignIn({ storage: siwcStore, secrets, ...(deps.openUrl ? { open: deps.openUrl } : {}) }, { ...(typeof body.label === "string" && body.label.trim() ? { label: body.label } : {}), ...(typeof body.accountId === "string" && body.accountId ? { existingId: body.accountId } : {}) });
-        const current: NonNullable<typeof planSignIn> = { status: "waiting", url: si.url, cancel: si.cancel };
+        const signInDeps = { storage: siwcStore, secrets, ...(deps.openUrl ? { open: deps.openUrl } : {}) };
+        const label = typeof body.label === "string" && body.label.trim() ? { label: body.label } : {};
+        // The default is the Codex client's device-code sign-in: one step, nothing to register. OpenAI's
+        // own registered-client route stays available (mode "open") but is not offered in the console.
+        const si = body.mode === "open"
+          ? await beginSignIn(signInDeps, { ...label, ...(typeof body.accountId === "string" && body.accountId ? { existingId: body.accountId } : {}) })
+          : await beginCodexSignIn(signInDeps, label);
+        const current: NonNullable<typeof planSignIn> = { status: "waiting", url: si.url, ...(si.userCode ? { userCode: si.userCode } : {}), cancel: si.cancel };
         planSignIn = current;
         si.done.then(async account => {
           try {
@@ -379,7 +386,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           current.status = "error";
           current.message = String((error as Error).message);
         });
-        json(res, 200, { url: si.url });
+        json(res, 200, { url: si.url, ...(si.userCode ? { userCode: si.userCode } : {}) });
       } catch (error) {
         json(res, 409, { error: String((error as Error).message) });
       }

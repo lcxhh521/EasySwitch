@@ -669,7 +669,7 @@ function planCard() {
       <div class="grow"><div class="title">${esc(a.label)}${a.email && a.email !== a.label ? ` <span class="hint">${esc(a.email)}</span>` : ""}</div>
         <div class="sub">${a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : "已接入：它的模型出现在下面的来源里，所有 agent 都能选"}</div></div>
       ${a.needsSignIn || !a.planUsage ? `<span class="chip warn">${a.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : `<span class="chip ok"><span class="dot"></span>可用</span>`}
-      <button class="btn secondary" data-plan-signin-again="${esc(a.id)}">${a.needsSignIn || !a.planUsage ? "重新登录" : "重新授权"}</button>
+      <button class="btn secondary" data-plan-signin-again="${esc(a.id)}" data-plan-kind="${esc(a.kind ?? "open")}">${a.needsSignIn || !a.planUsage ? "重新登录" : "重新登录一次"}</button>
       ${a.planUsage && !a.needsSignIn ? `<button class="btn secondary" data-plan-models="${esc(a.id)}">刷新模型</button>` : ""}
       <button class="btn secondary" data-plan-signout="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>
     </div>`;
@@ -677,12 +677,12 @@ function planCard() {
     <div class="section-head"><h2>用你的订阅</h2><span class="aside">登录只在这台电脑上，令牌存在钥匙串里</span></div>
     <div class="card">
       ${accounts.map(row).join("")}
-      ${si?.status === "waiting" ? `<div class="row"><div class="grow"><div class="title">已在浏览器里打开登录页</div><div class="sub">在浏览器里登录并允许使用订阅额度，然后回到这里。没有自动打开的话，<a href="${esc(si.url)}" target="_blank" rel="noopener">点这里打开</a>。</div></div><button class="btn secondary" data-plan-cancel>取消</button></div>` : ""}
+      ${si?.status === "waiting" ? `<div class="row"><div class="grow"><div class="title">${si.userCode ? `在浏览器打开的页面里输入这个码：<span class="mono" style="font-size:20px;letter-spacing:2px">${esc(si.userCode)}</span>` : "已在浏览器里打开登录页"}</div><div class="sub">登录并确认后会自动完成，不用回到这里点什么。没有自动打开的话，<a href="${esc(si.url)}" target="_blank" rel="noopener">点这里打开</a>。</div></div><button class="btn secondary" data-plan-cancel>取消</button></div>` : ""}
       ${si?.status === "error" ? `<div class="row"><div class="grow"><div class="title">没有登录成功</div><div class="sub">${esc(si.message ?? "")}</div></div></div>` : ""}
       ${si?.status === "done" && si.message ? `<div class="row"><div class="grow"><div class="sub">${esc(si.message)}</div></div></div>` : ""}
       <button class="add-row" data-plan-signin>${icon("openai", "sm")} Continue with ChatGPT</button>
     </div>
-    <p class="hint">用的是 OpenAI 官方给本地工具提供的「用 ChatGPT 订阅」登录，额度和你的 ChatGPT 订阅共用；可以在 <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener">ChatGPT 设置 → 用量</a> 里给 EasySwitch 设每周上限。Claude 的订阅不在这里用。</p>`;
+    <p class="hint">这里用 Codex 的登录身份一步完成（Hermes、opencodex 也是这样做的；这不是 OpenAI 给第三方工具的官方登记方式，所以 OpenAI 以后可能调整）。额度和你的 ChatGPT 订阅共用，登录只在这台电脑上，令牌存在钥匙串里。Claude 的订阅不在这里用。</p>`;
 }
 
 function renderProviders() {
@@ -1103,8 +1103,10 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-task-clear]")) { await call("DELETE", "/api/tasks").catch(() => {}); await refresh(true); return; }
 
   if (t.closest("[data-plan-signin]") || t.closest("[data-plan-signin-again]")) {
-    const again = t.closest("[data-plan-signin-again]")?.dataset.planSigninAgain;
-    try { await call("POST", "/api/plan/signin", again ? { accountId: again } : {}); } catch (error) { toast(error.message); }
+    const againBtn = t.closest("[data-plan-signin-again]");
+    // A Codex-identity account just signs in again the same way; one made with OpenAI's own route signs in again with its own client.
+    const again = againBtn && againBtn.dataset.planKind !== "codex" ? againBtn.dataset.planSigninAgain : undefined;
+    try { await call("POST", "/api/plan/signin", again ? { accountId: again, mode: "open" } : {}); } catch (error) { toast(error.message); }
     await refresh(true);
     return;
   }
