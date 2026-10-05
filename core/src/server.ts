@@ -11,12 +11,13 @@ import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
+import { accountCommandLine, clearResting, createAccount, isResting, markResting, pickAccount, touch as touchAccount } from "./accounts.ts";
 import { keySecretId, newKeyId } from "./keypool.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { slugify, type Store } from "./store.ts";
-import type { GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
+import type { Account, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -54,6 +55,10 @@ function readBody(req: IncomingMessage): Promise<string> {
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(JSON.stringify(body));
+}
+
+function publicAccount(a: Account) {
+  return { ...a, resting: isResting(a) };
 }
 
 function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
@@ -161,10 +166,83 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudePath: (await findClaude()) ?? null,
         sessions: await augmentedSessions(),
         sessionDetails: await sessionDetails(),
+        accounts: store.accounts().map(publicAccount),
+        accountSettings: store.accountSettings(),
         native: nativeFiles(),
         log,
       });
       return;
+    }
+
+    // --- subscription accounts: isolated homes, manual or automatic choice --
+    if (path === "/api/accounts" && method === "GET") {
+      json(res, 200, { accounts: store.accounts().map(publicAccount), settings: store.accountSettings() });
+      return;
+    }
+    if (path === "/api/accounts/settings" && method === "PUT") {
+      const settings = store.setAccountSettings({
+        ...(typeof body.autoPick === "boolean" ? { autoPick: body.autoPick } : {}),
+        ...(typeof body.defaultRestHours === "number" && body.defaultRestHours > 0 ? { defaultRestHours: Math.min(body.defaultRestHours, 168) } : {}),
+      });
+      json(res, 200, settings);
+      return;
+    }
+    if (path === "/api/accounts" && method === "POST") {
+      const harness = body.harness === "claude" ? "claude" : body.harness === "codex" ? "codex" : undefined;
+      if (!harness) {
+        json(res, 400, { error: "harness 需要是 codex 或 claude" });
+        return;
+      }
+      json(res, 201, publicAccount(createAccount(store, harness, String(body.label ?? ""))));
+      return;
+    }
+    if (path === "/api/accounts/launch" && method === "POST") {
+      const harness = body.harness === "claude" ? "claude" : "codex";
+      const label = harness === "codex" ? "Codex" : "Claude Code";
+      let account = typeof body.accountId === "string" ? store.account(body.accountId) : undefined;
+      let note: string | undefined;
+      if (!account) {
+        const picked = pickAccount(store, harness);
+        if (!picked.ok) {
+          json(res, 409, { error: picked.reason });
+          return;
+        }
+        account = picked.account;
+        note = picked.note;
+      }
+      const binary = harness === "codex" ? await findCodex() : await findClaude();
+      if (!binary) {
+        json(res, 409, { error: `找不到 ${label} 的命令` });
+        return;
+      }
+      const command = accountCommandLine(binary, account);
+      await launchInTerminal(command, `${label} · 账号「${account.label}」（独立的登录目录；第一次用需要在这里登录一次；关掉窗口即结束）`);
+      touchAccount(store, account.id);
+      json(res, 200, { account: publicAccount(account), ...(note ? { note } : {}) });
+      return;
+    }
+    const accountMatch = /^\/api\/accounts\/(a-[a-z0-9]+)$/.exec(path);
+    if (accountMatch) {
+      const account = store.account(accountMatch[1] ?? "");
+      if (!account) {
+        json(res, 404, { error: "没有这个账号" });
+        return;
+      }
+      if (method === "PATCH") {
+        if (typeof body.label === "string" && body.label.trim()) account.label = body.label.trim();
+        if (typeof body.enabled === "boolean") account.enabled = body.enabled;
+        store.upsertAccount(account);
+        if (body.rest === true) markResting(store, account.id, typeof body.restHours === "number" ? new Date(Date.now() + body.restHours * 3_600_000) : undefined);
+        if (body.rest === false) clearResting(store, account.id);
+        json(res, 200, publicAccount(store.account(account.id)!));
+        return;
+      }
+      if (method === "DELETE") {
+        // Only the record goes; the directory (login and history) stays on disk so nothing is lost by accident.
+        store.removeAccount(account.id);
+        json(res, 200, { ok: true, keptDirectory: account.home });
+        return;
+      }
     }
 
     // --- one-paste onboarding: parse whatever the vendor handed over, add,

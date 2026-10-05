@@ -58,6 +58,15 @@ function ago(at) {
   return `${Math.floor(s / 86400)} 天前`;
 }
 
+/** "约 3 小时后" for a time ahead of now. */
+function inFuture(at) {
+  const s = Math.max(0, (new Date(at).getTime() - Date.now()) / 1000);
+  if (s < 90) return "1 分钟内";
+  if (s < 3600) return `约 ${Math.round(s / 60)} 分钟后`;
+  if (s < 86400) return `约 ${Math.round(s / 3600)} 小时后`;
+  return `约 ${Math.round(s / 86400)} 天后`;
+}
+
 function hostOf(url) {
   try { return new URL(url).host; } catch { return url; }
 }
@@ -162,6 +171,56 @@ function renderAgents() {
     <div class="card">${rows}</div>
     <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 Codex 和 Claude Code 永远不受影响。</p>
     ${state.providers.length ? "" : onboarding()}`;
+}
+
+let autoConfirm = false; // the inline terms notice for auto pick is open
+
+function accountRow(a) {
+  const resting = a.resting;
+  const state = !a.enabled ? `<span class="chip">已停用</span>`
+    : resting ? `<span class="chip warn"><span class="dot"></span>限额中 · ${inFuture(a.restUntil)}恢复</span>`
+    : `<span class="chip ok"><span class="dot"></span>可用</span>`;
+  return `
+    <div class="row" data-account="${esc(a.id)}">
+      ${icon(HARNESS[a.harness].icon, "sm")}
+      <div class="grow"><div class="title">${esc(a.label)}</div><div class="sub">${a.lastUsedAt ? `上次用：${ago(a.lastUsedAt)}` : "还没用过；第一次启动要在终端里登录一次"}</div></div>
+      ${state}
+      <button class="btn" data-acc-launch="${esc(a.id)}" data-h="${a.harness}">启动</button>
+      <button class="btn secondary" data-acc-rest="${esc(a.id)}" data-on="${resting ? "0" : "1"}">${resting ? "恢复" : "撞限额了"}</button>
+      <button class="btn secondary" data-acc-toggle="${esc(a.id)}" data-enabled="${a.enabled ? "0" : "1"}">${a.enabled ? "停用" : "启用"}</button>
+      <button class="btn danger" data-acc-del="${esc(a.id)}">移除</button>
+    </div>`;
+}
+
+function renderAccounts() {
+  const accounts = state.accounts ?? [];
+  const settings = state.accountSettings ?? { autoPick: false };
+  const section = h => {
+    const mine = accounts.filter(a => a.harness === h);
+    return `
+      <div class="section-head"><h2>${icon(HARNESS[h].icon, "sm")} ${HARNESS[h].name}</h2>
+        <span class="aside">${mine.length} 个账号</span></div>
+      <div class="card">
+        ${mine.map(accountRow).join("") || `<div class="empty">还没有账号</div>`}
+        <form class="form" data-add-account="${h}"><div class="controls">
+          <input type="text" name="label" placeholder="给这个账号起个名字，例如：个人 Plus" style="flex:1">
+          <button class="btn secondary" type="submit">＋ 添加 ${HARNESS[h].name} 账号</button>
+          <button class="btn" type="button" data-acc-auto="${h}" ${settings.autoPick && mine.some(a => a.enabled) ? "" : "disabled"} title="${settings.autoPick ? "挑一个没撞限额、最久没用的" : "先开启自动选号"}">自动选号启动</button>
+        </div></form>
+      </div>`;
+  };
+  return `
+    <div class="section-head"><h2>订阅账号</h2><span class="aside">一个人的多份订阅；全部在本机，登录令牌不经过 EasySwitch</span></div>
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">自动选号</div>
+        <div class="sub">${settings.autoPick ? "已开启：点「自动选号启动」时，自动挑一个没撞限额、最久没用的账号" : "未开启：每次自己选账号启动"}</div></div>
+      <button class="btn secondary" data-acc-autopick="${settings.autoPick ? "off" : "ask"}">${settings.autoPick ? "关闭" : "开启…"}</button>
+    </div>
+    ${autoConfirm && !settings.autoPick ? `<div class="detail" style="display:block"><p class="hint">请注意：服务商的条款可能限制「为绕开用量限制而在多个账号之间切换」。自动选号只在<b>启动会话时</b>替你挑账号，不转发请求、不接触任何登录令牌，也不会在会话中途换号；是否符合你所用服务的条款，由你自己确认。</p>
+      <div class="controls"><button class="btn" data-acc-autopick="on">我已了解，开启</button><button class="btn secondary" data-acc-autopick="cancel">取消</button></div></div>` : ""}
+    </div>
+    ${section("codex")}${section("claude")}
+    <p class="hint">每个账号有自己的登录目录（Codex 用 <code>CODEX_HOME</code>，Claude Code 用 <code>CLAUDE_CONFIG_DIR</code>），只对这一次启动生效，不会改动你平时用的 ~/.codex 和 ~/.claude。移除账号只删记录，目录和登录会保留在 EasySwitch 的数据目录里。</p>`;
 }
 
 /** First-run onboarding: paste whatever the vendor handed you, everything else is automatic. */
@@ -285,7 +344,7 @@ function keyList(p) {
   const rows = keys.map(k => {
     const resting = k.restUntil && new Date(k.restUntil).getTime() > Date.now();
     return `<tr><td>${esc(k.label)}</td>
-      <td>${resting ? `<span class="chip warn" title="${esc(k.lastError?.reason ?? "")}"><span class="dot"></span>${esc(k.lastError?.reason ?? "休息中")} · ${ago(k.restUntil)}恢复</span>` : k.lastError ? `<span class="chip bad">${esc(k.lastError.reason)}</span>` : `<span class="chip ok"><span class="dot"></span>正常</span>`}</td>
+      <td>${resting ? `<span class="chip warn" title="${esc(k.lastError?.reason ?? "")}"><span class="dot"></span>${esc(k.lastError?.reason ?? "休息中")} · ${inFuture(k.restUntil)}恢复</span>` : k.lastError ? `<span class="chip bad">${esc(k.lastError.reason)}</span>` : `<span class="chip ok"><span class="dot"></span>正常</span>`}</td>
       <td class="num"><button class="btn secondary" data-key-patch="${esc(k.id)}" data-enabled="${k.enabled ? "0" : "1"}">${k.enabled ? "停用" : "启用"}</button>
         <button class="btn danger" data-key-del="${esc(k.id)}">删除</button></td></tr>`;
   }).join("");
@@ -598,7 +657,7 @@ function render() {
     main.innerHTML = `<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
     return;
   }
-  const views = { agents: renderAgents, providers: renderProviders, sessions: renderSessions, usage: renderUsage };
+  const views = { agents: renderAgents, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage };
   main.innerHTML = (views[page] ?? renderAgents)();
   if (page === "sessions") requestAnimationFrame(drawFlowLines);
   if (page === "usage") requestAnimationFrame(drawChart);
@@ -658,6 +717,47 @@ document.addEventListener("click", async e => {
   if (bridge) {
     if (BRIDGE) BRIDGE.postMessage(bridge.dataset.bridge);
     else if (bridge.dataset.bridge === "openConsole") window.open("/", "_blank");
+    return;
+  }
+
+  const accLaunch = t.closest("[data-acc-launch]");
+  if (accLaunch) {
+    try { const r = await call("POST", "/api/accounts/launch", { harness: accLaunch.dataset.h, accountId: accLaunch.dataset.accLaunch }); toast(`已在终端里打开「${r.account.label}」`); } catch (error) { toast(error.message); }
+    setTimeout(() => refresh(true), 800);
+    return;
+  }
+  const accAuto = t.closest("[data-acc-auto]");
+  if (accAuto) {
+    try { const r = await call("POST", "/api/accounts/launch", { harness: accAuto.dataset.accAuto }); toast(`自动选了「${r.account.label}」${r.note ? `（${r.note}）` : ""}`); } catch (error) { toast(error.message); }
+    setTimeout(() => refresh(true), 800);
+    return;
+  }
+  const accRest = t.closest("[data-acc-rest]");
+  if (accRest) {
+    try { await call("PATCH", `/api/accounts/${accRest.dataset.accRest}`, { rest: accRest.dataset.on === "1" }); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const accToggle = t.closest("[data-acc-toggle]");
+  if (accToggle) {
+    try { await call("PATCH", `/api/accounts/${accToggle.dataset.accToggle}`, { enabled: accToggle.dataset.enabled === "1" }); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const accDel = t.closest("[data-acc-del]");
+  if (accDel) {
+    try { const r = await call("DELETE", `/api/accounts/${accDel.dataset.accDel}`); toast("已移除；登录目录仍保留在 " + r.keptDirectory); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const accAutoPick = t.closest("[data-acc-autopick]");
+  if (accAutoPick) {
+    const mode = accAutoPick.dataset.accAutopick;
+    if (mode === "ask") { autoConfirm = true; render(); return; }
+    if (mode === "cancel") { autoConfirm = false; render(); return; }
+    autoConfirm = false;
+    try { await call("PUT", "/api/accounts/settings", { autoPick: mode === "on" }); } catch (error) { toast(error.message); }
+    await refresh(true);
     return;
   }
 
@@ -770,6 +870,16 @@ document.addEventListener("submit", async e => {
       msg.className = "msg bad";
       msg.textContent = error.message;
     }
+    await refresh(true);
+    return;
+  }
+  const accForm = e.target.closest("form[data-add-account]");
+  if (accForm) {
+    e.preventDefault();
+    try {
+      await call("POST", "/api/accounts", { harness: accForm.dataset.addAccount, label: new FormData(accForm).get("label") });
+      toast("已添加；点「启动」，第一次在终端里登录一次");
+    } catch (error) { toast(error.message); }
     await refresh(true);
     return;
   }

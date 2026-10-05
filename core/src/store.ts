@@ -2,15 +2,18 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
-import type { HarnessBinding, Provider } from "./types.ts";
+import type { Account, AccountSettings, HarnessBinding, Provider } from "./types.ts";
 
 interface StateFile {
   version: 1;
   providers: Provider[];
   bindings: HarnessBinding[];
+  accounts?: Account[];
+  accountSettings?: AccountSettings;
 }
 
 const EMPTY: StateFile = { version: 1, providers: [], bindings: [] };
+const DEFAULT_ACCOUNT_SETTINGS: AccountSettings = { autoPick: false, defaultRestHours: 5 };
 
 /** Providers and bindings, without secrets, in one atomically replaced JSON file. */
 export class Store {
@@ -78,6 +81,39 @@ export class Store {
     this.state.bindings = this.state.bindings.filter(b => b.harness !== binding.harness);
     this.state.bindings.push(binding);
     this.save();
+  }
+
+  accounts(harness?: Account["harness"]): Account[] {
+    const all = structuredClone(this.state.accounts ?? []);
+    return harness ? all.filter(a => a.harness === harness) : all;
+  }
+
+  account(id: string): Account | undefined {
+    const found = (this.state.accounts ?? []).find(a => a.id === id);
+    return found ? structuredClone(found) : undefined;
+  }
+
+  upsertAccount(account: Account): void {
+    const list = this.state.accounts ?? (this.state.accounts = []);
+    const index = list.findIndex(a => a.id === account.id);
+    if (index >= 0) list[index] = account;
+    else list.push(account);
+    this.save();
+  }
+
+  removeAccount(id: string): void {
+    this.state.accounts = (this.state.accounts ?? []).filter(a => a.id !== id);
+    this.save();
+  }
+
+  accountSettings(): AccountSettings {
+    return { ...DEFAULT_ACCOUNT_SETTINGS, ...(this.state.accountSettings ?? {}) };
+  }
+
+  setAccountSettings(settings: Partial<AccountSettings>): AccountSettings {
+    this.state.accountSettings = { ...this.accountSettings(), ...settings };
+    this.save();
+    return this.accountSettings();
   }
 }
 

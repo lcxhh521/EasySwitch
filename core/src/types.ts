@@ -68,6 +68,33 @@ export interface ProbeReport {
   recommendedMessagesRoute?: MessagesRoute;
 }
 
+/**
+ * One of the user's own subscription logins for a harness. The login itself
+ * lives in a directory EasySwitch created for it (CODEX_HOME / CLAUDE_CONFIG_DIR),
+ * never in the harness's global config; starting a session with that directory
+ * is the whole mechanism. Everything stays on this Mac.
+ */
+export interface Account {
+  id: string;
+  harness: "codex" | "claude";
+  label: string;
+  /** Absolute path of this account's isolated home. */
+  home: string;
+  enabled: boolean;
+  addedAt: string;
+  lastUsedAt?: string;
+  /** Marked as out of quota until then; auto-pick skips it, and it comes back by itself. */
+  restUntil?: string;
+}
+
+/** How "auto" picks an account. Off unless the user switched it on. */
+export interface AccountSettings {
+  /** The user turned on automatic account choice after reading the terms notice. */
+  autoPick: boolean;
+  /** How long a "hit the limit" mark lasts when the user gives no time, in hours. */
+  defaultRestHours: number;
+}
+
 /** Which provider model a harness uses in an EasySwitch session. */
 export type Harness = "codex" | "claude";
 
