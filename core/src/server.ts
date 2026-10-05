@@ -194,13 +194,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const body = method === "GET" ? {} : ((JSON.parse((await readBody(req)) || "{}")) as Json);
 
     if (method === "GET" && path === "/api/state") {
-      const bound = (["codex", "claude"] as const).map(h => store.binding(h)).filter(b => b !== undefined);
+      const bound = store.allBindings();
       const providers = await Promise.all(store.providers().map(async p =>
         publicProvider(p, Boolean(await secrets.get(p.id)), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
       json(res, 200, {
         version: VERSION, port, providers,
         binding: store.binding("codex") ?? null,
-        bindings: { codex: store.binding("codex") ?? null, claude: store.binding("claude") ?? null },
+        bindings: { codex: null, claude: null, ...Object.fromEntries(store.allBindings().map(b => [b.harness, b])) },
         codexPath: (await findCodex()) ?? null,
         claudePath: (await findClaude()) ?? null,
         sessions: await augmentedSessions(),

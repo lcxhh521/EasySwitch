@@ -68,6 +68,10 @@ export class Store {
     this.save();
   }
 
+  allBindings(): HarnessBinding[] {
+    return structuredClone(this.state.bindings);
+  }
+
   binding(harness: HarnessBinding["harness"]): HarnessBinding | undefined {
     const found = this.state.bindings.find(b => b.harness === harness);
     return found ? structuredClone(found) : undefined;

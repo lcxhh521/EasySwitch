@@ -24,6 +24,12 @@ let openProvider = null;
 let addForm = null; // { preset } while the add panel is open
 let chatgptInfo = null; // /api/chatgpt: installed, running, enhanced
 let chatgptConfirm = null; // "enhance" | "native" while the restart notice is open
+/** Which collapsible panels the user opened; the page redraws every few seconds and must not close them. */
+const openDetails = new Set();
+const keepOpen = id => (openDetails.has(id) ? "open" : "");
+
+let taskOpen = null; // agent id whose "hand it a task" form is open
+const taskResults = {}; // agent id -> { running, output, exitCode, timedOut }
 let agentList = null; // every agent we know of, from /api/agents
 let ocxImport = null; // { candidates, chosen:Set } while the opencodex import panel is open
 let presets = [];
@@ -103,6 +109,11 @@ function toast(text) {
   setTimeout(() => el.remove(), 2600);
 }
 
+/** Name and icon of any agent: the two built-in rows, or an entry of the wider catalog. */
+function agentMeta(id) {
+  return HARNESS[id] ?? agentList?.find(a => a.id === id) ?? { name: id, icon: `letter:${id[0]?.toUpperCase() ?? "?"}` };
+}
+
 const providerById = id => state.providers.find(p => p.id === id);
 const modelsOf = p => (p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : []);
 const sessionsOf = h => (state.sessionDetails ?? []).filter(s => s.harness === h);
@@ -155,7 +166,7 @@ function openGuard(anchor) {
 // ---------------------------------------------------------------- agents
 
 function agentRow(harness) {
-  const meta = HARNESS[harness];
+  const meta = agentMeta(harness);
   const binding = state.bindings?.[harness];
   const provider = binding && providerById(binding.providerId);
   const binary = harness === "codex" ? state.codexPath : state.claudePath;
@@ -210,19 +221,37 @@ function chatgptCard() {
 function agentCatalog() {
   if (!agentList) return "";
   const rest = agentList.filter(a => a.support !== "ready");
-  const row = a => `
+  const row = a => {
+    const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
+    const binding = state.bindings?.[a.id];
+    const provider = binding && providerById(binding.providerId);
+    const face = binding && provider
+      ? `${icon(provider.icon)}<span class="label">${esc(binding.model)}<small>${esc(provider.name)}</small></span>`
+      : `<span class="label">选个模型<small>用哪个模型来源</small></span>`;
+    const result = taskResults[a.id];
+    return `
     <div class="row">
       ${icon(a.icon, "lg")}
-      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span></div><div class="sub">${esc(a.note)}</div></div>
+      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span></div><div class="sub">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div></div>
       ${SUPPORT_CHIP[a.support]}
+      ${can ? `<button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>` : ""}
+      ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
+      ${can?.headless ? `<button class="btn secondary" data-agent-task="${esc(a.id)}" ${binding ? "" : "disabled"}>交给它一个任务</button>` : ""}
       ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
-    </div>`;
+    </div>
+    ${taskOpen === a.id ? `<form class="form" data-run-form="${esc(a.id)}" style="padding:0 18px 14px">
+      <div class="field"><label>任务（它会在这个文件夹里直接动手，默认是一个空的临时目录）</label><textarea name="task" rows="3" placeholder="例如：读一下 README，总结这个项目是做什么的"></textarea></div>
+      <div class="field"><label>工作目录（可选，绝对路径）</label><input type="text" name="cwd" placeholder="/Users/你/项目"></div>
+      <div class="controls"><button class="btn" type="submit" ${result?.running ? "disabled" : ""}>${result?.running ? "运行中…" : "运行"}</button><button class="btn secondary" type="button" data-agent-task-close>收起</button></div>
+      ${result?.output !== undefined ? `<pre class="mono" style="white-space:pre-wrap;max-height:320px;overflow:auto;background:var(--pill);padding:10px;border-radius:9px">${esc(result.output || "(没有输出)")}</pre><p class="hint">${result.timedOut ? "超时已停止 · " : ""}退出码 ${result.exitCode ?? "—"}</p>` : ""}
+    </form>` : ""}`;
+  };
   const here = rest.filter(a => a.installed);
   const other = rest.filter(a => !a.installed);
   return `
     <div class="section-head"><h2>更多 Agent</h2><span class="aside">${agentList.length} 个；你这台 Mac 上装了 ${agentList.filter(a => a.installed).length} 个</span></div>
     <div class="card">${here.map(row).join("") || `<div class="empty">还没检测到其他 agent</div>`}</div>
-    <details class="card" style="margin-top:12px"><summary class="row" style="cursor:pointer"><span class="grow title">还没安装的（${other.length}）</span></summary>${other.map(row).join("")}</details>
+    <details class="card" data-keep="agents-other" ${keepOpen("agents-other")} style="margin-top:12px"><summary class="row" style="cursor:pointer"><span class="grow title">还没安装的（${other.length}）</span></summary>${other.map(row).join("")}</details>
     <p class="hint">「接入中」的 agent 都支持按次启动时指向 EasySwitch，正在逐个接入；「只能打开」的是闭源或绑定登录的，没有可改的端点，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>`;
 }
 
@@ -340,7 +369,7 @@ function openPicker(anchor, harness) {
     if (!only && (!q || "原生 native".includes(q))) out.push({ native: true });
     for (const p of state.providers) {
       if (only && p.id !== only) continue;
-      const route = harness === "codex" ? p.route : p.messagesRoute ?? "chat-translate";
+      const route = harness === "codex" ? p.route : harness === "claude" ? p.messagesRoute ?? "chat-translate" : "chat-translate";
       for (const m of modelsOf(p)) {
         if (q && !m.toLowerCase().includes(q) && !p.name.toLowerCase().includes(q)) continue;
         out.push({ provider: p, model: m, route });
@@ -356,8 +385,8 @@ function openPicker(anchor, harness) {
     el.querySelector(".list").innerHTML = opts.map((o, i) => {
       if (o.native) {
         const on = !binding;
-        return `<button class="opt native ${i === kb ? "kb" : ""}" data-i="${i}">${icon(HARNESS[harness].icon)}
-          <span class="name">原生</span><span class="meta">${HARNESS[harness].name} 自带的，不经过 EasySwitch</span><span class="tick">${on ? "✓" : ""}</span></button>`;
+        return `<button class="opt native ${i === kb ? "kb" : ""}" data-i="${i}">${icon(agentMeta(harness).icon)}
+          <span class="name">原生</span><span class="meta">${agentMeta(harness).name} 自带的，不经过 EasySwitch</span><span class="tick">${on ? "✓" : ""}</span></button>`;
       }
       const head = o.provider.id !== lastGroup ? `<div class="group">${esc(o.provider.name)}</div>` : "";
       lastGroup = o.provider.id;
@@ -374,10 +403,10 @@ function openPicker(anchor, harness) {
     try {
       if (o.native) {
         await call("DELETE", `/api/bindings/${harness}`);
-        toast(`${HARNESS[harness].name}：增强会话已关闭，只用原生`);
+        toast(`${agentMeta(harness).name}：增强会话已关闭，只用原生`);
       } else {
         await call("PUT", `/api/bindings/${harness}`, { providerId: o.provider.id, model: o.model });
-        toast(`${HARNESS[harness].name} 的增强会话将使用 ${o.model}`);
+        toast(`${agentMeta(harness).name} 的增强会话将使用 ${o.model}`);
       }
     } catch (error) {
       toast(error.message);
@@ -774,7 +803,7 @@ function renderUsage() {
     <div class="card"><div class="section-head" style="padding:12px 18px 0"><span class="hint">每日</span>
         <nav class="seg" id="metric"><button data-metric="tokens" class="${chartMetric === "tokens" ? "on" : ""}">Token</button><button data-metric="cost" class="${chartMetric === "cost" ? "on" : ""}">花费</button></nav></div>
       <div class="chart" id="chart"></div>
-      <details style="padding:0 18px 12px"><summary class="hint">查看每日数据表</summary>
+      <details data-keep="usage-days" ${keepOpen("usage-days")} style="padding:0 18px 12px"><summary class="hint">查看每日数据表</summary>
         <table class="tbl"><tr><th>日期</th><th class="num">输入</th><th class="num">输出</th><th class="num">调用</th><th class="num">估算花费</th></tr>
         ${usage.days.map(d => `<tr><td>${d.day}</td><td class="num">${thousands(d.inputTokens)}</td><td class="num">${thousands(d.outputTokens)}</td><td class="num">${d.calls}</td><td class="num">${d.costUsd ? money(d.costUsd) : "—"}</td></tr>`).join("")}</table>
       </details>
@@ -806,7 +835,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || ocxImport || importFormOpen || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || ocxImport || importFormOpen || taskOpen || document.activeElement?.matches("input, select, textarea");
 }
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
@@ -924,6 +953,15 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
+
+  const agentLaunch = t.closest("[data-agent-launch]");
+  if (agentLaunch) {
+    try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { toast(error.message); }
+    return;
+  }
+  const agentTask = t.closest("[data-agent-task]");
+  if (agentTask) { taskOpen = taskOpen === agentTask.dataset.agentTask ? null : agentTask.dataset.agentTask; render(); return; }
+  if (t.closest("[data-agent-task-close]")) { taskOpen = null; render(); return; }
 
   const agentOpen = t.closest("[data-agent-open]");
   if (agentOpen) {
@@ -1066,6 +1104,22 @@ document.addEventListener("submit", async e => {
     await refresh(true);
     return;
   }
+  const runForm = e.target.closest("form[data-run-form]");
+  if (runForm) {
+    e.preventDefault();
+    const id = runForm.dataset.runForm;
+    const f = new FormData(runForm);
+    taskResults[id] = { running: true };
+    render();
+    try {
+      const r = await call("POST", `/api/agents/${id}/run`, { task: f.get("task"), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) });
+      taskResults[id] = { output: r.output, exitCode: r.exitCode, timedOut: r.timedOut };
+    } catch (error) {
+      taskResults[id] = { output: `出错：${error.message}`, exitCode: null };
+    }
+    render();
+    return;
+  }
   const priceForm = e.target.closest("form[data-price-form]");
   if (priceForm) {
     e.preventDefault();
@@ -1098,6 +1152,12 @@ document.addEventListener("submit", async e => {
   await refresh(true);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closePopover(); });
+// "toggle" does not bubble, so listen in the capture phase.
+document.addEventListener("toggle", e => {
+  const id = e.target?.dataset?.keep;
+  if (!id) return;
+  if (e.target.open) openDetails.add(id); else openDetails.delete(id);
+}, true);
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");
