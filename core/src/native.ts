@@ -17,6 +17,15 @@ export interface NativeFile {
   mentionsEasySwitch: boolean;
 }
 
+/**
+ * Codex records every folder the user trusts as a `[projects."<path>"]` table. When the user works on
+ * EasySwitch itself the path contains the product's name, which is the user's own folder and not a
+ * trace of EasySwitch in their configuration; those headers are not looked at.
+ */
+export function withoutProjectPaths(text: string): string {
+  return text.replace(/^\s*\[projects\.(?:"[^"\n]*"|'[^'\n]*')\]\s*$/gm, "");
+}
+
 function codexHome(): string {
   return process.env.CODEX_HOME ?? join(homedir(), ".codex");
 }
@@ -37,7 +46,7 @@ export function nativeFiles(): NativeFile[] {
         harness, path, exists: true,
         sha256: createHash("sha256").update(bytes).digest("hex"),
         modifiedAt: statSync(path).mtime.toISOString(),
-        mentionsEasySwitch: /easyswitch/i.test(bytes.toString("utf8")),
+        mentionsEasySwitch: /easyswitch/i.test(withoutProjectPaths(bytes.toString("utf8"))),
       };
     } catch {
       return { harness, path, exists: false, mentionsEasySwitch: false };

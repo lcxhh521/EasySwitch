@@ -71,3 +71,13 @@ test("the icon manifest is current: run `node scripts/icon-manifest.mjs` after c
   const after = readFileSync(join(dir, "manifest.json"), "utf8");
   assert.equal(after, before);
 });
+
+test("a folder the user trusts in Codex is not mistaken for a trace of EasySwitch in their config", async () => {
+  const { withoutProjectPaths } = await import("../src/native.ts");
+  const trusted = '[projects."/Users/me/workspace/EasySwitch"]\ntrust_level = "trusted"\n';
+  assert.ok(!/easyswitch/i.test(withoutProjectPaths(trusted)));
+  // A real trace still shows: our provider, or any other mention outside a project-path header.
+  assert.ok(/easyswitch/i.test(withoutProjectPaths('model_provider = "easyswitch"\n' + trusted)));
+  assert.ok(/easyswitch/i.test(withoutProjectPaths('[model_providers.easyswitch]\nbase_url = "http://127.0.0.1:18765/v1"\n')));
+  assert.ok(/easyswitch/i.test(withoutProjectPaths('notes = "see /Users/me/workspace/EasySwitch"\n')), "only the project header is exempt");
+});

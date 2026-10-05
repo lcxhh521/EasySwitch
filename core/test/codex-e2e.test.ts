@@ -7,6 +7,7 @@
  * Codex runs with a throwaway CODEX_HOME, and the user's real
  * ~/.codex/config.toml is fingerprinted before and after.
  */
+import { withoutProjectPaths } from "../src/native.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -162,6 +163,8 @@ test("EasySwitch leaves no trace in the user's real Codex config", t => {
   const real = join(homedir(), ".codex", "config.toml");
   let text = "";
   try { text = readFileSync(real, "utf8"); } catch { /* no config at all is clean too */ }
-  assert.equal(/easyswitch|es-codex-home|es-work-/i.test(text), false);
+  // A `[projects."<path>"]` header is Codex remembering a folder the user trusts (their own checkout of
+  // this project has our name in its path); it is not something EasySwitch wrote.
+  assert.equal(/easyswitch|es-codex-home|es-work-/i.test(withoutProjectPaths(text)), false);
   if (realCodexConfigHash() !== hashBefore) t.diagnostic("~/.codex/config.toml changed during the run (not by EasySwitch: no trace above)");
 });
