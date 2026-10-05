@@ -1,13 +1,13 @@
 import { anthropicModelList, catalogModels } from "./catalog.ts";
 import { withKey } from "./keypool.ts";
-import { chatCompletionsUrl, quirksFor, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
+import { quirksFor, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
 import type { Store } from "./store.ts";
 import { ResponsesStream, responsesToChat } from "./translate.ts";
 import type { GatewayLogEntry, Provider } from "./types.ts";
-import { authHeaders, describeFailure, joinUrl, sseData } from "./upstream.ts";
+import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
 
 type Json = Record<string, unknown>;
 
@@ -71,9 +71,9 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     // The relay speaks Responses itself: forward the request untouched except
     // for the model name, and stream its bytes straight back.
     const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-      fetch(joinUrl(provider.baseUrl, "responses"), {
+      fetch(endpointUrl(provider, "responses"), {
         method: "POST",
-        headers: { "content-type": "application/json", accept: req.headers.accept ?? "text/event-stream", ...authHeaders(apiKey) },
+        headers: { "content-type": "application/json", accept: req.headers.accept ?? "text/event-stream", ...upstreamHeaders(provider, apiKey) },
         body: JSON.stringify({ ...body, model: upstreamModelId(model) }),
         signal: abort.signal,
       }).catch((error: Error) => error));
@@ -95,9 +95,9 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}),
   });
   const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-    fetch(chatCompletionsUrl(provider.baseUrl), {
+    fetch(endpointUrl(provider, "chat"), {
       method: "POST",
-      headers: { "content-type": "application/json", ...authHeaders(apiKey) },
+      headers: { "content-type": "application/json", ...upstreamHeaders(provider, apiKey) },
       body: JSON.stringify(chat),
       signal: abort.signal,
     }).catch((error: Error) => error));

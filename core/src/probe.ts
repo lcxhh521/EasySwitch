@@ -1,14 +1,14 @@
 import type { MessagesRoute, ProbeCheck, ProbeReport, Provider, ProviderRoute } from "./types.ts";
-import { authHeaders, describeFailure, joinUrl, sseData, timedFetch } from "./upstream.ts";
+import { describeFailure, endpointUrl, sseData, timedFetch, upstreamHeaders, type CallKind } from "./upstream.ts";
 
 type Json = Record<string, unknown>;
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
-async function postJson(provider: Provider, apiKey: string | undefined, path: string, body: Json) {
-  return timedFetch(joinUrl(provider.baseUrl, path), {
+async function postJson(provider: Provider, apiKey: string | undefined, kind: CallKind, body: Json) {
+  return timedFetch(endpointUrl(provider, kind), {
     method: "POST",
-    headers: { ...JSON_HEADERS, ...authHeaders(apiKey) },
+    headers: { ...JSON_HEADERS, ...upstreamHeaders(provider, apiKey) },
     body: JSON.stringify(body),
   });
 }
@@ -23,7 +23,7 @@ function messageText(json: Json): string {
 export async function listModels(provider: Provider, apiKey: string | undefined): Promise<{ check: ProbeCheck; models: string[] }> {
   const label = "列出模型";
   try {
-    const { response, ms } = await timedFetch(joinUrl(provider.baseUrl, "models"), { headers: authHeaders(apiKey) }, 15_000);
+    const { response, ms } = await timedFetch(endpointUrl(provider, "models"), { headers: upstreamHeaders(provider, apiKey) }, 15_000);
     if (!response.ok) return { check: { id: "models", label, status: "fail", latencyMs: ms, detail: await describeFailure(response) }, models: [] };
     const json = (await response.json()) as Json;
     const models = (Array.isArray(json.data) ? json.data : [])
@@ -39,7 +39,7 @@ export async function listModels(provider: Provider, apiKey: string | undefined)
 async function checkChat(provider: Provider, apiKey: string | undefined, model: string): Promise<ProbeCheck> {
   const label = "普通回答";
   try {
-    const { response, ms } = await postJson(provider, apiKey, "chat/completions", {
+    const { response, ms } = await postJson(provider, apiKey, "chat", {
       model, stream: false, max_tokens: 32,
       messages: [{ role: "user", content: "Reply with exactly the word: pong" }],
     });
@@ -58,7 +58,7 @@ async function checkStream(provider: Provider, apiKey: string | undefined, model
     try {
       const body: Json = { model, stream: true, max_tokens: 32, messages: [{ role: "user", content: "Count from 1 to 5." }] };
       if (withUsage) body.stream_options = { include_usage: true };
-      const { response, ms } = await postJson(provider, apiKey, "chat/completions", body);
+      const { response, ms } = await postJson(provider, apiKey, "chat", body);
       if (!response.ok || !response.body) {
         if (withUsage && response.status === 400) continue;
         return { check: { id: "chat-stream", label, status: "fail", latencyMs: ms, detail: await describeFailure(response) }, streamUsage: false };
@@ -87,7 +87,7 @@ async function checkStream(provider: Provider, apiKey: string | undefined, model
 async function checkTools(provider: Provider, apiKey: string | undefined, model: string): Promise<ProbeCheck> {
   const label = "工具调用";
   try {
-    const { response, ms } = await postJson(provider, apiKey, "chat/completions", {
+    const { response, ms } = await postJson(provider, apiKey, "chat", {
       model, stream: false, max_tokens: 128, tool_choice: "auto",
       messages: [{ role: "user", content: "What is the weather in Paris? Use the tool." }],
       tools: [{
@@ -131,22 +131,22 @@ async function checkResponses(provider: Provider, apiKey: string | undefined, mo
 }
 
 /** Anthropic Messages headers: relays read either the bearer or x-api-key. */
-export function anthropicHeaders(apiKey: string | undefined): Record<string, string> {
+export function anthropicHeaders(apiKey: string | undefined, provider?: Pick<Provider, "wire">): Record<string, string> {
   return {
     "content-type": "application/json",
     "anthropic-version": "2023-06-01",
-    ...(apiKey ? { "x-api-key": apiKey, ...authHeaders(apiKey) } : {}),
+    ...(apiKey ? { "x-api-key": apiKey } : {}),
+    ...upstreamHeaders(provider ?? {}, apiKey),
   };
 }
 
 /** Does the provider speak Anthropic Messages? Then Claude Code traffic passes through untouched. */
 async function checkMessages(provider: Provider, apiKey: string | undefined, model: string): Promise<ProbeCheck> {
   const label = "原生 Messages 协议";
-  const base = provider.anthropicBaseUrl ?? provider.baseUrl;
   try {
-    const { response, ms } = await timedFetch(joinUrl(base, "messages"), {
+    const { response, ms } = await timedFetch(endpointUrl(provider, "messages"), {
       method: "POST",
-      headers: anthropicHeaders(apiKey),
+      headers: anthropicHeaders(apiKey, provider),
       body: JSON.stringify({ model, max_tokens: 32, messages: [{ role: "user", content: "Reply with exactly the word: pong" }] }),
     });
     if (!response.ok) return { id: "messages", label, status: "fail", latencyMs: ms, detail: `不支持（${await describeFailure(response)}），Claude Code 将走协议转换` };

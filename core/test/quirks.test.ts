@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AnthropicStream } from "../src/anthropic.ts";
-import { chatCompletionsUrl, quirksFor, ReasoningMemory, repairToolPairs, shapeChat, toolChoiceToChat, upstreamModelId } from "../src/quirks.ts";
+import { quirksFor, ReasoningMemory, repairToolPairs, shapeChat, toolChoiceToChat, upstreamModelId } from "../src/quirks.ts";
+import { endpointUrl } from "../src/upstream.ts";
 import { ResponsesStream, responsesToChat } from "../src/translate.ts";
 import type { ChatMessage, ChatRequest } from "../src/translate.ts";
 
 test("a base URL that already names the endpoint is not doubled; bracket suffixes go", () => {
-  assert.equal(chatCompletionsUrl("https://relay.example.com/v1"), "https://relay.example.com/v1/chat/completions");
-  assert.equal(chatCompletionsUrl("https://relay.example.com/v1/chat/completions"), "https://relay.example.com/v1/chat/completions");
-  assert.equal(chatCompletionsUrl("https://copilot.tencent.com/v2/chat/completions/"), "https://copilot.tencent.com/v2/chat/completions");
+  const url = (baseUrl: string) => endpointUrl({ baseUrl }, "chat");
+  assert.equal(url("https://relay.example.com/v1"), "https://relay.example.com/v1/chat/completions");
+  assert.equal(url("https://relay.example.com/v1/chat/completions"), "https://relay.example.com/v1/chat/completions");
+  assert.equal(url("https://copilot.tencent.com/v2/chat/completions/"), "https://copilot.tencent.com/v2/chat/completions");
   assert.equal(upstreamModelId("glm-5.3[1m]"), "glm-5.3");
   assert.equal(upstreamModelId("deepseek-chat"), "deepseek-chat");
 });

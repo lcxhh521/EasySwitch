@@ -1,0 +1,26 @@
+{
+ "mono": [
+  "anthropic",
+  "cerebras",
+  "deepinfra",
+  "groq",
+  "kimi",
+  "kimi-color",
+  "lmstudio",
+  "moonshot",
+  "neuralwatt",
+  "ollama",
+  "ollama-color",
+  "openai",
+  "opencode",
+  "opengateway",
+  "openrouter",
+  "packycode",
+  "qianfan-color",
+  "siliconcloud-color",
+  "tokenlab",
+  "vercel-ai-gateway-color",
+  "xai",
+  "zenmux"
+ ]
+}

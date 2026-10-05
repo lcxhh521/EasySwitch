@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { Ledger, summarize } from "../src/ledger.ts";
-import { iconForBaseUrl } from "../src/presets.ts";
+import { iconForBaseUrl, PRESETS } from "../src/presets.ts";
 import type { GatewayLogEntry } from "../src/types.ts";
 
 const NOW = new Date("2026-10-05T16:00:00+08:00");
@@ -42,9 +44,30 @@ test("a 7-day summary has a slot for every day, quiet days included", () => {
 
 test("provider icons follow the host; only Ollama's port on localhost reads as Ollama", () => {
   assert.equal(iconForBaseUrl("https://api.deepseek.com/v1"), "deepseek-color");
-  assert.equal(iconForBaseUrl("https://api.moonshot.cn/v1"), "kimi");
-  assert.equal(iconForBaseUrl("http://127.0.0.1:11434/v1"), "ollama");
+  assert.equal(iconForBaseUrl("https://api.moonshot.cn/v1"), "kimi-color");
+  assert.equal(iconForBaseUrl("http://127.0.0.1:11434/v1"), "ollama-color");
   assert.equal(iconForBaseUrl("http://127.0.0.1:10100/v1"), "newapi-color");
-  assert.equal(iconForBaseUrl("https://relay.example.com/v1"), "newapi-color");
+  assert.equal(iconForBaseUrl("https://my-res.openai.azure.com/openai/v1"), "openai", "a templated preset host matches by its tail");
+  assert.equal(iconForBaseUrl("https://cf.api.fan/v1"), "packycode", "an imported provider on a preset host gets that brand");
+  assert.equal(iconForBaseUrl("https://relay.example.com/v1", "星河中转"), "letter:星", "unknown relays get their own letter, not another brand's mark");
   assert.equal(iconForBaseUrl("not a url"), "newapi-color");
+});
+
+test("every icon a preset names exists as a file, so no provider shows a broken or borrowed mark", () => {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "icons");
+  for (const preset of PRESETS) {
+    if (preset.icon.startsWith("letter:")) continue;
+    assert.ok(existsSync(join(dir, `${preset.icon}.svg`)), `${preset.id}: icons/${preset.icon}.svg`);
+  }
+  // Brands that have a mark must not share the generic relay mark with each other.
+  const generic = PRESETS.filter(p => p.icon === "newapi-color").map(p => p.id);
+  assert.deepEqual(generic, ["relay"], "only the custom relay entry uses the relay mark");
+});
+
+test("the icon manifest is current: run `node scripts/icon-manifest.mjs` after changing web/icons", () => {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "icons");
+  const before = readFileSync(join(dir, "manifest.json"), "utf8");
+  execFileSync(process.execPath, [join(dir, "..", "..", "scripts", "icon-manifest.mjs")]);
+  const after = readFileSync(join(dir, "manifest.json"), "utf8");
+  assert.equal(after, before);
 });

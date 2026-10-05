@@ -30,12 +30,35 @@ export interface Provider {
   /** Whether the provider accepts `stream_options.include_usage`. */
   streamUsage: boolean;
   probe?: ProbeReport;
+  /** Icon chosen when the provider was added (from its preset); otherwise derived from the address. */
+  icon?: string;
+  /**
+   * Values for `{placeholders}` in the addresses (Azure resource name, Cloudflare
+   * account id…). Filled in by the user when adding the provider.
+   */
+  urlParams?: Record<string, string>;
+  /** How this provider differs from plain "Bearer key on /chat/completions". */
+  wire?: WireConfig;
   /**
    * The key pool, tried in order. Absent on providers saved before pools:
    * those have one implicit key stored under the provider id (see keypool.ts).
    */
   keys?: ProviderKey[];
   createdAt: string;
+}
+
+/** Wire-level differences a provider may have; all optional, all plain data. */
+export interface WireConfig {
+  /** Header that carries the key; default "authorization". */
+  authHeader?: string;
+  /** "bearer" sends `Bearer <key>`; "raw" sends the key as is (api-key, x-goog-api-key). */
+  authScheme?: "bearer" | "raw";
+  /** Extra fixed headers. */
+  headers?: Record<string, string>;
+  /** Extra query parameters on every call (Azure's api-version on older APIs). */
+  query?: Record<string, string>;
+  /** Path overrides per call kind, relative to the base address. */
+  paths?: Partial<Record<"chat" | "responses" | "messages" | "models", string>>;
 }
 
 /** One key (one account, one subscription) of a provider. The secret itself lives in the Keychain. */
@@ -146,4 +169,7 @@ export interface ProviderPreset {
   note?: string;
   /** Group heading in the picker. */
   category?: string;
+  /** Placeholders in baseUrl / anthropicBaseUrl the user has to fill in. */
+  urlParams?: Array<{ key: string; label: string; example?: string }>;
+  wire?: WireConfig;
 }

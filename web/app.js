@@ -38,11 +38,21 @@ async function call(method, path, body) {
   return json;
 }
 
+let monoIcons = null; // Set of single-colour icon names, once icons/manifest.json is loaded
+
 function icon(name, cls = "") {
+  if (name.startsWith("letter:")) {
+    const letter = name.slice(7);
+    // Same letter, same colour; different letters land on different hues.
+    const hue = [...letter].reduce((h, c) => (h * 31 + c.codePointAt(0)) % 360, 7);
+    return `<span class="ic letter ${cls}" style="--h:${hue}">${esc(letter)}</span>`;
+  }
   const src = `icons/${name}.svg`;
-  return name.endsWith("-color")
-    ? `<img class="ic ${cls}" src="${src}" alt="">`
-    : `<span class="ic mono ${cls}" style="--src:url(${src})"></span>`;
+  // The manifest (scripts/icon-manifest.mjs) says by content which icons are single-colour.
+  const mono = monoIcons ? monoIcons.has(name) : !name.endsWith("-color");
+  return mono
+    ? `<span class="ic mono ${cls}" style="--src:url(${src})"></span>`
+    : `<img class="ic ${cls}" src="${src}" alt="">`;
 }
 
 const compactFmt = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
@@ -417,12 +427,14 @@ function presetGroups() {
 function renderAddForm() {
   const preset = addForm.preset;
   return `
-    <div class="field"><input type="search" id="preset-search" placeholder="搜索 ${presets.length} 个预设：DeepSeek、Kimi、中转站、本地……" value="${esc(presetQuery)}" autocomplete="off"></div>
+    <div class="field"><input type="search" id="preset-search" style="width:100%" placeholder="搜索 ${presets.length} 个预设：DeepSeek、Kimi、中转站、本地……" value="${esc(presetQuery)}" autocomplete="off"></div>
     ${presetGroups()}
     <form class="form" id="add-form">
       <div class="field"><label>名称</label><input type="text" name="name" required value="${esc(preset && preset.id !== "relay" ? preset.name : "")}" placeholder="例如：我的中转站"></div>
-      <div class="field"><label>OpenAI 兼容地址</label><input type="url" name="baseUrl" required value="${esc(preset?.baseUrl ?? "")}" placeholder="https://relay.example.com/v1"></div>
-      <div class="field"><label>Anthropic 地址（可选，给 Claude Code 原样转发用）</label><input type="url" name="anthropicBaseUrl" value="${esc(preset?.anthropicBaseUrl ?? "")}" placeholder="不填就用上面的地址"></div>
+      ${(preset?.urlParams ?? []).map(x => `
+      <div class="field"><label>${esc(x.label)}（填进地址里的 {${esc(x.key)}}）</label><input type="text" name="param:${esc(x.key)}" required autocomplete="off" placeholder="${esc(x.example ?? "")}"></div>`).join("")}
+      <div class="field"><label>OpenAI 兼容地址</label><input type="text" name="baseUrl" required value="${esc(preset?.baseUrl ?? "")}" placeholder="https://relay.example.com/v1"></div>
+      <div class="field"><label>Anthropic 地址（可选，给 Claude Code 原样转发用）</label><input type="text" name="anthropicBaseUrl" value="${esc(preset?.anthropicBaseUrl ?? "")}" placeholder="不填就用上面的地址"></div>
       <div class="field"><label>API Key（存进 macOS 钥匙串）${preset?.keyUrl ? ` · <a href="${esc(preset.keyUrl)}" target="_blank" rel="noopener">去哪里拿 Key</a>` : ""}</label><input type="password" name="apiKey" autocomplete="off"></div>
       <div class="controls"><button class="btn" type="submit">添加并测试</button><button class="btn secondary" type="button" data-cancel-add>取消</button></div>
       <p class="msg" id="add-msg"></p>
@@ -459,6 +471,10 @@ function renderProviders() {
 
 async function submitAdd(form) {
   const data = Object.fromEntries(new FormData(form));
+  // Placeholder values travel as their own object; the preset (not the page) decides the wire details.
+  data.urlParams = Object.fromEntries(Object.entries(data).filter(([k]) => k.startsWith("param:")).map(([k, v]) => [k.slice(6), v]));
+  for (const k of Object.keys(data)) if (k.startsWith("param:")) delete data[k];
+  if (addForm.preset) data.presetId = addForm.preset.id;
   const msg = $("#add-msg");
   msg.className = "msg";
   msg.textContent = "正在添加并读取模型列表…";
@@ -925,5 +941,6 @@ if (PANEL) {
   $("#nav").remove();
   $("#refresh").remove();
 }
+fetch("icons/manifest.json").then(r => r.json()).then(m => { monoIcons = new Set(m.mono); if (state) render(); }).catch(() => {});
 refresh(true);
 setInterval(() => refresh(), 3000);

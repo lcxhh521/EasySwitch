@@ -1,4 +1,4 @@
-import type { ProviderPreset } from "./types.ts";
+import type { ProviderPreset, WireConfig } from "./types.ts";
 
 /**
  * One-click starting points, grouped for the picker. Addresses, labels, key
@@ -12,16 +12,52 @@ import type { ProviderPreset } from "./types.ts";
  */
 export const PRESET_CATEGORIES = ["编程套餐", "国内官方", "国际官方", "中转与聚合", "推理平台", "本地", "自定义"] as const;
 
-type Extra = { anthropic?: string; model?: string; key?: string; note?: string; icon?: string };
+type Extra = {
+  anthropic?: string; model?: string; key?: string; note?: string; icon?: string;
+  params?: Array<{ key: string; label: string; example?: string }>;
+  wire?: WireConfig;
+};
+
+/**
+ * Brand mark per preset (files in web/icons: lobe-icons, MIT, and opencodex's
+ * provider-icons set, MIT; the marks belong to their owners and only identify
+ * the service). A preset without one gets a letter avatar, never another
+ * brand's mark.
+ */
+const ICON_BY_ID: Record<string, string> = {
+  "zhipu-coding": "zhipu-color", zhipu: "zhipu-color", zai: "zai",
+  "kimi-coding": "kimi-color", kimi: "kimi-color",
+  "minimax-coding-cn": "minimax-color", "minimax-coding": "minimax-color",
+  "volcengine-coding": "volcengine-color", volcengine: "volcengine-color",
+  "tencent-coding": "hunyuan-color", "alibaba-token-plan": "alibaba-color", qwen: "qwen-color",
+  "mimo-token-plan": "xiaomi-color", xiaomi: "xiaomi-color", "opencode-go": "opencode", "opencode-zen": "opencode",
+  deepseek: "deepseek-color", qianfan: "qianfan-color", stepfun: "stepfun-color", siliconflow: "siliconcloud-color",
+  openai: "openai", "azure-openai": "openai", anthropic: "anthropic", gemini: "gemini-color", xai: "xai", mistral: "mistral-color", meta: "meta",
+  openrouter: "openrouter-color", zenmux: "zenmux", vercel: "vercel-ai-gateway-color", huggingface: "huggingface-color",
+  packycode: "packycode", orcarouter: "orcarouter", tokenlab: "tokenlab", opengateway: "opengateway",
+  nanogpt: "nanogpt", cline: "cline-color", kilo: "kilo", "cloudflare-ai-gateway": "cloudflare-ai-gateway-color", "cloudflare-workers-ai": "cloudflare-ai-gateway-color",
+  groq: "groq-color", cerebras: "cerebras", together: "together", fireworks: "fireworks-color", deepinfra: "deepinfra", sambanova: "sambanova",
+  nebius: "nebius", hyperbolic: "hyperbolic", nvidia: "nvidia-color", baseten: "baseten", scaleway: "scaleway", digitalocean: "digitalocean",
+  vultr: "vultr", venice: "venice", neuralwatt: "neuralwatt", synthetic: "synthetic",
+  ollama: "ollama-color", "ollama-cloud": "ollama-color", lmstudio: "lm-studio-color", vllm: "vllm-color", litellm: "litellm",
+  relay: "newapi-color",
+};
+
+/** A letter avatar: the first character of the name, coloured by a hash so neighbours differ. */
+export function letterIcon(name: string): string {
+  return `letter:${[...name.trim()][0]?.toUpperCase() ?? "?"}`;
+}
 
 function p(category: typeof PRESET_CATEGORIES[number], id: string, name: string, baseUrl: string, x: Extra = {}): ProviderPreset {
   return {
     id, name, category, baseUrl,
-    icon: x.icon ?? iconForBaseUrl(baseUrl),
+    icon: x.icon ?? ICON_BY_ID[id] ?? letterIcon(name),
     ...(x.anthropic ? { anthropicBaseUrl: x.anthropic } : {}),
     ...(x.model ? { defaultModel: x.model } : {}),
     ...(x.key ? { keyUrl: x.key } : {}),
     ...(x.note ? { note: x.note } : {}),
+    ...(x.params ? { urlParams: x.params } : {}),
+    ...(x.wire ? { wire: x.wire } : {}),
   };
 }
 
@@ -72,6 +108,22 @@ export const PRESETS: ProviderPreset[] = [
   p("中转与聚合", "cline", "Cline", "https://api.cline.bot/api/v1", { model: "anthropic/claude-sonnet-5" }),
   p("中转与聚合", "kilo", "Kilo", "https://api.kilo.ai/api/gateway"),
 
+  // 地址里有你自己的名字或 ID 的
+  p("国际官方", "azure-openai", "Azure OpenAI", "https://{resource}.openai.azure.com/openai/v1", {
+    params: [{ key: "resource", label: "Azure 资源名", example: "my-openai" }],
+    wire: { authHeader: "api-key", authScheme: "raw" },
+    icon: "openai", key: "https://portal.azure.com/", note: "模型名填「部署名」；用的是 v1 接口，不需要 api-version",
+  }),
+  p("推理平台", "cloudflare-workers-ai", "Cloudflare Workers AI", "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", {
+    params: [{ key: "account_id", label: "Cloudflare 账号 ID", example: "a1b2c3…" }],
+    key: "https://dash.cloudflare.com/profile/api-tokens", note: "有免费额度；模型名形如 @cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  }),
+  p("中转与聚合", "cloudflare-ai-gateway", "Cloudflare AI Gateway", "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/openai", {
+    anthropic: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/anthropic",
+    params: [{ key: "account_id", label: "Cloudflare 账号 ID" }, { key: "gateway", label: "网关名称", example: "my-gateway" }],
+    note: "套在别的服务商前面的网关；Key 填你要用的那家的 Key",
+  }),
+
   // 推理平台
   p("推理平台", "groq", "Groq", "https://api.groq.com/openai/v1", { key: "https://console.groq.com/keys", note: "跑得快；有开源模型" }),
   p("推理平台", "cerebras", "Cerebras", "https://api.cerebras.ai/v1", { model: "gpt-oss-120b" }),
@@ -102,8 +154,8 @@ export const PRESETS: ProviderPreset[] = [
   { id: "relay", name: "自定义中转站", category: "自定义", icon: "newapi-color", baseUrl: "", note: "任何 OpenAI 兼容地址；也可以回到首页把使用说明整段粘贴" },
 ];
 
-/** The icon for a provider, from its address; relays and unknown hosts get the relay mark. */
-export function iconForBaseUrl(baseUrl: string): string {
+/** The icon for a provider, from its address: a preset on the same host first, then the vendor table, else a letter avatar. */
+export function iconForBaseUrl(baseUrl: string, name?: string): string {
   let host = "";
   let port = "";
   try {
@@ -111,17 +163,27 @@ export function iconForBaseUrl(baseUrl: string): string {
     host = url.hostname;
     port = url.port;
   } catch {
-    // Not a URL: falls through to the relay mark.
+    // Not a URL: falls through to the fallback.
   }
   // Only Ollama's own port reads as Ollama; any other local address is some relay.
-  if (/^(127\.0\.0\.1|localhost)$/.test(host)) return port === "11434" ? "ollama" : "newapi-color";
+  if (/^(127\.0\.0\.1|localhost)$/.test(host)) return port === "11434" ? "ollama-color" : "newapi-color";
+  // Placeholders in preset addresses ({resource}.openai.azure.com) match by their fixed tail.
+  const sameHost = PRESETS.find(p => {
+    try {
+      const pattern = new URL(p.baseUrl.replace(/\{[^}]+\}/g, "x")).hostname;
+      return pattern === host || (pattern.startsWith("x.") && host.endsWith(pattern.slice(1)));
+    } catch {
+      return false;
+    }
+  });
+  if (sameHost && sameHost.id !== "relay") return sameHost.icon;
   const table: Array<[RegExp, string]> = [
-    [/deepseek/, "deepseek-color"], [/moonshot|kimi/, "kimi"], [/bigmodel|zhipu/, "zhipu-color"],
-    [/dashscope|aliyun|qwen/, "qwen-color"], [/minimax/, "minimax-color"], [/openrouter/, "openrouter"],
+    [/deepseek/, "deepseek-color"], [/moonshot|kimi/, "kimi-color"], [/bigmodel|zhipu/, "zhipu-color"],
+    [/dashscope|aliyun|qwen/, "qwen-color"], [/minimax/, "minimax-color"], [/openrouter/, "openrouter-color"],
     [/anthropic/, "anthropic"], [/openai\.com/, "openai"], [/googleapis|gemini/, "gemini-color"],
     [/siliconflow/, "siliconcloud-color"], [/volces|volcengine|ark\./, "volcengine-color"],
     [/hunyuan|tencent/, "hunyuan-color"], [/stepfun/, "stepfun-color"], [/x\.ai/, "xai"],
-    [/groq/, "groq"], [/mistral/, "mistral-color"],
+    [/groq/, "groq-color"], [/mistral/, "mistral-color"],
   ];
-  return table.find(([re]) => re.test(host))?.[1] ?? "newapi-color";
+  return table.find(([re]) => re.test(host))?.[1] ?? (name ? letterIcon(name) : "newapi-color");
 }

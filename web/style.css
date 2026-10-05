@@ -125,7 +125,7 @@ main { max-width: 980px; margin: 0 auto; padding: 8px 20px 60px; display: grid; 
 /* ---- provider detail ---- */
 .detail { padding: 4px 16px 16px 54px; border-top: 1px dashed var(--line-2); display: grid; gap: 12px; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-select, input[type="text"], input[type="password"], input[type="url"] { padding: 7px 10px; border: 0; border-radius: 9px; background: var(--pill); color: var(--fg); font: inherit; min-width: 0; }
+select, input[type="text"], input[type="password"], input[type="url"], input[type="search"], textarea { padding: 7px 10px; border: 0; border-radius: 9px; background: var(--pill); color: var(--fg); font: inherit; min-width: 0; }
 input:focus, select:focus { outline: 2px solid var(--accent-soft); }
 .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
 .check { border-radius: 10px; padding: 8px 10px; background: var(--pill); font-size: 12px; color: var(--muted); }
@@ -219,3 +219,11 @@ body.panel .panel-foot button:hover { color: var(--fg); background: var(--pill);
   .popbtn { min-width: 0; max-width: 100%; }
   .detail { padding-left: 16px; }
 }
+
+/* Letter avatar for providers without a brand mark */
+.ic.letter { display: inline-grid; place-items: center; border-radius: 7px; font-weight: 700; font-size: 12px; line-height: 1;
+  background: hsl(var(--h) 60% 90%); color: hsl(var(--h) 55% 32%); }
+.ic.letter.lg { font-size: 16px; border-radius: 9px; }
+.ic.letter.sm { font-size: 10px; border-radius: 5px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ic.letter { background: hsl(var(--h) 35% 24%); color: hsl(var(--h) 70% 82%); } }
+:root[data-theme="dark"] .ic.letter { background: hsl(var(--h) 35% 24%); color: hsl(var(--h) 70% 82%); }

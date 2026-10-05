@@ -6,10 +6,10 @@ import type { GatewayLogEntry } from "./types.ts";
 import { fromClaudeModelId } from "./catalog.ts";
 import { createHash } from "node:crypto";
 import { withKey } from "./keypool.ts";
-import { chatCompletionsUrl, quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
+import { quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
 import { resolveModel } from "./gateway.ts";
 import { anthropicHeaders } from "./probe.ts";
-import { authHeaders, describeFailure, joinUrl, sseData } from "./upstream.ts";
+import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
 
 type Json = Record<string, unknown>;
 
@@ -61,9 +61,9 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     const thinking = forwarded.thinking as Json | undefined;
     if (thinking && thinking.type !== "enabled") delete forwarded.thinking;
     const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-      fetch(joinUrl(provider.anthropicBaseUrl ?? provider.baseUrl, "messages"), {
+      fetch(endpointUrl(provider, "messages"), {
         method: "POST",
-        headers: { ...anthropicHeaders(apiKey), accept: req.headers.accept ?? "application/json" },
+        headers: { ...anthropicHeaders(apiKey, provider), accept: req.headers.accept ?? "application/json" },
         body: JSON.stringify(forwarded),
         signal: abort.signal,
       }).catch((error: Error) => error));
@@ -84,9 +84,9 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     ? createHash("sha256").update(String((body.metadata as Json).user_id)).digest("hex").slice(0, 32)
     : undefined;
   shapeChat(chat, { quirks: quirksFor(provider.baseUrl, model), ...(sessionKey ? { cacheKey: sessionKey } : {}) });
-  const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(chatCompletionsUrl(provider.baseUrl), {
+  const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(endpointUrl(provider, "chat"), {
     method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders(apiKey) },
+    headers: { "content-type": "application/json", ...upstreamHeaders(provider, apiKey) },
     body: JSON.stringify(payload),
     signal: abort.signal,
   }).catch((error: Error) => error);

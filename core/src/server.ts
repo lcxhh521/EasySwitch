@@ -17,6 +17,7 @@ import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { slugify, type Store } from "./store.ts";
+import { expandUrl, UnresolvedPlaceholder } from "./upstream.ts";
 import type { Account, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
 
 type Json = Record<string, unknown>;
@@ -65,7 +66,7 @@ function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
   // Key metadata is public inside the console; the secrets themselves never leave the Keychain.
   const keys = (p.keys ?? []).map(({ id, label, enabled, addedAt, lastUsedAt, restUntil, lastError }) =>
     ({ id, label, enabled, addedAt, ...(lastUsedAt ? { lastUsedAt } : {}), ...(restUntil ? { restUntil } : {}), ...(lastError ? { lastError } : {}) }));
-  return { ...p, hasKey, ...(keys.length ? { keys } : {}), icon: iconForBaseUrl(p.baseUrl), usedBy };
+  return { ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy };
 }
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
@@ -273,7 +274,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/import/opencodex") {
       const configPath = typeof body.configPath === "string" && body.configPath.trim() ? body.configPath.trim() : undefined;
       if (method === "GET") {
-        json(res, 200, { candidates: opencodexCandidates(configPath).map(c => ({ ...c, icon: iconForBaseUrl(c.baseUrl) })) });
+        json(res, 200, { candidates: opencodexCandidates(configPath).map(c => ({ ...c, icon: iconForBaseUrl(c.baseUrl, c.name) })) });
         return;
       }
       if (method === "POST") {
@@ -300,12 +301,31 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 400, { error: "需要名称和以 http(s):// 开头的地址" });
         return;
       }
+      // Wire differences (auth header, extra headers, paths) come from the preset, never from the page.
+      const preset = PRESETS.find(x => x.id === body.presetId);
+      const urlParams: Record<string, string> = {};
+      for (const { key } of preset?.urlParams ?? []) {
+        const value = String((body.urlParams as Record<string, unknown> | undefined)?.[key] ?? "").trim();
+        if (value) urlParams[key] = value;
+      }
       const provider: Provider = {
         id: slugify(name, store.providers().map(p => p.id)),
         name, baseUrl, models: [], route: "chat-translate", routePinned: false, streamUsage: true,
         ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
+        ...(Object.keys(urlParams).length ? { urlParams } : {}),
+        ...(preset?.wire ? { wire: preset.wire } : {}),
+        ...(preset && preset.id !== "relay" ? { icon: preset.icon } : {}),
         createdAt: new Date().toISOString(),
       };
+      try {
+        expandUrl(provider.baseUrl, provider.urlParams);
+      } catch (error) {
+        if (error instanceof UnresolvedPlaceholder) {
+          json(res, 400, { error: error.message });
+          return;
+        }
+        throw error;
+      }
       if (apiKey) await secrets.set(provider.id, apiKey);
       const { models } = await listModels(provider, apiKey || undefined);
       provider.models = models;

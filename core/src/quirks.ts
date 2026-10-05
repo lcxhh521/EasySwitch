@@ -50,11 +50,6 @@ export function quirksFor(baseUrl: string, model: string): Quirks {
   };
 }
 
-/** `https://relay/v1/chat/completions` configured as a base URL must not double the path. */
-export function chatCompletionsUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, "").replace(/\/chat\/completions$/, "")}/chat/completions`;
-}
-
 /** Claude Code appends context markers such as `glm-5.3[1m]`; Chat upstreams reject them. */
 export function upstreamModelId(model: string): string {
   return model.replace(/\[[^\]]*\]$/, "");
