@@ -72,6 +72,12 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 - Copilot CLI、Qoder、CodeBuddy 等的启动方式验证。
 - 网关鉴权、原生 Keychain API（现在用 `security` 命令）。
 
+## 待办（必须遵守）
+
+- 需求清单只有一份：`BACKLOG.md`。用户在对话里提的每个需求、变更、决定，**立刻**写进去（一条一行，带用户原话和日期），再动手。
+- 收工前对照清单：做完的标 `[x]` 并写“验证：”（提交号/测试/实测）；最后的回复里说清做完几条、还剩几条、新增几条。
+- `npm run backlog` 看未完成项，`npm run backlog -- --check` 查格式。Claude Code 有钩子自动提醒和拦截（`.claude/settings.json`）。
+
 ## Git 约定
 
 - 提交信息用英文：一行标题 + 要点正文。提交前跑 `npm run typecheck` 和 `npm test`，用 `git status` 检查没有意外文件，不提交临时物。
