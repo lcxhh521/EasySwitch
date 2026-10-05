@@ -23,6 +23,7 @@ import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
+import { AUTO_AGENT, describeWhen, matchingRules, parseRule, type TaskFacts } from "./dispatch.ts";
 import { isMimoFree } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
@@ -142,8 +143,45 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
   const tasks = new TaskBook(store.dir);
 
-  /** Hands a task to an agent: records it, runs it headlessly in the background, records how it ended. */
-  async function startTask(id: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
+  /** Whether an agent can take a task right now: installed, and it has a headless form. */
+  async function canTake(id: string): Promise<boolean> {
+    return Boolean(LAUNCHERS[id]?.headless) && Boolean(await agentBinary(id));
+  }
+
+  /**
+   * "auto": which agent, model and level the dispatch rules pick for this task. A rule whose agent
+   * is not available is skipped for the next matching one; with none left, the first agent that
+   * can take a task is used, and the answer says so.
+   */
+  async function decideAuto(facts: TaskFacts): Promise<{ agent: string; model?: string; effort?: string; why: string }> {
+    const skipped: string[] = [];
+    for (const rule of matchingRules(store.rules(), facts)) {
+      if (await canTake(rule.then.agent)) {
+        const name = AGENTS.find(a => a.id === rule.then.agent)?.name ?? rule.then.agent;
+        return {
+          agent: rule.then.agent, ...(rule.then.model ? { model: rule.then.model } : {}), ...(rule.then.effort ? { effort: rule.then.effort } : {}),
+          why: `按规则「${rule.name}」（${describeWhen(rule.when)}）派给 ${name}${skipped.length ? `；${skipped.join("；")}` : ""}`,
+        };
+      }
+      skipped.push(`规则「${rule.name}」要派给 ${rule.then.agent}，但它现在接不了活，已跳过`);
+    }
+    for (const a of AGENTS) {
+      if (await canTake(a.id)) return { agent: a.id, why: `没有规则接这个任务，交给第一个能接活的 ${a.name}${skipped.length ? `；${skipped.join("；")}` : ""}` };
+    }
+    throw new Error("现在没有任何 agent 能接活：先在 Agent 页确认至少一个已安装");
+  }
+
+  /** Hands a task to an agent ("auto": the dispatch rules choose): records it, runs it headlessly in the background, records how it ended. */
+  async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
+    let id = requested;
+    let why: string | undefined;
+    if (requested === AUTO_AGENT) {
+      const picked = await decideAuto({ task: input.task, from: input.from, ...(input.cwd ? { cwd: input.cwd } : {}) });
+      id = picked.agent;
+      why = picked.why;
+      // What the caller asked for explicitly wins over what the rule says.
+      input = { ...input, ...(input.model ? {} : picked.model ? { model: picked.model } : {}), ...(input.effort ? {} : picked.effort ? { effort: picked.effort } : {}) };
+    }
     const bin = await agentBinary(id);
     if (!bin) throw new Error(`没有找到 ${id} 的命令`);
     const b = store.binding(id);
@@ -153,7 +191,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (!model || !resolveModel(store, model)) throw new Error("还没有可用的模型：先在「模型来源」里添加一个");
     const wanted = input.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
-    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}) });
+    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) });
     const done = runHeadless(id, { bin, port, model, task: input.task, stateDir: store.dir, tiers: tiersFor(id), claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
@@ -264,7 +302,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     async run(id, input) {
       const { done } = await startTask(id, input);
       const t = await done;
-      return { exitCode: t.exitCode ?? null, output: t.output ?? "", timedOut: t.status === "timeout", model: t.model };
+      return { exitCode: t.exitCode ?? null, output: t.output ?? "", timedOut: t.status === "timeout", model: t.model, agent: t.agent };
     },
   };
   // A test that asks for port 0 learns the real one only after listen(); both spellings are allowed.
@@ -362,6 +400,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudePath: (await findClaude()) ?? null,
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
+        rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })),
         pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
         profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
         modelEfforts: Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts])),
@@ -499,6 +538,46 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
+    // --- dispatch rules: who gets a task ---------------------------------------
+    if (path === "/api/rules" && method === "GET") {
+      json(res, 200, { rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })) });
+      return;
+    }
+    const knownAgents = { agents: AGENTS.filter(a => LAUNCHERS[a.id]?.headless).map(a => a.id) };
+    if (path === "/api/rules" && method === "POST") {
+      const parsed = parseRule(body, knownAgents);
+      if ("error" in parsed) { json(res, 400, { error: parsed.error }); return; }
+      json(res, 201, store.addRule(parsed.rule));
+      return;
+    }
+    if (path === "/api/rules/test" && method === "POST") {
+      // A dry run for the console: which rule would catch this task, and who would get it.
+      const facts: TaskFacts = { task: String(body.task ?? ""), from: String(body.from ?? "console"), ...(typeof body.cwd === "string" && body.cwd ? { cwd: body.cwd } : {}) };
+      try {
+        const picked = await decideAuto(facts);
+        json(res, 200, picked);
+      } catch (error) {
+        json(res, 409, { error: String((error as Error).message ?? error) });
+      }
+      return;
+    }
+    const ruleMatch = /^\/api\/rules\/(r-[a-f0-9]+)(?:\/(move))?$/.exec(path);
+    if (ruleMatch) {
+      const id = ruleMatch[1] ?? "";
+      if (!store.rules().some(r => r.id === id)) { json(res, 404, { error: "没有这条规则" }); return; }
+      if (method === "POST" && ruleMatch[2] === "move") {
+        json(res, 200, { ok: store.moveRule(id, body.direction === "up" ? -1 : 1) });
+        return;
+      }
+      if (method === "PUT") {
+        const parsed = parseRule(body, knownAgents);
+        if ("error" in parsed) { json(res, 400, { error: parsed.error }); return; }
+        json(res, 200, store.updateRule(id, parsed.rule));
+        return;
+      }
+      if (method === "DELETE") { store.removeRule(id); json(res, 200, { ok: true }); return; }
+    }
+
     // --- tasks: hand work to an agent, watch it, read what came back ---------
     if (path === "/api/tasks" && method === "GET") {
       json(res, 200, { tasks: tasks.list(), running: tasks.running() });
@@ -512,7 +591,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const agent = String(body.agent ?? "");
       const text = String(body.task ?? "").trim();
       if (!agent || !text) { json(res, 400, { error: "需要选一个 agent，并写清楚任务" }); return; }
-      if (!LAUNCHERS[agent]?.headless) { json(res, 409, { error: "这个 agent 还没有无界面的调用方式" }); return; }
+      if (agent !== AUTO_AGENT && !LAUNCHERS[agent]?.headless) { json(res, 409, { error: "这个 agent 还没有无界面的调用方式" }); return; }
       try {
         const { task } = await startTask(agent, {
           task: text, from: "console", depth: 1,

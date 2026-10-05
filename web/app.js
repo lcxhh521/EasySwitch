@@ -306,6 +306,9 @@ function otherAgents() {
 
 const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
 const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
+let ruleForm = null; // { name, words, minChars, maxChars, cwdPrefix, agent, model, effort, error } while the rule form is open
+let ruleTest = { task: "", result: null };
+const AUTO = "auto";
 const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已停止", ""], timeout: ["超时", "warn"] };
 
 function renderTasks() {
@@ -314,21 +317,27 @@ function renderTasks() {
   const list = taskList?.tasks ?? [];
   const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
   const keep = (k, d = "") => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
-  const chosen = agents.find(a => a.id === (taskForm.agent || keep("es.taskAgent"))) ?? agents[0];
+  const rules = state.rules ?? [];
+  // "自动" is the default once the user has written rules; otherwise the first agent that can work.
+  const wanted = taskForm.agent || keep("es.taskAgent") || (rules.length ? AUTO : "");
+  const auto = wanted === AUTO && agents.length > 0;
+  const chosen = auto ? null : (agents.find(a => a.id === wanted) ?? agents[0]);
   const levels = chosen?.can?.efforts ?? [];
   const effort = levels.includes(taskForm.effort) ? taskForm.effort : "";
   const form = agents.length ? `
     <form class="form card" data-task-form style="padding:16px 18px">
       <textarea name="task" rows="3" required style="font-size:15px" placeholder="想让谁做什么？比如：读一下 README，告诉我这个项目是做什么的">${esc(taskForm.task)}</textarea>
       <div class="controls" style="margin-top:10px;flex-wrap:wrap">
-        ${agents.map(a => `<button type="button" class="btn ${a.id === chosen.id ? "" : "secondary"}" data-task-agent="${esc(a.id)}">${esc(a.name)}</button>`).join("")}
+        <button type="button" class="btn ${auto ? "" : "secondary"}" data-task-agent="${AUTO}" title="按下面的「派活规则」自动决定交给谁、用哪个模型、想多深">自动</button>
+        ${agents.map(a => `<button type="button" class="btn ${chosen && a.id === chosen.id ? "" : "secondary"}" data-task-agent="${esc(a.id)}">${esc(a.name)}</button>`).join("")}
         <span class="grow"></span>
         <button class="btn" type="submit">派出去</button>
       </div>
-      ${levels.length ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><span class="hint">想得多深</span>
-        ${["", ...levels].map(l => `<button type="button" class="btn ${l === effort ? "" : "secondary"}" data-task-effort="${esc(l)}" title="${l ? `${esc(chosen.name)} 的「${esc(l)}」档` : "不指定，用它自己的默认"}">${EFFORT_LABEL[l] ?? l}</button>`).join("")}</div>` : ""}
+      ${auto ? `<p class="hint" style="margin:8px 0 0">${rules.length ? `按下面 ${rules.length} 条派活规则决定交给谁；没有规则接的任务交给第一个能接活的 agent。` : "还没有派活规则，会交给第一个能接活的 agent；在下面写几条规则就能按任务类型分工。"}</p>` : ""}
+      ${!auto && levels.length ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><span class="hint">想得多深</span>
+        ${["", ...levels].map(l => `<button type="button" class="btn ${l === effort ? "" : "secondary"}" data-task-effort="${esc(l)}" title="${l ? `${esc(chosen?.name ?? "")} 的「${esc(l)}」档` : "不指定，用它自己的默认"}">${EFFORT_LABEL[l] ?? l}</button>`).join("")}</div>` : ""}
       <details data-keep="task-more" ${keepOpen("task-more")} style="margin-top:10px"><summary class="hint" style="cursor:pointer">更多选项（模型、工作目录）</summary>
-        <div class="field"><label>用哪个模型</label><select name="model"><option value="">${state.bindings?.[chosen.id] ? "它自己的模型" : "自动选一个"}</option>${models.map(m => `<option value="${esc(m)}" ${m === taskForm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
+        <div class="field"><label>用哪个模型</label><select name="model"><option value="">${auto ? "按规则（没写就用它自己的）" : state.bindings?.[chosen.id] ? "它自己的模型" : "自动选一个"}</option>${models.map(m => `<option value="${esc(m)}" ${m === taskForm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
         <div class="field"><label>在哪个文件夹里干活（绝对路径；不填是一个空的临时文件夹）</label><input type="text" name="cwd" value="${esc(taskForm.cwd)}" placeholder="/Users/你/项目"></div>
       </details>
       ${taskNote ? `<p class="hint" style="color:var(--bad)">${esc(taskNote)}</p>` : ""}
@@ -339,7 +348,8 @@ function renderTasks() {
     return `
     <div class="row" style="cursor:pointer" data-task-toggle="${esc(t.id)}">
       <div class="grow"><div class="title">${esc(t.task.length > 80 ? t.task.slice(0, 80) + "…" : t.task)}</div>
-        <div class="sub">${t.from === "console" ? "你" : esc(nameOf(t.from))} → ${esc(nameOf(t.agent))} · ${esc(t.model)} · ${new Date(t.at).toLocaleTimeString()}${t.ms ? ` · ${(t.ms / 1000).toFixed(1)} 秒` : ""}</div></div>
+        <div class="sub">${t.from === "console" ? "你" : esc(nameOf(t.from))} → ${esc(nameOf(t.agent))} · ${esc(t.model)} · ${new Date(t.at).toLocaleTimeString()}${t.ms ? ` · ${(t.ms / 1000).toFixed(1)} 秒` : ""}</div>
+        ${t.why ? `<div class="sub" title="${esc(t.why)}">${esc(t.why)}</div>` : ""}</div>
       <span class="chip ${tone}">${label}</span>
       ${t.status === "running" ? `<button class="btn secondary" data-task-stop="${esc(t.id)}">停止</button>` : ""}
     </div>
@@ -350,7 +360,54 @@ function renderTasks() {
     ${form}
     <div class="section-head"><h2>任务</h2><span class="aside">${list.length ? `${list.length} 条${taskList.running ? `，${taskList.running} 条在运行` : ""}` : ""} ${list.some(t => t.status !== "running") ? `<button class="btn secondary" data-task-clear>清空已完成</button>` : ""}</span></div>
     <div class="card">${list.map(row).join("") || `<div class="empty">还没有任务。你在这里派的、以及 agent 之间互相派的，都会记在这里。</div>`}</div>
-    <p class="hint">任务里的 agent 按它们各自默认的只读权限运行：能读文件、搜索、思考，不会擅自改文件。</p>`;
+    <p class="hint">任务里的 agent 按它们各自默认的只读权限运行：能读文件、搜索、思考，不会擅自改文件。</p>
+    ${rulesCard(agents, models)}`;
+}
+
+/** Dispatch rules: which agent, model and level a task goes to, tried in order. */
+function rulesCard(agents, models) {
+  const rules = state.rules ?? [];
+  const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
+  const row = (r, i) => `
+    <div class="row">
+      <div class="grow"><div class="title">${esc(r.name)} ${r.enabled ? "" : `<span class="chip">已停用</span>`}</div>
+        <div class="sub">${esc(r.summary)} → ${esc(nameOf(r.then.agent))}${r.then.model ? ` · ${esc(r.then.model)}` : ""}${r.then.effort ? ` · ${esc(EFFORT_LABEL[r.then.effort] ?? r.then.effort)}档` : ""}</div></div>
+      <button class="btn secondary" data-rule-move="up" data-rule="${esc(r.id)}" ${i === 0 ? "disabled" : ""} title="提前：前面的规则先匹配">↑</button>
+      <button class="btn secondary" data-rule-move="down" data-rule="${esc(r.id)}" ${i === rules.length - 1 ? "disabled" : ""} title="靠后">↓</button>
+      <button class="btn secondary" data-rule-toggle="${esc(r.id)}">${r.enabled ? "停用" : "启用"}</button>
+      <button class="btn secondary" data-rule-del="${esc(r.id)}">删除</button>
+    </div>`;
+  const f = ruleForm;
+  const form = f ? `
+    <form class="form" data-rule-form>
+      <div class="field"><label>规则名</label><input type="text" name="name" required value="${esc(f.name)}" placeholder="比如：写测试交给 Claude Code"></div>
+      <div class="field"><label>任务里提到这些词之一（用逗号隔开，不填就不限）</label><input type="text" name="words" value="${esc(f.words)}" placeholder="测试, pytest, 单测"></div>
+      <div class="controls">
+        <label class="hint">任务至少</label><input type="text" name="minChars" size="4" value="${esc(f.minChars)}" placeholder="字数"> <span class="hint">字，至多</span><input type="text" name="maxChars" size="4" value="${esc(f.maxChars)}" placeholder="字数"> <span class="hint">字</span>
+      </div>
+      <div class="field"><label>工作文件夹以此开头（绝对路径，不填就不限）</label><input type="text" name="cwdPrefix" value="${esc(f.cwdPrefix)}" placeholder="/Users/你/项目"></div>
+      <div class="controls">
+        <span class="hint">就交给</span>
+        <select name="agent">${agents.map(a => `<option value="${esc(a.id)}" ${a.id === f.agent ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
+        <span class="hint">用</span>
+        <select name="model"><option value="">它自己的模型</option>${models.map(m => `<option value="${esc(m)}" ${m === f.model ? "selected" : ""}>${esc(m)}</option>`).join("")}${(state.pools ?? []).map(p => `<option value="pool/${esc(p.id)}" ${f.model === `pool/${p.id}` ? "selected" : ""}>pool/${esc(p.id)}（模型池）</option>`).join("")}</select>
+        <span class="hint">想得</span>
+        <select name="effort"><option value="">默认</option>${["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(l => `<option value="${l}" ${f.effort === l ? "selected" : ""}>${EFFORT_LABEL[l]}（${l}）</option>`).join("")}</select>
+      </div>
+      <div class="controls"><button class="btn" type="submit">保存规则</button><button class="btn secondary" type="button" data-rule-cancel>取消</button></div>
+      ${f.error ? `<p class="hint" style="color:var(--bad)">${esc(f.error)}</p>` : ""}
+    </form>` : "";
+  return `
+    <div class="section-head"><h2>派活规则</h2><span class="aside">从上往下找，第一条符合的决定交给谁；「自动」任务和 agent 之间的 auto 调用都用它</span></div>
+    <div class="card">
+      ${rules.map(row).join("") || `<div class="empty">还没有规则。比如：提到「测试」的交给 Claude Code 想深一点，短任务交给便宜的模型。</div>`}
+      ${form}
+      ${f || !agents.length ? "" : `<button class="add-row" data-rule-new>＋ 新建规则</button>`}
+    </div>
+    <div class="card" style="margin-top:12px"><div class="row" style="gap:10px;flex-wrap:wrap">
+      <input type="text" data-rule-test-input style="flex:1;min-width:220px" placeholder="试一下：写一个任务，看会交给谁" value="${esc(ruleTest.task)}">
+      <button class="btn secondary" data-rule-test>看看会交给谁</button>
+    </div>${ruleTest.result ? `<div style="padding:0 18px 14px"><p class="hint">${ruleTest.result.error ? esc(ruleTest.result.error) : `${esc(ruleTest.result.why)}${ruleTest.result.model ? ` · 模型 ${esc(ruleTest.result.model)}` : ""}${ruleTest.result.effort ? ` · ${esc(ruleTest.result.effort)} 档` : ""}`}</p></div>` : ""}</div>`;
 }
 
 let profileNaming = false;
@@ -1051,7 +1108,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || ocxImport || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1202,6 +1259,31 @@ document.addEventListener("click", async e => {
   if (pickAgent) { syncTaskForm(); taskForm.agent = pickAgent.dataset.taskAgent; taskForm.effort = ""; try { localStorage.setItem("es.taskAgent", taskForm.agent); } catch {} render(); return; }
   const pickEffort = t.closest("[data-task-effort]");
   if (pickEffort) { syncTaskForm(); taskForm.effort = pickEffort.dataset.taskEffort; render(); return; }
+  if (t.closest("[data-rule-new]")) {
+    const first = (agentList ?? []).find(a => a.installed && a.can?.headless);
+    ruleForm = { name: "", words: "", minChars: "", maxChars: "", cwdPrefix: "", agent: first?.id ?? "", model: "", effort: "" };
+    render();
+    return;
+  }
+  if (t.closest("[data-rule-cancel]")) { ruleForm = null; render(); return; }
+  const ruleMove = t.closest("[data-rule-move]");
+  if (ruleMove) { await call("POST", `/api/rules/${ruleMove.dataset.rule}/move`, { direction: ruleMove.dataset.ruleMove }).catch(error => toast(error.message)); await refresh(true); return; }
+  const ruleToggle = t.closest("[data-rule-toggle]");
+  if (ruleToggle) {
+    const r = (state.rules ?? []).find(x => x.id === ruleToggle.dataset.ruleToggle);
+    if (r) await call("PUT", `/api/rules/${r.id}`, { name: r.name, enabled: !r.enabled, when: r.when, then: r.then }).catch(error => toast(error.message));
+    await refresh(true);
+    return;
+  }
+  const ruleDel = t.closest("[data-rule-del]");
+  if (ruleDel) { await call("DELETE", `/api/rules/${ruleDel.dataset.ruleDel}`).catch(error => toast(error.message)); await refresh(true); return; }
+  if (t.closest("[data-rule-test]")) {
+    const task = document.querySelector("[data-rule-test-input]")?.value ?? "";
+    ruleTest.task = task;
+    try { ruleTest.result = await call("POST", "/api/rules/test", { task }); } catch (error) { ruleTest.result = { error: error.message }; }
+    render();
+    return;
+  }
   const taskToggle = t.closest("[data-task-toggle]");
   if (taskToggle) { const id = taskToggle.dataset.taskToggle; if (taskOpenIds.has(id)) taskOpenIds.delete(id); else taskOpenIds.add(id); render(); return; }
   const taskStop = t.closest("[data-task-stop]");
@@ -1429,6 +1511,25 @@ document.addEventListener("submit", async e => {
     await refresh(true);
     return;
   }
+  const ruleFormEl = e.target.closest("form[data-rule-form]");
+  if (ruleFormEl) {
+    e.preventDefault();
+    const f = new FormData(ruleFormEl);
+    const body = {
+      name: f.get("name"),
+      when: { anyWords: f.get("words"), minChars: f.get("minChars"), maxChars: f.get("maxChars"), cwdPrefix: f.get("cwdPrefix") },
+      then: { agent: f.get("agent"), model: f.get("model"), effort: f.get("effort") },
+    };
+    try {
+      await call("POST", "/api/rules", body);
+      ruleForm = null;
+      toast("规则已保存");
+    } catch (error) {
+      ruleForm = { name: String(f.get("name")), words: String(f.get("words")), minChars: String(f.get("minChars")), maxChars: String(f.get("maxChars")), cwdPrefix: String(f.get("cwdPrefix")), agent: String(f.get("agent")), model: String(f.get("model")), effort: String(f.get("effort")), error: error.message };
+    }
+    await refresh(true);
+    return;
+  }
   const poolFormEl = e.target.closest("form[data-pool-form]");
   if (poolFormEl) {
     e.preventDefault();
@@ -1450,7 +1551,7 @@ document.addEventListener("submit", async e => {
     const f = new FormData(runForm);
     taskNote = "";
     try {
-      const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || runForm.querySelector("[data-task-agent]")?.dataset.taskAgent;
+      const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || ((state.rules ?? []).length ? AUTO : runForm.querySelector('[data-task-agent]:not([data-task-agent="auto"])')?.dataset.taskAgent);
       const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(f.get("model") ? { model: f.get("model") } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
       const r = await call("POST", "/api/tasks", body);
       taskOpenIds.add(r.task.id);

@@ -27,7 +27,7 @@ export const MAX_CONCURRENT = 3;
 export interface McpDeps extends GatewayDeps {
   /** Agents that can take a task right now: id, name, bound model. */
   agents(): Promise<Array<{ id: string; name: string; model?: string }>>;
-  run(agentId: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<RunResult & { model: string }>;
+  run(agentId: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<RunResult & { model: string; agent?: string }>;
 }
 
 const TOOLS = [
@@ -46,7 +46,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        agent: { type: "string", description: "Agent id from list_agents, e.g. claude, codex, dsh." },
+        agent: { type: "string", description: "Agent id from list_agents, e.g. claude, codex, dsh; or \"auto\" to let the user's dispatch rules choose the agent, model and thinking level." },
         task: { type: "string", description: "The complete task, with all the context the agent needs." },
         model: { type: "string", description: "Optional <provider>/<model> from list_models; default is the agent's own model." },
         effort: { type: "string", description: "Optional reasoning level: minimal, low, medium, high, xhigh or max. Ignored by agents that do not support it. Higher is slower and costs more." },
@@ -84,7 +84,7 @@ async function callTool(name: string, args: Json, depth: number, caller: string,
     if (depth >= MAX_DEPTH) return text(`Refused: agents started by agents may nest at most ${MAX_DEPTH} levels deep.`, true);
     if (running >= MAX_CONCURRENT) return text(`Refused: ${MAX_CONCURRENT} agent runs are already in progress. Try again shortly.`, true);
     const available = await deps.agents();
-    if (!available.some(a => a.id === agent)) return text(`Unknown or unavailable agent "${agent}". Available: ${available.map(a => a.id).join(", ") || "none"}.`, true);
+    if (agent !== "auto" && !available.some(a => a.id === agent)) return text(`Unknown or unavailable agent "${agent}". Available: ${available.map(a => a.id).join(", ") || "none"}, or "auto".`, true);
     running += 1;
     try {
       const result = await deps.run(agent, {
@@ -95,7 +95,7 @@ async function callTool(name: string, args: Json, depth: number, caller: string,
         depth: depth + 1,
         from: caller,
       });
-      const head = `[${agent} on ${result.model}${result.timedOut ? ", stopped at the time limit" : ""}, exit ${result.exitCode ?? "?"}]`;
+      const head = `[${result.agent ?? agent} on ${result.model}${result.timedOut ? ", stopped at the time limit" : ""}, exit ${result.exitCode ?? "?"}]`;
       return text(`${head}\n${result.output || "(no output)"}`, result.exitCode !== 0 || result.timedOut);
     } catch (error) {
       return text(String((error as Error).message ?? error), true);

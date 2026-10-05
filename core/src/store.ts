@@ -5,6 +5,7 @@ import { dataDir } from "./paths.ts";
 import type { SiwcAccount, SiwcStorage } from "./siwc.ts";
 import { catalogModels, type CatalogModel } from "./catalog.ts";
 import type { Profile } from "./types.ts";
+import type { DispatchRule } from "./dispatch.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
 
 interface StateFile {
@@ -20,6 +21,8 @@ interface StateFile {
   siwcHostId?: string;
   pools?: Pool[];
   profiles?: Profile[];
+  /** Dispatch rules, in the order they are tried (see dispatch.ts). */
+  rules?: DispatchRule[];
   /** Per agent, apart from its main model: thinking level and the other models it runs (sub-agent, small tasks). */
   prefs?: Record<string, AgentPrefs>;
 }
@@ -136,6 +139,46 @@ export class Store {
   removeAccount(id: string): void {
     this.state.accounts = (this.state.accounts ?? []).filter(a => a.id !== id);
     this.save();
+  }
+
+  rules(): DispatchRule[] {
+    return structuredClone(this.state.rules ?? []);
+  }
+
+  addRule(rule: Omit<DispatchRule, "id">): DispatchRule {
+    const added: DispatchRule = { id: `r-${createHash("sha256").update(`${rule.name}${Date.now()}${Math.random()}`).digest("hex").slice(0, 6)}`, ...rule };
+    this.state.rules = [...(this.state.rules ?? []), added];
+    this.save();
+    return structuredClone(added);
+  }
+
+  updateRule(id: string, rule: Omit<DispatchRule, "id">): DispatchRule | undefined {
+    const list = this.state.rules ?? [];
+    const at = list.findIndex(r => r.id === id);
+    if (at < 0) return undefined;
+    list[at] = { id, ...structuredClone(rule) };
+    this.state.rules = list;
+    this.save();
+    return structuredClone(list[at]);
+  }
+
+  removeRule(id: string): boolean {
+    const before = (this.state.rules ?? []).length;
+    this.state.rules = (this.state.rules ?? []).filter(r => r.id !== id);
+    this.save();
+    return this.state.rules.length < before;
+  }
+
+  /** Moves a rule one place earlier (-1) or later (+1): earlier rules are tried first. */
+  moveRule(id: string, direction: -1 | 1): boolean {
+    const list = [...(this.state.rules ?? [])];
+    const at = list.findIndex(r => r.id === id);
+    const to = at + direction;
+    if (at < 0 || to < 0 || to >= list.length) return false;
+    [list[at], list[to]] = [list[to]!, list[at]!];
+    this.state.rules = list;
+    this.save();
+    return true;
   }
 
   profiles(): Profile[] {
