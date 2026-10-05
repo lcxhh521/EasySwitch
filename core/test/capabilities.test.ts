@@ -182,3 +182,12 @@ test("Hermes' config keeps delegation and the MCP server at the top level, with 
     assert.ok(!only.includes("auxiliary:") && only.includes("delegation:") && !only.includes("mcp_servers:"));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("the backlog hooks never hold back a session that EasySwitch started itself", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const run = (env: Record<string, string>) => spawnSync("node", ["bin/backlog.ts", "--hook-stop"], { input: "{}", env: { ...process.env, ANTHROPIC_BASE_URL: "", ANTHROPIC_AUTH_TOKEN: "", ...env }, encoding: "utf8" });
+  assert.equal(run({ ANTHROPIC_BASE_URL: "http://127.0.0.1:18765" }).status, 0, "gateway address");
+  assert.equal(run({ ANTHROPIC_AUTH_TOKEN: "es-session-claude-abc" }).status, 0, "per-launch token");
+  const prompt = spawnSync("node", ["bin/backlog.ts", "--hook-prompt"], { env: { ...process.env, ANTHROPIC_BASE_URL: "http://127.0.0.1:18765" }, encoding: "utf8" });
+  assert.equal(prompt.stdout, "", "no reminder is injected into an EasySwitch session either");
+});

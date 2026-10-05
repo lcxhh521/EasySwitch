@@ -54,7 +54,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 
 ## 3. 现状（`dev` 分支，截至本文提交）
 
-- 约 209 个测试，`npm test` 全过；`npm run typecheck` 干净。Node ≥ 22.18 直接跑 TypeScript，运行时零依赖。
+- 207 个测试，`npm test` 全过；`npm run typecheck` 干净。Node ≥ 22.18 直接跑 TypeScript，运行时零依赖。
 - **已实测**（用真实程序跑过）：ChatGPT/Codex（命令行和桌面端）、Claude Code、Hermes、DeepSeek Harness（dsh）。
 - **按文档写了启动方式，没实测**：Gemini CLI、Qwen Code、OpenCode、Aider、Copilot CLI，以及 `core/src/launchers-extra.ts` 里新写的 Kimi、Pi、OMP、Droid、Cline、Goose、Crush、Grok、MiniMax Code、Qoder、OpenClaw、Trae Agent、AtomCode。每个启动器的 `caveat` 字段写明了哪部分是照厂商文件格式写的（可信）、哪部分是凭记忆猜的（要用 `--help` 核实）。
 - 能力矩阵和界面：`/api/agents` 返回每个 agent 的各功能状态；Agent 页每行下有一排小点，底部有“覆盖情况”表。**当前账（2026-10-06）**：启动 27/32 已定、后台任务 31/32、能调其他 agent 21/32、档位 25/32、子 agent/小模型 11/32、订阅当来源 4/18。“已定”= 已做或明确做不了；缺口就是 `todo`。
@@ -84,7 +84,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 - **提交前**：`npm run typecheck && npm test`；测试需要 `--test-force-exit`（已写在 `npm test` 里）；macOS 没有 `timeout`，限时用 `perl -e 'alarm N; exec @ARGV' -- cmd`。有些测试会起真实的 Hermes / dsh / Claude Code，云端没有这些程序时会自动跳过。
 - **改启动器就改测试**：`core/test/capabilities.test.ts` 会检查每个私有目录启动器：路径都在会话目录内、不碰用户主目录、JSON 合法、没有 MCP 时不写 MCP 条目。新增一个会挂 MCP 的启动器，要把它的 id 加进那个测试里的期望清单（这是故意的，防止悄悄多报）。
 - **档位语义**：agent 没有自己的档位参数时，不要在启动器里写死 `efforts`（会把“模型有 ultra 就能设 ultra”限死，`plan-provider.test.ts` 专门测这个）；agent 有自己的档位（有 flag）才在 `efforts` 里写它自己的词。
-- **踩过的坑**：Node 的类型剥离只支持可擦除语法（没有 enum、参数属性、namespace）；zsh 不做单词拆分；网关 Host 守卫只认 `127.0.0.1:PORT`，测试里 `createEasySwitchServer` 要传真实空闲端口（或 port 0）；控制台 API 要求 `x-easyswitch: 1` 头；YAML 里 Hermes 的 `delegation`/`mcp_servers` 必须在顶层，不能落在 `auxiliary:` 下（有测试）；Qoder 自定义模型只对登录且含自带模型套餐的账号开放，空私有目录可能要先登录。
+- **踩过的坑**：项目的 `.claude/settings.json` 里有两个 Claude Code 钩子（待办提醒和收工核对），**只对人和 agent 在这个仓库里用 Claude Code 干活生效**；曾经因为它们把测试里运行的真实 Claude Code 拦住（无界面时 stdout 为空）。现在钩子会跳过 EasySwitch 自己启动的会话，有测试。你（Dot）不用 Claude Code，可忽略，但待办纪律照样要守；Node 的类型剥离只支持可擦除语法（没有 enum、参数属性、namespace）；zsh 不做单词拆分；网关 Host 守卫只认 `127.0.0.1:PORT`，测试里 `createEasySwitchServer` 要传真实空闲端口（或 port 0）；控制台 API 要求 `x-easyswitch: 1` 头；YAML 里 Hermes 的 `delegation`/`mcp_servers` 必须在顶层，不能落在 `auxiliary:` 下（有测试）；Qoder 自定义模型只对登录且含自带模型套餐的账号开放，空私有目录可能要先登录。
 - **本机的运行方式**（给用户看界面时）：`EASYSWITCH_PORT=18766 EASYSWITCH_HOME=<临时目录> EASYSWITCH_SECRETS=memory node core/src/main.ts`，然后打开 `http://127.0.0.1:18766/`。
 
 ## 7. 公开发布（以后的事，现在别动手）

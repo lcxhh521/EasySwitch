@@ -34,7 +34,7 @@
 - [x] B39 · 写交接单：后续的活交给 Dot，让它读云端仓库 — 来源：「然后你写一个交接单，后续的活我准备让dot干了，我让他读取云端仓库」（10-06）· 备注：做成仓库根目录 HANDOVER.md，并把发布工具搬进仓库（Dot 看不到本机文件） · 验证：HANDOVER.md 已提交并推到云端 dev（2d12fa5、5513f54）；tools/release 已搬进仓库
 - [x] B40 · 差异化写成长期方向：借鉴 Magpie 的地方不能变成“长得一样”，要走出自己的路；写进交接单和规则 — 来源：「虽然我们借鉴了magpie，但是我们一定要走出差异化的」（10-06）· 验证：HANDOVER.md 第 1.5 节、AGENTS.md 私有段
 - [ ] B41 · 差异化评审：把界面、信息架构、命名、功能逐项和 Magpie / opencodex 对一遍，列出相同点和我们的不同点，相同又没有理由的要改（现在 4 页界面和菜单栏面板是照它们的样子重做的）— 来源：同上（10-06）
-- [ ] B42 · 新版 Claude Code 下 `es claude` 的真实测试失败：请求到了网关、模型对，但 stdout 为空，stderr 有 `unrecognized_model`（模型 id `es-claude-…`）— 来源：全套测试发现（10-06）· 备注：不是今天改启动器造成的，疑似 Claude Code 自动升级后的行为变化；先查 `claude --version` 和它对未知模型 id 的新处理，再看是网关返回的模型信息还是 id 编码要调
+- [x] B42 · 新版 Claude Code 下 `es claude` 的真实测试失败 — 来源：全套测试发现（10-06）· 原因：不是 Claude Code 升级，是我加的 Stop 钩子（项目 .claude/settings.json）把在本仓库目录里运行的无界面 Claude 拦住了，因为待办里有「进行中」条目 · 验证：钩子改为跳过 EasySwitch 启动的会话（ANTHROPIC_BASE_URL 指向 127.0.0.1 或令牌以 es-session- 开头），capabilities.test.ts 新增用例，es-cli.test.ts 5/5 通过；旧提交 d040764 对照实验证明是这次引入的
 
 ## 委托 GPT（Claude 不碰）
 

@@ -62,6 +62,12 @@ function show(items: Item[]): string {
 }
 
 const mode = process.argv[2] ?? "";
+
+// The hooks are for a person (or an agent) working on this repository. A session that EasySwitch itself
+// started (its gateway address or a per-launch session token in the environment) must never be held back
+// by them: a headless run inside this directory would otherwise never finish.
+const EASYSWITCH_SESSION = /127\.0\.0\.1/.test(process.env.ANTHROPIC_BASE_URL ?? "") || /^es-session-/.test(process.env.ANTHROPIC_AUTH_TOKEN ?? "");
+if ((mode === "--hook-prompt" || mode === "--hook-stop") && EASYSWITCH_SESSION) process.exit(0);
 const { items, problems } = load();
 
 if (mode === "--hook-prompt") {
