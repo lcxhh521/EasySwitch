@@ -160,7 +160,27 @@ function renderAgents() {
     <div class="section-head"><h2>Agent</h2><span class="aside">每个 agent 平时都走原生；增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${rows}</div>
     <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 Codex 和 Claude Code 永远不受影响。</p>
-    ${state.providers.length ? "" : `<div class="card empty">还没有模型来源。<button class="btn secondary" data-go="providers">去添加</button></div>`}`;
+    ${state.providers.length ? "" : onboarding()}`;
+}
+
+/** First-run onboarding: paste whatever the vendor handed you, everything else is automatic. */
+function onboarding() {
+  const saved = importFormOpen ? ($("#import-form textarea")?.value ?? "") : "";
+  return `
+    <div class="card" id="onboard">
+      <div class="section-head"><h2>三步接入</h2><span class="aside">刚买的中转站或新订阅，把它给你的东西整段粘进来</span></div>
+      <ol class="steps">
+        <li>把<strong>使用说明、地址、Key 或教程链接</strong>整段粘贴到下面的框里（export 命令、JSON、中文说明都行）</li>
+        <li>点「一键接入」，EasySwitch 自动识别地址和 Key、测一遍、给 Codex 和 Claude Code 接上</li>
+        <li>回来点「启动增强会话」</li>
+      </ol>
+      <form class="form" id="import-form">
+        <textarea name="text" rows="4" placeholder="例如：\nexport ANTHROPIC_BASE_URL=https://api.xxx.com\nexport ANTHROPIC_AUTH_TOKEN=sk-xxxx\n或者直接粘贴教程网址、购买页说明……" style="width:100%;resize:vertical">${esc(saved)}</textarea>
+        <div class="controls"><button class="btn" type="submit">一键接入</button>
+          <button class="btn secondary" type="button" data-go="providers">从预设里选</button></div>
+        <p class="msg" id="import-msg"></p>
+      </form>
+    </div>`;
 }
 
 function openPicker(anchor, harness) {
@@ -566,8 +586,10 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || importFormOpen || document.activeElement?.matches("input, select, textarea");
 }
+/** The onboarding card keeps its state between renders (the user is typing into it). */
+let importFormOpen = false;
 
 async function refresh(force = false) {
   try {
@@ -677,8 +699,30 @@ document.addEventListener("click", async e => {
   if (toggle) { openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
 });
 
+document.addEventListener("input", e => {
+  if (e.target.matches("#import-form textarea")) importFormOpen = true;
+});
 document.addEventListener("submit", async e => {
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
+  if (e.target.id === "import-form") {
+    e.preventDefault();
+    const msg = $("#import-msg");
+    msg.className = "msg";
+    msg.textContent = "正在识别、添加并测试…";
+    try {
+      const text = new FormData(e.target).get("text");
+      const out = await call("POST", "/api/import", { text });
+      msg.className = "msg ok";
+      msg.textContent = out.summary;
+      importFormOpen = false;
+      e.target.querySelector("textarea").value = "";
+    } catch (error) {
+      msg.className = "msg bad";
+      msg.textContent = error.message;
+    }
+    await refresh(true);
+    return;
+  }
   const form = e.target.closest("form[data-add-key]");
   if (!form) return;
   e.preventDefault();

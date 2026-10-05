@@ -9,6 +9,7 @@ import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
 import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
+import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { keySecretId, newKeyId } from "./keypool.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
@@ -72,6 +73,71 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   };
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
 
+  /** Adds a provider, lists models, then probes with the best model available. */
+  async function addAndProbe(input: { name: string; baseUrl: string; apiKey: string; anthropicBaseUrl?: string; afterAdd?: () => string[] | void }): Promise<Provider> {
+    const { name, baseUrl, apiKey } = input;
+    if (!name || !/^https?:\/\//.test(baseUrl)) throw new Error("需要名称和以 http(s):// 开头的地址");
+    const provider: Provider = {
+      id: slugify(name, store.providers().map(p => p.id)),
+      name, baseUrl, models: [], route: "chat-translate", routePinned: false, streamUsage: true,
+      ...(input.anthropicBaseUrl ? { anthropicBaseUrl: input.anthropicBaseUrl } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    if (apiKey) await secrets.set(provider.id, apiKey);
+    const { models } = await listModels(provider, apiKey || undefined).catch(() => ({ models: [] as string[] }));
+    provider.models = models;
+    store.upsertProvider(provider);
+    const model = provider.defaultModel ?? provider.models[0] ?? "";
+    if (model) {
+      try {
+        const apiKeyNow = await secrets.get(provider.id);
+        const { report, models: probed, streamUsage } = await probeProvider(provider, apiKeyNow, model);
+        if (probed.length) provider.models = probed;
+        provider.defaultModel = model;
+        provider.probe = report;
+        provider.streamUsage = streamUsage;
+        if (!provider.routePinned) provider.route = report.recommendedRoute;
+        if (report.recommendedMessagesRoute) provider.messagesRoute = report.recommendedMessagesRoute;
+        store.upsertProvider(provider);
+      } catch {
+        // Probe failures are surfaced in the UI, not fatal to the import.
+      }
+    }
+    input.afterAdd?.();
+    return provider;
+  }
+
+  /** Binds harnesses that have no model yet; harnesses already bound are left alone. */
+  function attachFreeHarnesses(providerId: string): Harness[] {
+    const provider = store.provider(providerId);
+    const model = provider?.defaultModel ?? provider?.models[0];
+    if (!provider || !model) return [];
+    const attached: Harness[] = [];
+    for (const harness of ["codex", "claude"] as const) {
+      if (store.binding(harness)) continue;
+      store.setBinding({ harness, providerId: provider.id, model });
+      attached.push(harness);
+    }
+    return attached;
+  }
+
+  /** One human sentence about what the import did. */
+  function importSummary(provider: Provider, parsed: { apiKey?: string }): string {
+    const attached = (["codex", "claude"] as const).filter(h => store.binding(h)?.providerId === provider.id);
+    const models = provider.models.length;
+    const parts = [
+      `已添加「${provider.name}」${models ? `，读到 ${models} 个模型` : ""}`,
+      provider.probe?.checks.every(c => c.status !== "fail")
+        ? "一致性测试通过"
+        : provider.probe ? "一致性测试有未通过项，详情在来源页" : "",
+      parsed.apiKey ? undefined : "没有 Key，测试没跑",
+      attached.length
+        ? `${attached.map(h => h === "codex" ? "Codex" : "Claude Code").join("和")}的增强会话现在用它`
+        : "两个 agent 的绑定都没有动",
+    ].filter(Boolean);
+    return parts.join("；");
+  }
+
   async function api(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
     const method = req.method ?? "GET";
     // A custom header forces a CORS preflight, which we never answer, so other
@@ -97,6 +163,30 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         native: nativeFiles(),
         log,
       });
+      return;
+    }
+
+    // --- one-paste onboarding: parse whatever the vendor handed over, add,
+    // probe, and attach to any harness that is still on native -------------
+    if (method === "POST" && path === "/api/import") {
+      const text = String(body.text ?? "");
+      const parsed = parsePaste(text);
+      if (!parsed.baseUrl) {
+        json(res, 422, { error: parsed.found.length
+          ? `只认出了${parsed.found.join("和")}，还不够添加来源`
+          : "没有认出地址或 Key；把中转站给你的使用说明整段粘贴进来", ...(parsed.keyUrl ? { keyUrl: parsed.keyUrl } : {}) });
+        return;
+      }
+      const name = String(body.name ?? "").trim() || nameFromUrl(parsed.baseUrl);
+      let provider: Provider;
+      try {
+        provider = await addAndProbe({ name, baseUrl: parsed.baseUrl.replace(/\/+$/, ""), apiKey: parsed.apiKey ?? "" });
+      } catch (error) {
+        json(res, 502, { error: String((error as Error).message ?? error) });
+        return;
+      }
+      const attached = attachFreeHarnesses(provider.id);
+      json(res, 201, { provider: publicProvider(provider, Boolean(parsed.apiKey)), attached, summary: importSummary(provider, parsed) });
       return;
     }
 

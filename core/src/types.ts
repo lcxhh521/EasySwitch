@@ -115,4 +115,6 @@ export interface ProviderPreset {
   anthropicBaseUrl?: string;
   defaultModel?: string;
   keyUrl?: string;
+  /** One line of guidance shown under the preset (where to get a key, etc.). */
+  note?: string;
 }
