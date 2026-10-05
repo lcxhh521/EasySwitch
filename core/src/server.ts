@@ -24,6 +24,10 @@ import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
 import { isMimoFree } from "./mimo-free.ts";
+import { listKiroModels } from "./kiro.ts";
+import { KiroError, kiroLoginPath } from "./kiro-login.ts";
+import { sourceProtocols } from "./outbound.ts";
+import type { ApiProtocol } from "./types.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
@@ -55,6 +59,8 @@ export interface ServerDeps {
   port: number;
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
+  /** Override the local CLI database location in isolated tests. */
+  kiroLoginPath?: string;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -114,9 +120,14 @@ function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
   const sample = p.defaultModel ?? p.models[0];
   const priced = sample ? ratesFor(p, sample) : undefined;
   return {
-    ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
+    ...p, hasKey, supportedProtocols: p.kiro ? ["kiro"] : sourceProtocols({ ...p, modelProtocols: undefined }, ""), ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
     ...(sample ? { priceSample: { model: sample, ...(priced ? { rates: priced.rates, source: priced.source } : {}) } } : {}),
   };
+}
+
+function protocolList(value: unknown): ApiProtocol[] | undefined {
+  const allowed = ["chat", "responses", "messages", "gemini"];
+  return Array.isArray(value) && value.length > 0 && value.every(p => allowed.includes(p)) ? [...new Set(value)] as ApiProtocol[] : undefined;
 }
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
@@ -353,7 +364,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (method === "GET" && path === "/api/state") {
       const bound = store.allBindings();
       const providers = await Promise.all(store.providers().map(async p =>
-        publicProvider(p, Boolean(await secrets.get(p.id)), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
+        publicProvider(p, p.kiro ? false : Boolean(await secrets.get(p.id)), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
       json(res, 200, {
         version: VERSION, port, providers,
         binding: store.binding("codex") ?? null,
@@ -768,10 +779,30 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
+    if (method === "POST" && path === "/api/kiro/import") {
+      const loginPath = deps.kiroLoginPath ?? kiroLoginPath();
+      try {
+        const { models } = await listKiroModels(loginPath);
+        const previous = store.providers().find(p => p.kiro?.loginPath === loginPath);
+        const provider: Provider = {
+          ...(previous ?? { id: slugify("kiro", store.providers().map(p => p.id)), name: "Kiro CLI", baseUrl: "https://kiro.dev", route: "chat-translate", routePinned: false, streamUsage: true, createdAt: new Date().toISOString() }),
+          kiro: { loginPath }, icon: "kiro", billing: "subscription", models,
+          defaultModel: previous?.defaultModel && models.includes(previous.defaultModel) ? previous.defaultModel : models[0],
+        };
+        store.upsertProvider(provider);
+        json(res, previous ? 200 : 201, publicProvider(provider, false));
+      } catch (error) {
+        json(res, error instanceof KiroError ? error.status : 502, { error: error instanceof KiroError ? error.message : "Kiro 模型读取失败，请检查 CLI 登录与网络。" });
+      }
+      return;
+    }
+
     if (method === "POST" && path === "/api/providers") {
       const name = String(body.name ?? "").trim();
       const baseUrl = String(body.baseUrl ?? "").trim().replace(/\/+$/, "");
       const apiKey = String(body.apiKey ?? "").trim();
+      const protocols = body.protocols === undefined ? undefined : protocolList(body.protocols);
+      if (body.protocols !== undefined && !protocols) { json(res, 400, { error: "请选择至少一个有效的出站协议" }); return; }
       const anthropicBaseUrl = String(body.anthropicBaseUrl ?? "").trim().replace(/\/+$/, "");
       if (!name || !/^https?:\/\//.test(baseUrl) || (anthropicBaseUrl && !/^https?:\/\//.test(anthropicBaseUrl))) {
         json(res, 400, { error: "需要名称和以 http(s):// 开头的地址" });
@@ -789,6 +820,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         name, baseUrl, models: preset?.models ? [...preset.models] : [], route: "chat-translate", routePinned: false, streamUsage: true,
         // The free tier has no key: its JWT is bootstrapped per call (see mimo-free.ts).
         ...(isMimoFree({ baseUrl }) ? { mimoFree: true } : {}),
+        ...(protocols ? { protocols } : {}),
         ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
         ...(Object.keys(urlParams).length ? { urlParams } : {}),
         ...(preset?.wire ? { wire: preset.wire } : {}),
@@ -823,6 +855,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const keyId = keyMatch[2];
+      if (provider.kiro) { json(res, 400, { error: "Kiro 使用本机 CLI 登录，不使用 API Key" }); return; }
       if (method === "POST" && !keyId) {
         const label = String(body.label ?? "").trim();
         const apiKey = String(body.apiKey ?? "").trim();
@@ -874,7 +907,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { model, levels: modelEfforts(provider, model) });
       return;
     }
-    const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route))?$/.exec(path);
+    const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route|protocols))?$/.exec(path);
     if (providerMatch) {
       const provider = store.provider(providerMatch[1] ?? "");
       if (!provider) {
@@ -883,12 +916,25 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       const action = providerMatch[2];
       if (method === "DELETE" && !action) {
-        for (const key of provider.keys ?? []) await secrets.delete(keySecretId(provider.id, key.id));
+        if (!provider.kiro) for (const key of provider.keys ?? []) await secrets.delete(keySecretId(provider.id, key.id));
         store.removeProvider(provider.id);
-        await secrets.delete(provider.id);
+        if (!provider.kiro) await secrets.delete(provider.id);
         json(res, 200, { ok: true });
         return;
       }
+      if (method === "PUT" && action === "protocols") {
+        if (provider.kiro || provider.plan || provider.mimoFree) { json(res, 400, { error: "这个来源由专用适配器决定协议" }); return; }
+        const protocols = protocolList(body.protocols);
+        if (body.protocols !== null && !protocols) { json(res, 400, { error: "请选择至少一个有效的出站协议" }); return; }
+        const model = typeof body.model === "string" ? body.model.trim() : "";
+        if (model) {
+          provider.modelProtocols = { ...provider.modelProtocols };
+          if (protocols) provider.modelProtocols[model] = protocols; else delete provider.modelProtocols[model];
+        } else if (protocols) provider.protocols = protocols; else delete provider.protocols;
+        store.upsertProvider(provider);
+        json(res, 200, publicProvider(provider, Boolean(await secrets.get(provider.id)))); return;
+      }
+      if (provider.kiro && action) { json(res, 400, { error: "Kiro 使用独立适配器，请刷新本机登录中的模型列表" }); return; }
       if (method === "POST" && action === "probe") {
         const model = String(body.model ?? provider.defaultModel ?? provider.models[0] ?? "");
         if (!model) {

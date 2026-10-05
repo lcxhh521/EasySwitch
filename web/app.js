@@ -623,6 +623,14 @@ function keyList(p) {
     </form>`;
 }
 
+const PROTOCOL = { chat: "Chat Completions", responses: "Responses", messages: "Messages", gemini: "Gemini", kiro: "Kiro" };
+
+function protocolOptions(p, model = "") {
+  const selected = p.modelProtocols?.[model] ?? p.protocols ?? p.supportedProtocols ?? ["chat"];
+  const order = [...new Set([...selected, "responses", "messages", "chat", "gemini"])];
+  return order.map(v => `<label><input type="checkbox" name="protocols" value="${v}" ${selected.includes(v) ? "checked" : ""}> ${PROTOCOL[v]}</label>`).join(" ");
+}
+
 function providerRow(p) {
   const models = modelsOf(p);
   const used = p.usedBy.map(h => icon(agentMeta(h).icon, "sm")).join("");
@@ -630,15 +638,19 @@ function providerRow(p) {
   const checks = (p.probe?.checks ?? []).map(c => `
     <div class="check ${c.status}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${c.latencyMs}ms` : ""}</div>`).join("");
   const options = models.map(m => `<option ${m === p.defaultModel ? "selected" : ""}>${esc(m)}</option>`).join("");
-  const nextRoute = p.route === "chat-translate" ? "responses-native" : "chat-translate";
+  const fixed = p.kiro || p.plan || p.mimoFree;
   const detail = open ? `
     <div class="detail" data-provider="${esc(p.id)}">
       <div class="controls">
-        <span class="chip">ChatGPT：${ROUTE[p.route]}${p.routePinned ? "（手动）" : p.probe ? "（自动）" : ""}</span>
-        <span class="chip">Claude Code：${ROUTE[p.messagesRoute ?? "chat-translate"]}</span>
-        <button class="btn secondary" data-route="${nextRoute}">ChatGPT改为${ROUTE[nextRoute]}</button>
-        ${p.routePinned ? `<button class="btn secondary" data-route="auto">恢复自动</button>` : ""}
+        <span class="chip">来源协议：${(p.supportedProtocols ?? ["chat"]).map(v => PROTOCOL[v] ?? esc(v)).join(" / ")}</span>
       </div>
+      ${fixed ? "" : `<form class="form" data-protocol-form>
+        <div class="field"><label>支持的 API 协议</label><select name="model" data-protocol-model><option value="">整个来源</option>${models.map(m => `<option value="${esc(m)}">${esc(m)}${p.modelProtocols?.[m] ? "（单独设置）" : ""}</option>`).join("")}</select></div>
+        <div class="controls" data-protocol-options>${protocolOptions(p)}</div>
+        <div class="hint">按来源文档勾选。优先使用与客户端相同的协议，否则按显示顺序选择；单个模型可以独立设置。</div>
+        <div class="controls"><button class="btn secondary" type="submit">保存协议</button><button class="btn secondary" type="button" data-protocol-auto>恢复默认</button></div>
+      </form>`}
+      ${p.kiro ? `<div class="hint">每次请求读取本机 Kiro CLI 登录。请先在 Kiro CLI 完成登录；重新登录后在这里刷新模型。</div><button class="btn secondary" data-kiro-import>刷新 Kiro 模型</button>` : `
       <div class="controls">
         <label class="hint">测试用模型</label>
         <select class="probe-model">${options || "<option value=''>（没有可选模型）</option>"}</select>
@@ -646,9 +658,9 @@ function providerRow(p) {
         <span class="hint">${p.probe ? `上次测试：${ago(p.probe.at)}` : "还没测过"}</span>
       </div>
       ${checks ? `<div class="checks">${checks}</div>` : ""}
-      <div class="hint">OpenAI 兼容地址：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
+      <div class="hint">来源地址：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Messages 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>`}
       ${billingBlock(p)}
-      ${keyList(p)}
+      ${p.kiro || p.mimoFree ? "" : keyList(p)}
       <div><button class="btn danger" data-remove>删除这个来源</button></div>
     </div>` : "";
   return `
@@ -656,7 +668,7 @@ function providerRow(p) {
       ${icon(p.icon, "lg")}
       <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型</div></div>
       ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
-      <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
+      <span class="chip ${p.kiro || p.mimoFree || p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.kiro ? "使用本机登录" : p.mimoFree ? "免 Key" : p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
       <span class="chev">›</span>
     </div>${detail}`;
 }
@@ -793,7 +805,7 @@ function renderProviders() {
     <div class="card">
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
       ${ocxImport ? renderOcxImport() : ""}
-      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-ocx-open>从 opencodex 导入</button>`}
+      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-ocx-open>从 opencodex 导入</button><button class="add-row" data-kiro-import>接入本机 Kiro CLI 登录</button>`}
     </div>
     ${state.providers.length ? poolsCard() : ""}`;
 }
@@ -836,9 +848,12 @@ function explain(e) {
   const pname = provider?.name ?? e.providerId ?? "未知来源";
   const parts = [];
   if (e.pool) parts.push(`走的是模型池 ${e.pool}，第 ${e.attempt}/${e.attempts} 个来源${e.status >= 400 && e.attempt < e.attempts ? "，它没答上，已经换下一个" : ""}`);
-  if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
+  if (e.inboundProtocol && e.outboundProtocol) parts.push(e.inboundProtocol === e.outboundProtocol
+    ? `来源支持 ${PROTOCOL[e.inboundProtocol]}，保留原生请求与回复`
+    : `${PROTOCOL[e.inboundProtocol]} → ${PROTOCOL[e.outboundProtocol]}，按来源转换请求与回复`);
+  else if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
   else parts.push(`这个来源原生支持 ${harness.protocol} 协议，请求原样转发`);
-  if (e.dropped?.length) parts.push(`去掉了${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（Chat 协议里没有对应的工具）`);
+  if (e.dropped?.length) parts.push(`未转发：${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（当前来源无法承接这些内容）`);
   if (e.note) parts.push(e.note);
   if (e.inputTokens != null || e.outputTokens != null) {
     parts.push(`输入 ${thousands(e.inputTokens)} / 输出 ${thousands(e.outputTokens)} tokens${e.cachedTokens ? `，其中 ${thousands(e.cachedTokens)} 命中缓存` : ""}`);
@@ -1342,6 +1357,16 @@ document.addEventListener("click", async e => {
   if (preset) { addForm = { preset: presets.find(x => x.id === preset.dataset.preset) }; render(); return; }
   if (t.closest("[data-cancel-add]")) { addForm = null; render(); return; }
 
+  const kiroImport = t.closest("[data-kiro-import]");
+  if (kiroImport) {
+    kiroImport.disabled = true; kiroImport.textContent = "正在读取登录和模型…";
+    try {
+      const p = await call("POST", "/api/kiro/import", {});
+      openProvider = p.id; toast(`已接入 Kiro，读到 ${p.models.length} 个模型`);
+    } catch (error) { toast(error.message); }
+    await refresh(true); return;
+  }
+
   const detail = t.closest(".detail");
   if (detail) {
     const id = detail.dataset.provider;
@@ -1365,15 +1390,18 @@ document.addEventListener("click", async e => {
     }
     const button = t.closest("button");
     if (!button) return;
+    if (button.type === "submit" && button.closest("form")) return;
     button.disabled = true;
     try {
       if (button.hasAttribute("data-probe")) {
         button.textContent = "测试中…";
         await call("POST", `/api/providers/${id}/probe`, { model: detail.querySelector(".probe-model").value });
-      } else if (button.dataset.route) {
-        await call("POST", `/api/providers/${id}/route`, { route: button.dataset.route === "auto" ? null : button.dataset.route });
+      } else if (button.hasAttribute("data-protocol-auto")) {
+        const model = detail.querySelector("[data-protocol-model]").value;
+        await call("PUT", `/api/providers/${id}/protocols`, { protocols: null, ...(model ? { model } : {}) });
+        toast(model ? "模型已恢复来源设置" : "来源已恢复自动识别");
       } else if (button.hasAttribute("data-remove")) {
-        if (!window.confirm("删除这个模型来源？钥匙串里的 Key 也会一起删除。")) { button.disabled = false; return; }
+        if (!window.confirm(providerById(id)?.kiro ? "删除这个 Kiro 来源？本机 Kiro CLI 登录会保留。" : "删除这个模型来源？钥匙串里的 Key 也会一起删除。")) { button.disabled = false; return; }
         await call("DELETE", `/api/providers/${id}`);
         openProvider = null;
       }
@@ -1387,6 +1415,11 @@ document.addEventListener("click", async e => {
 });
 
 document.addEventListener("change", async e => {
+  if (e.target.matches("[data-protocol-model]")) {
+    const detail = e.target.closest(".detail");
+    detail.querySelector("[data-protocol-options]").innerHTML = protocolOptions(providerById(detail.dataset.provider), e.target.value);
+    return;
+  }
   if (!e.target.matches(".billing-select")) return;
   const id = e.target.closest(".detail")?.dataset.provider;
   try { await call("PUT", `/api/providers/${id}/billing`, { billing: e.target.value }); toast(e.target.value === "subscription" ? "已改为包月套餐" : "已改为按量计费"); } catch (error) { toast(error.message); }
@@ -1402,6 +1435,16 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("submit", async e => {
+  if (e.target.matches("[data-protocol-form]")) {
+    e.preventDefault();
+    const f = new FormData(e.target); const model = f.get("model");
+    const id = e.target.closest(".detail").dataset.provider;
+    try {
+      await call("PUT", `/api/providers/${id}/protocols`, { protocols: f.getAll("protocols"), ...(model ? { model } : {}) });
+      toast("协议设置已保存");
+    } catch (error) { toast(error.message); }
+    await refresh(true); return;
+  }
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
   if (e.target.id === "import-form") {
     e.preventDefault();

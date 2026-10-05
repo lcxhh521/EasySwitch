@@ -10,10 +10,8 @@ import { endpointUrl, upstreamHeaders } from "./upstream.ts";
 const mimoStateDir = (): string => join(dataDir(), "mimo");
 
 /**
- * The one place a Chat Completions request leaves for its provider. For almost every provider that is
- * `POST <base>/chat/completions`. A provider that is a ChatGPT plan only has the Responses API, so
- * the request is turned into a Responses request and the event stream that comes back into Chat
- * chunks; the handlers above never need to know the difference.
+ * Legacy Chat-shaped helpers retained for isolated compatibility tests.
+ * Live generation routes use prepareOutbound in outbound.ts; new source adapters belong there.
  */
 export async function sendChat(provider: Provider, apiKey: string | undefined, payload: unknown, signal: AbortSignal): Promise<Response | Error> {
   const chat = payload as ChatRequest;

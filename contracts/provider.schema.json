@@ -36,6 +36,22 @@
         "type": "string"
       }
     },
+    "protocols": {
+      "$ref": "#/$defs/protocols",
+      "description": "Supported outbound APIs in fallback order; a matching inbound API takes precedence."
+    },
+    "modelProtocols": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/protocols" },
+      "description": "Per-model overrides of the source's protocol capabilities."
+    },
+    "kiro": {
+      "type": "object",
+      "properties": { "loginPath": { "type": "string" } },
+      "required": ["loginPath"],
+      "additionalProperties": false,
+      "description": "Read-only native CLI login location. Tokens are never stored here."
+    },
     "route": {
       "enum": [
         "responses-native",
@@ -66,6 +82,14 @@
       "type": "string",
       "pattern": "^https?://",
       "description": "Where the provider serves the Anthropic Messages API, if not under baseUrl."
+    }
+  },
+  "$defs": {
+    "protocols": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["chat", "responses", "messages", "gemini"] }
     }
   },
   "additionalProperties": false

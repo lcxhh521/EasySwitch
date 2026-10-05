@@ -7,6 +7,9 @@ export type ProviderRoute = "responses-native" | "chat-translate";
 /** How the gateway reaches a provider for Anthropic Messages traffic (Claude Code). */
 export type MessagesRoute = "anthropic-native" | "chat-translate";
 
+/** Agent-facing APIs. Source adapters choose independently of the calling agent. */
+export type ApiProtocol = "chat" | "responses" | "messages" | "gemini";
+
 export interface Provider {
   /** URL-safe slug; exposed model ids are `<id>/<upstream model>`. */
   id: string;
@@ -17,6 +20,12 @@ export interface Provider {
   defaultModel?: string;
   /** Model ids the provider listed the last time we asked. */
   models: string[];
+  /** Supported upstream APIs, in fallback preference order. Matching inbound API wins. */
+  protocols?: ApiProtocol[];
+  /** Models of the same source can have different API capabilities. */
+  modelProtocols?: Record<string, ApiProtocol[]>;
+  /** Native Kiro CLI login location; never contains login material. */
+  kiro?: { loginPath: string };
   /** Chosen by the last probe unless the user pinned it. */
   route: ProviderRoute;
   routePinned: boolean;
@@ -98,7 +107,7 @@ export interface WireConfig {
   /** Extra query parameters on every call (Azure's api-version on older APIs). */
   query?: Record<string, string>;
   /** Path overrides per call kind, relative to the base address. */
-  paths?: Partial<Record<"chat" | "responses" | "messages" | "models", string>>;
+  paths?: Partial<Record<"chat" | "responses" | "messages" | "gemini" | "models", string>>;
 }
 
 /** One key (one account, one subscription) of a provider. The secret itself lives in the Keychain. */
@@ -188,6 +197,9 @@ export interface GatewayLogEntry {
   model: string;
   providerId?: string;
   route: ProviderRoute | MessagesRoute;
+  inboundProtocol?: ApiProtocol;
+  outboundProtocol?: ApiProtocol | "kiro";
+  adapter?: string;
   /** The agent that made the call: "codex", "claude", or another agent's id; "chat" when unknown. */
   harness?: string;
   status: number;

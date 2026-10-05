@@ -9,6 +9,7 @@ import type { Provider } from "./types.ts";
  * how the provider takes a level (see quirks.ts); a provider that takes none has none.
  */
 export function modelEfforts(provider: Provider, model: string): string[] {
+  if (provider.kiro) return [];
   const set = provider.modelEfforts?.[model];
   if (set) return set;
   const style = provider.plan ? "effort" : provider.reasoningEffort === undefined ? quirksFor(provider.baseUrl, model).reasoning : provider.reasoningEffort ? "effort" : "none";
