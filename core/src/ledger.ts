@@ -84,12 +84,16 @@ export function summarize(entries: GatewayLogEntry[], range: UsageRange, now = n
   const totals = emptyTotals();
   const byProvider = new Map<string, Totals>();
   const byHarness = new Map<string, Totals>();
+  const byKey = new Map<string, Totals>();
   const byDay = new Map<string, Totals>();
   for (const e of entries) {
     add(totals, e);
     const provider = e.providerId ?? e.model.split("/")[0] ?? "unknown";
     const harness = e.harness ?? "codex";
-    for (const [map, key] of [[byProvider, provider], [byHarness, harness], [byDay, dayKey(e.at)]] as const) {
+    const groups: Array<[Map<string, Totals>, string]> = [[byProvider, provider], [byHarness, harness], [byDay, dayKey(e.at)]];
+    // `<provider>#<key id>`, for the per-key view of a pool.
+    if (e.keyId) groups.push([byKey, `${provider}#${e.keyId}`]);
+    for (const [map, key] of groups) {
       let t = map.get(key);
       if (!t) map.set(key, (t = emptyTotals()));
       add(t, e);
@@ -109,6 +113,7 @@ export function summarize(entries: GatewayLogEntry[], range: UsageRange, now = n
     cacheHitRate: totals.inputTokens ? totals.cachedTokens / totals.inputTokens : null,
     byProvider: Object.fromEntries(byProvider),
     byHarness: Object.fromEntries(byHarness),
+    byKey: Object.fromEntries(byKey),
     days,
   };
 }

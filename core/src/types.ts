@@ -30,7 +30,24 @@ export interface Provider {
   /** Whether the provider accepts `stream_options.include_usage`. */
   streamUsage: boolean;
   probe?: ProbeReport;
+  /**
+   * The key pool, tried in order. Absent on providers saved before pools:
+   * those have one implicit key stored under the provider id (see keypool.ts).
+   */
+  keys?: ProviderKey[];
   createdAt: string;
+}
+
+/** One key (one account, one subscription) of a provider. The secret itself lives in the Keychain. */
+export interface ProviderKey {
+  id: string;
+  label: string;
+  enabled: boolean;
+  addedAt: string;
+  lastUsedAt?: string;
+  /** After an auth, quota or rate-limit failure the key rests until then; others go first. */
+  restUntil?: string;
+  lastError?: { at: string; status: number; reason: string };
 }
 
 export type ProbeStatus = "pass" | "fail" | "skip";
@@ -75,6 +92,8 @@ export interface GatewayLogEntry {
   cachedTokens?: number;
   /** What the translation could not carry (`tool:web_search`, ...). */
   dropped?: string[];
+  /** Which key of the provider's pool answered. */
+  keyId?: string;
   /** Short failure or recovery description. */
   note?: string;
 }

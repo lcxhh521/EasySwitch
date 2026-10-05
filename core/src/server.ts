@@ -9,6 +9,7 @@ import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
 import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
+import { keySecretId, newKeyId } from "./keypool.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
@@ -54,7 +55,10 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 }
 
 function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
-  return { ...p, hasKey, icon: iconForBaseUrl(p.baseUrl), usedBy };
+  // Key metadata is public inside the console; the secrets themselves never leave the Keychain.
+  const keys = (p.keys ?? []).map(({ id, label, enabled, addedAt, lastUsedAt, restUntil, lastError }) =>
+    ({ id, label, enabled, addedAt, ...(lastUsedAt ? { lastUsedAt } : {}), ...(restUntil ? { restUntil } : {}), ...(lastError ? { lastError } : {}) }));
+  return { ...p, hasKey, ...(keys.length ? { keys } : {}), icon: iconForBaseUrl(p.baseUrl), usedBy };
 }
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
@@ -119,6 +123,52 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
 
+    // --- key pool ---------------------------------------------------------
+    const keyMatch = /^\/api\/providers\/([a-z0-9-]+)\/keys(?:\/([a-z0-9-]+))?$/.exec(path);
+    if (keyMatch) {
+      const provider = store.provider(keyMatch[1] ?? "");
+      if (!provider) {
+        json(res, 404, { error: "没有这个模型来源" });
+        return;
+      }
+      const keyId = keyMatch[2];
+      if (method === "POST" && !keyId) {
+        const label = String(body.label ?? "").trim();
+        const apiKey = String(body.apiKey ?? "").trim();
+        if (!apiKey) {
+          json(res, 400, { error: "Key 不能为空" });
+          return;
+        }
+        const key = { id: newKeyId(), label: label || `Key ${(provider.keys?.length ?? 0) + 1}`, enabled: true, addedAt: new Date().toISOString() };
+        await secrets.set(keySecretId(provider.id, key.id), apiKey);
+        provider.keys = [...(provider.keys ?? []), key];
+        store.upsertProvider(provider);
+        json(res, 201, publicProvider(provider, true));
+        return;
+      }
+      if (keyId) {
+        const key = provider.keys?.find(k => k.id === keyId);
+        if (!key) {
+          json(res, 404, { error: "没有这把 Key" });
+          return;
+        }
+        if (method === "PATCH") {
+          if (typeof body.label === "string" && body.label.trim()) key.label = body.label.trim();
+          if (typeof body.enabled === "boolean") key.enabled = body.enabled;
+          store.upsertProvider(provider);
+        } else if (method === "DELETE") {
+          provider.keys = provider.keys?.filter(k => k.id !== keyId);
+          await secrets.delete(keySecretId(provider.id, key.id));
+          store.upsertProvider(provider);
+        } else {
+          json(res, 405, { error: "不支持的操作" });
+          return;
+        }
+        json(res, 200, publicProvider(provider, true));
+        return;
+      }
+    }
+
     const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route))?$/.exec(path);
     if (providerMatch) {
       const provider = store.provider(providerMatch[1] ?? "");
@@ -128,6 +178,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       const action = providerMatch[2];
       if (method === "DELETE" && !action) {
+        for (const key of provider.keys ?? []) await secrets.delete(keySecretId(provider.id, key.id));
         store.removeProvider(provider.id);
         await secrets.delete(provider.id);
         json(res, 200, { ok: true });

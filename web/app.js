@@ -258,6 +258,26 @@ function openPicker(anchor, harness) {
 
 // ---------------------------------------------------------------- providers
 
+/** The key pool of one provider: each row is a key (an account); the first enabled one answers next. */
+function keyList(p) {
+  const keys = p.keys ?? [];
+  const rows = keys.map(k => {
+    const resting = k.restUntil && new Date(k.restUntil).getTime() > Date.now();
+    return `<tr><td>${esc(k.label)}</td>
+      <td>${resting ? `<span class="chip warn" title="${esc(k.lastError?.reason ?? "")}"><span class="dot"></span>${esc(k.lastError?.reason ?? "休息中")} · ${ago(k.restUntil)}恢复</span>` : k.lastError ? `<span class="chip bad">${esc(k.lastError.reason)}</span>` : `<span class="chip ok"><span class="dot"></span>正常</span>`}</td>
+      <td class="num"><button class="btn secondary" data-key-patch="${esc(k.id)}" data-enabled="${k.enabled ? "0" : "1"}">${k.enabled ? "停用" : "启用"}</button>
+        <button class="btn danger" data-key-del="${esc(k.id)}">删除</button></td></tr>`;
+  }).join("");
+  return `
+    <div class="section-head"><h3>Key（账号）池</h3><span class="aside">按顺序轮着用；一把被拒或限流，就休息一会儿，别的先上</span></div>
+    ${rows ? `<table class="tbl"><tr><th>名称</th><th>状态</th><th class="num"></th></tr>${rows}</table>` : `<div class="hint">这把来源只有一把 Key（老的存法）。</div>`}
+    <form class="form" data-add-key>
+      <div class="field"><label>备注（比如“主力订阅”）</label><input type="text" name="label" placeholder="Key ${keys.length + 1}"></div>
+      <div class="field"><label>API Key（存进 macOS 钥匙串）</label><input type="password" name="apiKey" autocomplete="off" required></div>
+      <div class="controls"><button class="btn secondary" type="submit">添加 Key</button></div>
+    </form>`;
+}
+
 function providerRow(p) {
   const models = modelsOf(p);
   const used = p.usedBy.map(h => icon(HARNESS[h].icon, "sm")).join("");
@@ -282,6 +302,7 @@ function providerRow(p) {
       </div>
       ${checks ? `<div class="checks">${checks}</div>` : ""}
       <div class="hint">OpenAI 兼容地址：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
+      ${keyList(p)}
       <div><button class="btn danger" data-remove>删除这个来源</button></div>
     </div>` : "";
   return `
@@ -621,6 +642,18 @@ document.addEventListener("click", async e => {
   const detail = t.closest(".detail");
   if (detail) {
     const id = detail.dataset.provider;
+    const keyPatch = t.closest("[data-key-patch]");
+    if (keyPatch) {
+      try { await call("PATCH", `/api/providers/${id}/keys/${keyPatch.dataset.keyPatch}`, { enabled: keyPatch.dataset.enabled === "1" }); } catch (error) { toast(error.message); }
+      await refresh(true);
+      return;
+    }
+    const keyDel = t.closest("[data-key-del]");
+    if (keyDel) {
+      try { await call("DELETE", `/api/providers/${id}/keys/${keyDel.dataset.keyDel}`); toast("已删除这把 Key"); } catch (error) { toast(error.message); }
+      await refresh(true);
+      return;
+    }
     const button = t.closest("button");
     if (!button) return;
     button.disabled = true;
@@ -644,8 +677,18 @@ document.addEventListener("click", async e => {
   if (toggle) { openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
 });
 
-document.addEventListener("submit", e => {
-  if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); }
+document.addEventListener("submit", async e => {
+  if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
+  const form = e.target.closest("form[data-add-key]");
+  if (!form) return;
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(form));
+  const id = form.closest(".detail")?.dataset.provider;
+  try {
+    await call("POST", `/api/providers/${id}/keys`, data);
+    toast("已添加 Key，下一次请求开始使用");
+  } catch (error) { toast(error.message); }
+  await refresh(true);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closePopover(); });
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });

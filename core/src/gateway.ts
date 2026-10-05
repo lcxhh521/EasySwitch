@@ -1,4 +1,5 @@
 import { anthropicModelList, catalogModels } from "./catalog.ts";
+import { withKey } from "./keypool.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
@@ -56,7 +57,6 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     return;
   }
   const { provider, model } = resolved;
-  const apiKey = await deps.secrets.get(provider.id);
   const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
     deps.log({
       at: new Date().toISOString(), model: exposed, providerId: provider.id, route: provider.route, harness: "codex",
@@ -69,12 +69,13 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   if (provider.route === "responses-native") {
     // The relay speaks Responses itself: forward the request untouched except
     // for the model name, and stream its bytes straight back.
-    const upstream = await fetch(joinUrl(provider.baseUrl, "responses"), {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: req.headers.accept ?? "text/event-stream", ...authHeaders(apiKey) },
-      body: JSON.stringify({ ...body, model }),
-      signal: abort.signal,
-    }).catch((error: Error) => error);
+    const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
+      fetch(joinUrl(provider.baseUrl, "responses"), {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: req.headers.accept ?? "text/event-stream", ...authHeaders(apiKey) },
+        body: JSON.stringify({ ...body, model }),
+        signal: abort.signal,
+      }).catch((error: Error) => error));
     if (upstream instanceof Error) {
       sendJson(res, 502, errorBody(`upstream unreachable: ${upstream.message}`));
       finish(502, "unreachable");
@@ -83,17 +84,18 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "text/event-stream" });
     if (upstream.body) Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream).pipe(res);
     else res.end();
-    res.on("finish", () => finish(upstream.status));
+    res.on("finish", () => finish(upstream.status, undefined, keyId ? { keyId } : {}));
     return;
   }
 
   const { chat, customTools, dropped } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
-  const upstream = await fetch(joinUrl(provider.baseUrl, "chat/completions"), {
-    method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders(apiKey) },
-    body: JSON.stringify(chat),
-    signal: abort.signal,
-  }).catch((error: Error) => error);
+  const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
+    fetch(joinUrl(provider.baseUrl, "chat/completions"), {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders(apiKey) },
+      body: JSON.stringify(chat),
+      signal: abort.signal,
+    }).catch((error: Error) => error));
   const droppedList = [...new Set(dropped)];
   const note = undefined;
   if (upstream instanceof Error) {
@@ -133,6 +135,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     const usage = stream.usageSummary;
     finish(200, note, {
       ...(droppedList.length ? { dropped: droppedList } : {}),
+      ...(keyId ? { keyId } : {}),
       ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
     });
   } catch (error) {

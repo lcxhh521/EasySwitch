@@ -4,6 +4,7 @@ import { AnthropicStream, chatToMessage, estimateTokens, messagesToChat } from "
 import type { GatewayDeps } from "./gateway.ts";
 import type { GatewayLogEntry } from "./types.ts";
 import { fromClaudeModelId } from "./catalog.ts";
+import { withKey } from "./keypool.ts";
 import { resolveModel } from "./gateway.ts";
 import { anthropicHeaders } from "./probe.ts";
 import { authHeaders, describeFailure, joinUrl, sseData } from "./upstream.ts";
@@ -44,7 +45,6 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   }
   const { provider, model } = resolved;
   const route = provider.messagesRoute ?? "chat-translate";
-  const apiKey = await deps.secrets.get(provider.id);
   const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
     deps.log({
       at: new Date().toISOString(), model: exposed, providerId: provider.id, route, harness: "claude",
@@ -58,12 +58,13 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     for (const field of CLAUDE_ONLY_FIELDS) delete forwarded[field];
     const thinking = forwarded.thinking as Json | undefined;
     if (thinking && thinking.type !== "enabled") delete forwarded.thinking;
-    const upstream = await fetch(joinUrl(provider.anthropicBaseUrl ?? provider.baseUrl, "messages"), {
-      method: "POST",
-      headers: { ...anthropicHeaders(apiKey), accept: req.headers.accept ?? "application/json" },
-      body: JSON.stringify(forwarded),
-      signal: abort.signal,
-    }).catch((error: Error) => error);
+    const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
+      fetch(joinUrl(provider.anthropicBaseUrl ?? provider.baseUrl, "messages"), {
+        method: "POST",
+        headers: { ...anthropicHeaders(apiKey), accept: req.headers.accept ?? "application/json" },
+        body: JSON.stringify(forwarded),
+        signal: abort.signal,
+      }).catch((error: Error) => error));
     if (upstream instanceof Error) {
       anthropicError(res, 502, "api_error", `upstream unreachable: ${upstream.message}`);
       finish(502, "unreachable");
@@ -72,19 +73,19 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
     if (upstream.body) Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream).pipe(res);
     else res.end();
-    res.on("finish", () => finish(upstream.status));
+    res.on("finish", () => finish(upstream.status, undefined, keyId ? { keyId } : {}));
     return;
   }
 
   const { chat, dropped } = messagesToChat(body, model, { streamUsage: provider.streamUsage });
-  const send = (payload: unknown) => fetch(joinUrl(provider.baseUrl, "chat/completions"), {
+  const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(joinUrl(provider.baseUrl, "chat/completions"), {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders(apiKey) },
     body: JSON.stringify(payload),
     signal: abort.signal,
   }).catch((error: Error) => error);
 
-  let upstream = await send(chat);
+  let { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey => send(chat, apiKey));
   const droppedList = [...new Set(dropped)];
   let note: string | undefined;
   if (!(upstream instanceof Error) && upstream.status === 400 && chat.max_tokens !== undefined) {
@@ -117,6 +118,7 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     const u = message.usage as { input_tokens: number; output_tokens: number; cache_read_input_tokens: number };
     finish(200, note, {
       ...(droppedList.length ? { dropped: droppedList } : {}),
+      ...(keyId ? { keyId } : {}),
       inputTokens: u.input_tokens, outputTokens: u.output_tokens, cachedTokens: u.cache_read_input_tokens,
     });
     return;
@@ -142,6 +144,7 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     const usage = stream.usageSummary;
     finish(200, note, {
       ...(droppedList.length ? { dropped: droppedList } : {}),
+      ...(keyId ? { keyId } : {}),
       ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
     });
   } catch (error) {
