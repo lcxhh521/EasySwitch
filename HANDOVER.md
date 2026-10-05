@@ -25,6 +25,21 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 - **桌面端和 IDE**：能接的接，不能接的给手动配置向导，真做不了的写明原因。
 - **专有协议的来源也做**（Cursor、Kiro、Antigravity、MiMo 免 key 等）。
 
+## 1.5 差异化（用户强调的长期方向）
+
+用户原话：「虽然我们借鉴了 magpie，但是我们一定要走出差异化的。」借鉴是为了少走弯路，**不是做成另一个 Magpie**。判断标准：一个功能、一个界面、一个命名，如果只是在别人那里见过才这么做，就要问“我们的用户为什么需要它长这样”。
+
+我们已经和它们不同、要继续放大的地方：
+
+- **不改任何 agent 的配置**，一切靠每次启动的私有目录/环境变量；Magpie 和 opencodex 的路线是写配置文件。
+- **原生与外接并排、原生线路原样转发**，随时退回原生，停掉我们不影响任何 agent。
+- **agent 调 agent**（MCP）和**按规则派活**（任务页选“自动”）：从“切换模型”走到“调度 agent”，这是产品重心。
+- **订阅额度借给别的 harness**（ChatGPT、Copilot；Claude 例外），以及专有协议来源。
+- **逐 agent 的能力矩阵**：每个 agent 每个功能都有诚实的状态和理由，界面可见。
+- 每个 agent 自己的档位 / 子 agent / 小任务模型；模型池故障切换；用量和估算花费。
+
+**需要你警惕的地方**：现在的 4 页界面和菜单栏面板是照 Magpie / opencodex 的样子做的（B41 要评审）。新做的任何界面和交互，先想清楚我们的差异点再动手，不要顺手抄它们的布局、命名和流程。
+
 ## 2. 不可违反的规则
 
 用户明确定下的，违反就是事故：
@@ -47,7 +62,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 
 ## 4. 待办与做法（编号对应 `BACKLOG.md`）
 
-建议顺序：B2 → B3/B4 → B38 → B6 → B7 → 其余。**先读 `research/` 里四份事实表**，里面有每个 agent 的私有目录变量、配置文件内容、MCP 写法、档位参数，凡标 `(inferred)` 的都是没核实的。
+建议顺序：B2 → B3/B4 → B38 → B6 → B7 → B41（差异化评审）→ 其余。**先读 `research/` 里四份事实表**，里面有每个 agent 的私有目录变量、配置文件内容、MCP 写法、档位参数，凡标 `(inferred)` 的都是没核实的。
 
 - **B2 补全 CLI 的启动和后台任务**：大部分已写在 `launchers-extra.ts`，**剩的是实测**。云端没法测，所以请在交付里列出“每个 agent 的核对命令”，由用户在本机跑。`minimax-code` 没查到无界面参数，只有交互形态；`codebuddy` 命令行版不能改地址（桌面版 WorkBuddy 可以读私有 `models.json`，但没法每次指定模型），归到 B6 手动向导；`amp` 只能检测并打开。
 - **B3 MCP 挂载**：已挂的：Codex、Claude Code、Hermes、OpenCode、Gemini/Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw（后面几个的 MCP 写法大多是推测，见各自 `mcpCaveat`）。还缺：**dsh**（做得了，见 `research/agent-facts-4.md` 的更正段：在 patch 里加 `dsh-mcp-client` 插件，但要先给私有 `DSH_HOME` 预置那个插件的符号链接）、**Trae Agent**（只认 stdio，要一个 HTTP 转 stdio 的小桥）、Kimi、OMP、AtomCode（没查到）。
