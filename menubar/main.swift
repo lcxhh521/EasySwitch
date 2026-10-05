@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     menu.addItem(.separator())
     if healthy {
       menu.addItem(item("打开控制台", #selector(openConsole), "o"))
-      menu.addItem(item("启动 Codex 增强会话", #selector(launchCodex), "l"))
+      menu.addItem(item("启动 ChatGPT（Codex）增强会话", #selector(launchCodex), "l"))
       menu.addItem(item("启动 Claude Code 增强会话", #selector(launchClaude), "k"))
       menu.addItem(item("停止核心服务", #selector(stopCore), ""))
     } else {
@@ -238,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
   private func nativeReport() -> String {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
-    let files = [("Codex", "\(home)/.codex/config.toml"), ("Claude Code", "\(home)/.claude/settings.json")]
+    let files = [("ChatGPT（Codex）", "\(home)/.codex/config.toml"), ("Claude Code", "\(home)/.claude/settings.json")]
     return files.map { name, path in
       guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return "\(name)：配置文件不存在" }
       let clean = text.range(of: "easyswitch", options: .caseInsensitive) == nil

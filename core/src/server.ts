@@ -138,7 +138,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         : provider.probe ? "一致性测试有未通过项，详情在来源页" : "",
       parsed.apiKey ? undefined : "没有 Key，测试没跑",
       attached.length
-        ? `${attached.map(h => h === "codex" ? "Codex" : "Claude Code").join("和")}的增强会话现在用它`
+        ? `${attached.map(h => h === "codex" ? "ChatGPT（Codex）" : "Claude Code").join("和")}的增强会话现在用它`
         : "两个 agent 的绑定都没有动",
     ].filter(Boolean);
     return parts.join("；");
@@ -198,7 +198,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     if (path === "/api/accounts/launch" && method === "POST") {
       const harness = body.harness === "claude" ? "claude" : "codex";
-      const label = harness === "codex" ? "Codex" : "Claude Code";
+      const label = harness === "codex" ? "ChatGPT（Codex）" : "Claude Code";
       let account = typeof body.accountId === "string" ? store.account(body.accountId) : undefined;
       let note: string | undefined;
       if (!account) {
@@ -464,7 +464,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const launchMatch = /^\/api\/launch\/(codex|claude)$/.exec(path);
     if (launchMatch && (method === "POST" || method === "GET")) {
       const harness = launchMatch[1] as Harness;
-      const label = harness === "codex" ? "Codex" : "Claude Code";
+      const label = harness === "codex" ? "ChatGPT（Codex）" : "Claude Code";
       const binding = store.binding(harness);
       const binary = harness === "codex" ? await findCodex() : await findClaude();
       if (!binding || !binary) {
