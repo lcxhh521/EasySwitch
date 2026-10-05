@@ -51,6 +51,11 @@ export function poolMembers(store: Store, name: string): string[] | undefined {
   return [...fresh, ...members.filter(m => (resting.get(m) ?? 0) > now)];
 }
 
+/** Forget which members are resting (tests, and a "try everything again" for the future). */
+export function clearRest(): void {
+  resting.clear();
+}
+
 export function markFailed(member: string): void {
   resting.set(member, Date.now() + REST_MS);
 }
@@ -113,16 +118,23 @@ class Gate extends Writable {
 }
 
 /** Runs one request against a pool's members in turn. Anything that is not a pool runs once, as it is. */
+export interface PoolContext {
+  /** Which pool and which try this is, for the log. */
+  pool: string;
+  attempt: number;
+  attempts: number;
+}
+
 export async function runWithPool(
   store: Store, exposed: string | undefined, res: ServerResponse,
-  attempt: (res: ServerResponse, member: string | undefined) => Promise<void>,
+  attempt: (res: ServerResponse, member: string | undefined, ctx?: PoolContext) => Promise<void>,
 ): Promise<void> {
   const members = exposed ? poolMembers(store, exposed) : undefined;
   if (!members?.length) { await attempt(res, undefined); return; }
   for (let i = 0; i < members.length; i++) {
     const gate = new Gate(res, i < members.length - 1);
     const settled = new Promise<void>(resolve => { gate.once("finish", resolve); gate.once("close", resolve); });
-    await attempt(gate as unknown as ServerResponse, members[i]);
+    await attempt(gate as unknown as ServerResponse, members[i], { pool: exposed!, attempt: i + 1, attempts: members.length });
     await settled;
     if (!gate.retry) return;
     markFailed(members[i]!);

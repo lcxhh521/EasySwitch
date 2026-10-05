@@ -57,6 +57,15 @@ export interface Provider {
   createdAt: string;
 }
 
+/** A saved set of every agent's settings (main model, thinking level, other models), to switch back to in one click. */
+export interface Profile {
+  id: string;
+  name: string;
+  bindings: HarnessBinding[];
+  prefs: Record<string, { effort?: string; tiers?: Record<string, string> }>;
+  createdAt: string;
+}
+
 /** A model pool: one name for several places to get the model from (see pools.ts). */
 export interface Pool {
   id: string;
@@ -180,6 +189,10 @@ export interface GatewayLogEntry {
   harness?: string;
   status: number;
   ms: number;
+  /** Through a model pool: which pool, and which try this was out of how many. */
+  pool?: string;
+  attempt?: number;
+  attempts?: number;
   /** Token usage when the upstream reported it; absent on passthrough routes. */
   inputTokens?: number;
   outputTokens?: number;

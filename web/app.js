@@ -353,6 +353,22 @@ function renderTasks() {
     <p class="hint">任务里的 agent 按它们各自默认的只读权限运行：能读文件、搜索、思考，不会擅自改文件。</p>`;
 }
 
+let profileNaming = false;
+
+/** Profiles: every agent's settings saved under a name, to come back to in one click. */
+function profileBar() {
+  const list = state.profiles ?? [];
+  return `
+    <div class="card"><div class="row" style="gap:10px;flex-wrap:wrap">
+      <div class="grow"><div class="title">方案</div><div class="sub">${list.length ? "把所有 agent 现在的设置存成一个名字，之后一键切回" : "还没有方案：设好各个 agent 的主模型、档位和小模型后，存成一个方案"}</div></div>
+      ${list.length ? `<select data-profile-pick>${list.map(p => `<option value="${esc(p.id)}">${esc(p.name)}（${p.agents} 个 agent）</option>`).join("")}</select>
+        <button class="btn" data-profile-apply>切换到它</button><button class="btn secondary" data-profile-del>删除</button>` : ""}
+      ${profileNaming
+        ? `<form data-profile-form style="display:flex;gap:8px"><input type="text" name="name" placeholder="比如 省钱 / 专注" required autofocus><button class="btn" type="submit">保存</button><button class="btn secondary" type="button" data-profile-cancel>取消</button></form>`
+        : `<button class="btn secondary" data-profile-new>把现在的设置存成方案</button>`}
+    </div></div>`;
+}
+
 function renderAgents() {
   if (PANEL) {
     const rows = Object.keys(HARNESS).map(agentRow).join("");
@@ -379,6 +395,7 @@ function renderAgents() {
     ...others.missing.map(genericAgentRow),
   ];
   return `
+    ${profileBar()}
     <div class="section-head"><h2>已安装</h2><span class="aside">${inst.length ? `${agentList ? agentList.filter(a => a.installed).length : inst.length} 个` : ""}；每个 agent 平时都走原生，增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
     <p class="hint">在每个 agent 那一行里选主模型、想得多深、后台小任务和子 agent 用的模型，再点「启动」。会话里输入 <code>/model</code> 可以随时换。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT 和 Claude Code 永远不受影响。「接入中」的 agent 正在逐个接入；「只能打开」的是闭源或绑定登录的，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>
@@ -608,7 +625,7 @@ function keyList(p) {
 
 function providerRow(p) {
   const models = modelsOf(p);
-  const used = p.usedBy.map(h => icon(HARNESS[h].icon, "sm")).join("");
+  const used = p.usedBy.map(h => icon(agentMeta(h).icon, "sm")).join("");
   const open = openProvider === p.id;
   const checks = (p.probe?.checks ?? []).map(c => `
     <div class="check ${c.status}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${c.latencyMs}ms` : ""}</div>`).join("");
@@ -813,10 +830,12 @@ async function submitAdd(form) {
 // ---------------------------------------------------------------- sessions
 
 function explain(e) {
-  const harness = HARNESS[e.harness ?? "codex"];
+  // Any agent can be in the log, not just the two with their own rows.
+  const harness = HARNESS[e.harness ?? "codex"] ?? { ...agentMeta(e.harness), protocol: "Chat" };
   const provider = providerById(e.providerId ?? e.model.split("/")[0]);
   const pname = provider?.name ?? e.providerId ?? "未知来源";
   const parts = [];
+  if (e.pool) parts.push(`走的是模型池 ${e.pool}，第 ${e.attempt}/${e.attempts} 个来源${e.status >= 400 && e.attempt < e.attempts ? "，它没答上，已经换下一个" : ""}`);
   if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
   else parts.push(`这个来源原生支持 ${harness.protocol} 协议，请求原样转发`);
   if (e.dropped?.length) parts.push(`去掉了${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（Chat 协议里没有对应的工具）`);
@@ -836,6 +855,8 @@ function renderSessions() {
   const recent = state.log.filter(e => now - new Date(e.at).getTime() < 120_000);
   const live = state.log.filter(e => now - new Date(e.at).getTime() < 30_000);
   const agentActive = h => sessionsOf(h).length > 0 || live.some(e => (e.harness ?? "codex") === h);
+  // The two with their own rows, plus any other agent that has made a request lately.
+  const flowAgents = [...new Set([...Object.keys(HARNESS), ...recent.map(e => e.harness).filter(h => h && h !== "chat")])];
   const providerIds = [...new Set([
     ...Object.values(state.bindings ?? {}).filter(Boolean).map(b => b.providerId),
     ...recent.map(e => e.providerId ?? e.model.split("/")[0]),
@@ -853,9 +874,9 @@ function renderSessions() {
     <div class="section-head"><h2>会话</h2><span class="aside"><span class="chip ok"><span class="dot"></span>实时</span></span></div>
     <div class="card"><div class="flow" id="flow">
       <svg id="flow-lines"></svg>
-      <div class="col">${Object.keys(HARNESS).map(h => `
-        <div class="node ${agentActive(h) ? "active" : "idle"}" data-node="a:${h}">${icon(HARNESS[h].icon, "lg")}
-          <div><div class="t">${HARNESS[h].name}</div><div class="s">${sessionsOf(h).length ? `${sessionsOf(h).length} 个增强会话` : "原生"}</div></div></div>`).join("")}
+      <div class="col">${flowAgents.map(h => `
+        <div class="node ${agentActive(h) ? "active" : "idle"}" data-node="a:${esc(h)}">${icon(agentMeta(h).icon, "lg")}
+          <div><div class="t">${esc(agentMeta(h).name)}</div><div class="s">${sessionsOf(h).length ? `${sessionsOf(h).length} 个增强会话` : agentActive(h) ? "正在用 EasySwitch" : "原生"}</div></div></div>`).join("")}
       </div>
       <div class="col"><div class="node hub" data-node="hub"><span class="logo">⇄</span><div class="t">EasySwitch</div><div class="s">127.0.0.1:${state.port}</div></div></div>
       <div class="col">${providerIds.map(providerNode).join("") || `<div class="hint">还没有用到任何模型来源</div>`}</div>
@@ -863,7 +884,7 @@ function renderSessions() {
 
     <div class="section-head"><h2>运行中的增强会话</h2></div>
     <div class="card">${running.length ? `<table class="tbl"><tr><th>Agent</th><th>模型</th><th>启动于</th><th>进程</th><th></th></tr>
-      ${running.map(s => `<tr><td>${icon(HARNESS[s.harness].icon, "sm")} ${HARNESS[s.harness].name}</td><td class="mono">${esc(s.model ?? "")}</td>
+      ${running.map(s => `<tr><td>${icon(agentMeta(s.harness).icon, "sm")} ${esc(agentMeta(s.harness).name)}</td><td class="mono">${esc(s.model ?? "")}</td>
         <td>${s.startedAt ? ago(s.startedAt) : "—"}</td><td class="mono">${s.pid}</td>
         <td class="num"><button class="btn secondary" data-stop="${s.pid}">结束</button></td></tr>`).join("")}</table>`
       : `<div class="empty">没有运行中的增强会话；你的 agent 都在走原生</div>`}</div>
@@ -889,7 +910,7 @@ function drawFlowLines() {
   const now = Date.now();
   const isLive = e => now - new Date(e.at).getTime() < 30_000;
   let paths = "";
-  for (const h of Object.keys(HARNESS)) {
+  for (const h of [...new Set([...Object.keys(HARNESS), ...state.log.map(e => e.harness).filter(x => x && x !== "chat")])]) {
     const live = sessionsOf(h).length > 0 || state.log.some(e => (e.harness ?? "codex") === h && isLive(e));
     if (live || state.bindings?.[h]) paths += curve(at(`a:${h}`, "right"), at("hub", "left"), live);
   }
@@ -1030,7 +1051,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || ocxImport || importFormOpen || poolForm || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || ocxImport || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1212,6 +1233,20 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
+  if (t.closest("[data-profile-new]")) { profileNaming = true; render(); return; }
+  if (t.closest("[data-profile-cancel]")) { profileNaming = false; render(); return; }
+  if (t.closest("[data-profile-apply]")) {
+    const id = document.querySelector("[data-profile-pick]")?.value;
+    try { const r = await call("POST", `/api/profiles/${id}/apply`); toast(`已切换到「${r.name}」：下次启动的会话就用这套设置`); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  if (t.closest("[data-profile-del]")) {
+    const id = document.querySelector("[data-profile-pick]")?.value;
+    try { await call("DELETE", `/api/profiles/${id}`); toast("已删除这个方案"); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
   if (t.closest("[data-pool-new]")) { poolForm = { name: "", strategy: "order", members: [] }; render(); return; }
   if (t.closest("[data-pool-cancel]")) { poolForm = null; render(); return; }
   const poolEdit = t.closest("[data-pool-edit]");
@@ -1384,6 +1419,13 @@ document.addEventListener("submit", async e => {
       msg.className = "msg bad";
       msg.textContent = error.message;
     }
+    await refresh(true);
+    return;
+  }
+  const profileFormEl = e.target.closest("form[data-profile-form]");
+  if (profileFormEl) {
+    e.preventDefault();
+    try { await call("POST", "/api/profiles", { name: new FormData(profileFormEl).get("name") }); toast("方案已保存"); profileNaming = false; } catch (error) { toast(error.message); }
     await refresh(true);
     return;
   }

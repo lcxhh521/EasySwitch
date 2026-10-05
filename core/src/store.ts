@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { dataDir } from "./paths.ts";
 import type { SiwcAccount, SiwcStorage } from "./siwc.ts";
 import { catalogModels, type CatalogModel } from "./catalog.ts";
+import type { Profile } from "./types.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
 
 interface StateFile {
@@ -18,6 +19,7 @@ interface StateFile {
   siwc?: SiwcAccount[];
   siwcHostId?: string;
   pools?: Pool[];
+  profiles?: Profile[];
   /** Per agent, apart from its main model: thinking level and the other models it runs (sub-agent, small tasks). */
   prefs?: Record<string, AgentPrefs>;
 }
@@ -133,6 +135,41 @@ export class Store {
 
   removeAccount(id: string): void {
     this.state.accounts = (this.state.accounts ?? []).filter(a => a.id !== id);
+    this.save();
+  }
+
+  profiles(): Profile[] {
+    return structuredClone(this.state.profiles ?? []);
+  }
+
+  /** Saves what every agent is set to now under a name (a name already used is replaced). */
+  saveProfile(name: string): Profile {
+    const list = this.state.profiles ?? [];
+    const existing = list.find(p => p.name === name);
+    const profile: Profile = {
+      id: existing?.id ?? `f-${createHash("sha256").update(`${name}${Date.now()}`).digest("hex").slice(0, 6)}`,
+      name, bindings: structuredClone(this.state.bindings), prefs: structuredClone(this.state.prefs ?? {}),
+      createdAt: new Date().toISOString(),
+    };
+    this.state.profiles = existing ? list.map(p => (p.id === existing.id ? profile : p)) : [...list, profile];
+    this.save();
+    return structuredClone(profile);
+  }
+
+  /** Puts every agent's settings back as they were when the profile was saved. Providers and pools are not touched. */
+  applyProfile(id: string): Profile | undefined {
+    const profile = (this.state.profiles ?? []).find(p => p.id === id);
+    if (!profile) return undefined;
+    // A binding whose provider or pool has since gone is left out, so applying never points an agent at nothing.
+    const exists = (b: HarnessBinding) => b.providerId === "pool" ? (this.state.pools ?? []).some(p => p.id === b.model) : this.state.providers.some(p => p.id === b.providerId);
+    this.state.bindings = structuredClone(profile.bindings).filter(exists);
+    this.state.prefs = structuredClone(profile.prefs);
+    this.save();
+    return structuredClone(profile);
+  }
+
+  removeProfile(id: string): void {
+    this.state.profiles = (this.state.profiles ?? []).filter(p => p.id !== id);
     this.save();
   }
 

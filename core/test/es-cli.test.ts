@@ -86,9 +86,14 @@ test("`es codex` starts the real Codex here, on the gateway", async t => {
 
 test("the private session directory is removed when the run ends", async t => {
   if (!(await findClaude())) { t.skip("claude not installed"); return; }
-  const left = () => readdirSync(tmpdir()).filter(n => n.startsWith("easyswitch-session-")).length;
-  const before = left();
-  await es(["claude", "-m", `${pid}/mock-coder`, "--", "-p", "Reply with exactly the word: pong"]);
-  assert.equal(left(), before, "no easyswitch-session-* directory is left in the temp dir");
-  assert.ok(existsSync(tmpdir()));
+  // The server in this process makes its session directories under TMPDIR: give it a directory of its own, so tests running at the same time cannot be counted.
+  const mine = mkdtempSync(join(tmpdir(), "es-cli-tmp-"));
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = mine;
+  try {
+    await es(["claude", "-m", `${pid}/mock-coder`, "--", "-p", "Reply with exactly the word: pong"]);
+    assert.deepEqual(readdirSync(mine).filter(n => n.startsWith("easyswitch-session-")), [], "no session directory is left");
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+  }
 });

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
+import { clearRest } from "../src/pools.ts";
 import { Store } from "../src/store.ts";
 import { startMockRelay } from "./mock-relay.ts";
 
@@ -129,4 +130,29 @@ test("a pool can be edited and deleted, and an agent bound to it falls back to n
   assert.equal((await api("DELETE", "/api/pools/spread")).status, 200);
   assert.equal(store.pool("spread"), undefined);
   assert.equal(store.binding("aider"), undefined, "no binding points at a pool that is gone");
+});
+
+test("the log says which pool and which try each request was, so a failover can be read afterwards", async () => {
+  clearRest(); // earlier tests left some members resting
+  await api("POST", "/api/pools", { name: "Logged", members: [`${ids.bad}/mock-mini`, `${ids.good}/mock-mini`] });
+  assert.equal((await chat("pool/logged")).status, 200);
+  const state = (await (await api("GET", "/api/state")).json()) as { log: Array<{ pool?: string; attempt?: number; attempts?: number; status: number; providerId?: string }> };
+  const tries = state.log.filter(e => e.pool === "pool/logged").sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0));
+  assert.deepEqual(tries.map(e => [e.attempt, e.attempts, e.status]), [[1, 2, 401], [2, 2, 200]]);
+  assert.equal(tries[0]!.providerId, ids.bad);
+  assert.equal(tries[1]!.providerId, ids.good);
+});
+
+test("profiles over the API: save, list, apply, delete", async () => {
+  await api("PUT", "/api/bindings/aider", { providerId: ids.good, model: "mock-coder" });
+  const saved = (await (await api("POST", "/api/profiles", { name: "一号" })).json()) as { id: string };
+  await api("DELETE", "/api/bindings/aider");
+  assert.equal(store.binding("aider"), undefined);
+  assert.equal((await api("POST", `/api/profiles/${saved.id}/apply`)).status, 200);
+  assert.equal(store.binding("aider")!.providerId, ids.good);
+  const list = (await (await api("GET", "/api/profiles")).json()) as { profiles: Array<{ name: string; agents: number }> };
+  assert.equal(list.profiles[0]!.name, "一号");
+  assert.equal((await api("POST", "/api/profiles", { name: " " })).status, 400);
+  assert.equal((await api("DELETE", `/api/profiles/${saved.id}`)).status, 200);
+  assert.equal((await api("POST", `/api/profiles/${saved.id}/apply`)).status, 404);
 });

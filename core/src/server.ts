@@ -121,6 +121,9 @@ function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
 export function createEasySwitchServer(deps: ServerDeps): Server {
   const { store, secrets, port, ledger } = deps;
   const log: GatewayLogEntry[] = [];
+  /** The log writer for one try: inside a pool it also says which pool and which try this is. */
+  const logFor = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) =>
+    pushLog(ctx ? { ...entry, pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : entry);
   const pushLog = (entry: GatewayLogEntry) => {
     priceEntry(store, entry);
     log.unshift(entry);
@@ -353,6 +356,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
         pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
+        profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
         modelEfforts: Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts])),
         sessions: await augmentedSessions(),
         sessionDetails: await sessionDetails(),
@@ -364,6 +368,29 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         log,
       });
       return;
+    }
+
+    // --- profiles: every agent's settings, saved under a name -----------------
+    if (path === "/api/profiles" && method === "GET") {
+      json(res, 200, { profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length, createdAt: p.createdAt })) });
+      return;
+    }
+    if (path === "/api/profiles" && method === "POST") {
+      const name = String(body.name ?? "").trim();
+      if (!name) { json(res, 400, { error: "给这套设置取个名字" }); return; }
+      const p = store.saveProfile(name);
+      json(res, 200, { id: p.id, name: p.name });
+      return;
+    }
+    const profileMatch = /^\/api\/profiles\/(f-[a-f0-9]+)(?:\/(apply))?$/.exec(path);
+    if (profileMatch) {
+      if (method === "POST" && profileMatch[2] === "apply") {
+        const p = store.applyProfile(profileMatch[1] ?? "");
+        if (!p) { json(res, 404, { error: "没有这套设置" }); return; }
+        json(res, 200, { ok: true, name: p.name });
+        return;
+      }
+      if (method === "DELETE" && !profileMatch[2]) { store.removeProfile(profileMatch[1] ?? ""); json(res, 200, { ok: true }); return; }
     }
 
     // --- model pools ---------------------------------------------------------
@@ -1018,7 +1045,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: pushLog }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx) }));
         return;
       }
       if (path === "/mcp") {
@@ -1033,17 +1060,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (geminiMatch) {
         const raw = await readBody(req);
         const named = decodeURIComponent(geminiMatch[2] ?? "").replace(/^models\//, "");
-        await runWithPool(store, named, res, (r, member) => {
+        await runWithPool(store, named, res, (r, member, ctx) => {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: pushLog });
+          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx) });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: pushLog }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx) }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -1052,7 +1079,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "POST" && (path === "/v1/messages" || path === "/messages")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: pushLog }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx) }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
