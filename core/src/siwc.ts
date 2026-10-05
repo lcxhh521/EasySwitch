@@ -30,6 +30,21 @@ export function codexBase(): string {
   return (process.env.EASYSWITCH_CHATGPT_UPSTREAM ?? "https://chatgpt.com/backend-api/codex").replace(/\/+$/, "");
 }
 
+/** GitHub's own addresses (tests point these at a fake). */
+function githubBase(): string { return (process.env.EASYSWITCH_GITHUB ?? "https://github.com").replace(/\/+$/, ""); }
+function githubApi(): string { return (process.env.EASYSWITCH_GITHUB_API ?? "https://api.github.com").replace(/\/+$/, ""); }
+/** The client of the VS Code Copilot extension, which is what Copilot-compatible tools sign in as. */
+export const COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+const COPILOT_API_DEFAULT = "https://api.githubcopilot.com";
+
+/** What the Copilot API wants to see from a client; this is the identity of the VS Code Copilot Chat extension. */
+export function copilotHeaders(): Record<string, string> {
+  return {
+    "Editor-Version": "vscode/1.99.0", "Editor-Plugin-Version": "copilot-chat/0.26.7", "Copilot-Integration-Id": "vscode-chat",
+    "User-Agent": "GitHubCopilotChat/0.26.7", "openai-intent": "conversation-panel", "x-github-api-version": "2025-04-01",
+  };
+}
+
 export function apiBase(): string {
   return process.env.EASYSWITCH_OPENAI_API ?? "https://api.openai.com/v1";
 }
@@ -41,7 +56,9 @@ const AGENT_NAME = "EasySwitch";
 export interface SiwcAccount {
   id: string;
   /** "codex": signed in as the Codex client (device code), used on the Codex backend. Absent or "open": OpenAI's open route. */
-  kind?: "codex" | "open";
+  kind?: "codex" | "open" | "copilot";
+  /** Copilot: the API address the token was issued for. */
+  endpoint?: string;
   /** What the user sees: their label, else the email. */
   label: string;
   email?: string;
@@ -246,6 +263,14 @@ export async function accessToken(deps: { storage: SiwcStorage; secrets: SecretS
   if (running) return running;
   const job = (async () => {
     try {
+      if (account.kind === "copilot") {
+        // The long-lived GitHub token mints a new short-lived Copilot token.
+        if (!tokens.refresh_token) throw new SiwcError("signin_required", "sign in to GitHub again");
+        const minted = await mintCopilotToken(tokens.refresh_token);
+        deps.storage.save({ ...account, expiresAt: minted.expiresAt, endpoint: minted.endpoint ?? account.endpoint, needsSignIn: false });
+        await deps.secrets.set(secretName(id), JSON.stringify({ access_token: minted.token, refresh_token: tokens.refresh_token } satisfies Tokens));
+        return minted.token;
+      }
       if (!tokens.refresh_token) throw new SiwcError("signin_required", "the login cannot be renewed, sign in again");
       const res = account.kind === "codex"
         ? await postForm(`${authBase()}/oauth/token`, { grant_type: "refresh_token", client_id: CODEX_CLIENT_ID, refresh_token: tokens.refresh_token })
@@ -292,7 +317,9 @@ export async function signOut(deps: { storage: SiwcStorage; secrets: SecretStore
   const account = deps.storage.accounts().find(a => a.id === id);
   const tokens = await readTokens(deps.secrets, id);
   let revoked = false;
-  if (account && tokens?.refresh_token) {
+  // Only OpenAI's own tokens go to OpenAI. A Copilot account's token belongs to GitHub, which cannot be
+  // asked to revoke it without a client secret: it is forgotten here and can be removed in GitHub's settings.
+  if (account && account.kind !== "copilot" && tokens?.refresh_token) {
     try {
       const config = await getJson(`${authBase()}/.well-known/openid-configuration`);
       const endpoint = String(config.revocation_endpoint ?? "");
@@ -411,4 +438,103 @@ export async function beginCodexSignIn(
 
   void (deps.open ?? openInBrowser)(verifyUrl).catch(() => {});
   return { url: verifyUrl, userCode, done, cancel: () => { cancelled = true; fail(new SiwcError("denied", "cancelled")); } };
+}
+
+// ---------------------------------------------------------------- GitHub Copilot
+
+async function githubJson(method: "GET" | "POST", url: string, opts: { token?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<{ status: number; json: Record<string, unknown> }> {
+  const res = await fetch(url, {
+    method, signal: AbortSignal.timeout(15_000),
+    headers: { accept: "application/json", ...(opts.body ? { "content-type": "application/json" } : {}), ...(opts.token ? { authorization: `token ${opts.token}` } : {}), ...(opts.headers ?? {}) },
+    ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
+  }).catch((e: Error) => { throw new SiwcError("network", `GitHub is unreachable: ${e.message}`); });
+  return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+}
+
+/** Exchanges the long-lived GitHub token for the short-lived token the Copilot API takes. */
+async function mintCopilotToken(githubToken: string): Promise<{ token: string; expiresAt: number; endpoint?: string }> {
+  const res = await githubJson("GET", `${githubApi()}/copilot_internal/v2/token`, { token: githubToken, headers: { "Editor-Version": "vscode/1.99.0", "User-Agent": "GitHubCopilotChat/0.26.7" } });
+  if (res.status === 401) throw new SiwcError("signin_required", "GitHub no longer accepts this login, sign in again");
+  if (res.status === 403 || res.status === 404) throw new SiwcError("not_eligible", "this GitHub account has no Copilot subscription");
+  if (res.status !== 200 || typeof res.json.token !== "string") throw new SiwcError("network", `GitHub did not give a Copilot token (${res.status})`);
+  const endpoint = (res.json.endpoints as { api?: string } | undefined)?.api;
+  return { token: res.json.token, expiresAt: Number(res.json.expires_at ?? 0) * 1000 || Date.now() + 25 * 60_000, ...(endpoint ? { endpoint } : {}) };
+}
+
+/** GitHub's device-code sign-in as the Copilot client: a code to type at github.com/login/device. */
+export async function beginCopilotSignIn(
+  deps: { storage: SiwcStorage; secrets: SecretStore; open?: (url: string) => Promise<void> },
+  opts: { label?: string; pollMs?: number } = {},
+): Promise<SignIn> {
+  const start = await githubJson("POST", `${githubBase()}/login/device/code`, { body: { client_id: COPILOT_CLIENT_ID, scope: "read:user" } });
+  if (start.status !== 200 || !start.json.device_code || !start.json.user_code) throw new SiwcError("network", `GitHub did not give a sign-in code (${start.status})`);
+  const deviceCode = String(start.json.device_code);
+  const userCode = String(start.json.user_code);
+  const verifyUrl = String(start.json.verification_uri ?? `${githubBase()}/login/device`);
+  let interval = Math.max(1, Number(start.json.interval ?? 5)) * 1000;
+  const deadline = Date.now() + Math.min(Number(start.json.expires_in ?? 900), 900) * 1000;
+
+  let cancelled = false;
+  let finish!: (a: SiwcAccount) => void;
+  let fail!: (e: Error) => void;
+  const done = new Promise<SiwcAccount>((resolve, reject) => { finish = resolve; fail = reject; });
+  done.catch(() => {});
+
+  void (async () => {
+    try {
+      let githubToken = "";
+      while (!cancelled && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, opts.pollMs ?? (Number(process.env.EASYSWITCH_DEVICE_POLL_MS) || interval)));
+        if (cancelled) return;
+        const poll = await githubJson("POST", `${githubBase()}/login/oauth/access_token`, { body: { client_id: COPILOT_CLIENT_ID, device_code: deviceCode, grant_type: "urn:ietf:params:oauth:grant-type:device_code" } });
+        if (typeof poll.json.access_token === "string") { githubToken = poll.json.access_token; break; }
+        const error = String(poll.json.error ?? "");
+        if (error === "slow_down") interval += 5000;
+        else if (error === "access_denied") throw new SiwcError("denied", "you did not allow the sign-in");
+        else if (error === "expired_token") throw new SiwcError("denied", "the code expired before it was used");
+        else if (error && error !== "authorization_pending") throw new SiwcError("invalid", `GitHub answered: ${error}`);
+      }
+      if (cancelled) return;
+      if (!githubToken) throw new SiwcError("denied", "the sign-in was not finished in time");
+      const who = await githubJson("GET", `${githubApi()}/user`, { token: githubToken });
+      if (who.status !== 200 || !who.json.id) throw new SiwcError("invalid", "GitHub did not say who signed in");
+      // A GitHub account without Copilot fails here, with a plain reason, before anything is saved.
+      const minted = await mintCopilotToken(githubToken);
+      const subject = String(who.json.id);
+      const known = deps.storage.accounts().find(a => a.kind === "copilot" && a.subject === subject);
+      const id = known?.id ?? `s-${randomBytes(4).toString("hex")}`;
+      const login = String(who.json.login ?? "GitHub");
+      const account: SiwcAccount = {
+        id, kind: "copilot", subject, clientId: COPILOT_CLIENT_ID, scopes: ["read:user"], planUsage: true,
+        label: opts.label?.trim() || known?.label || login, ...(typeof who.json.email === "string" ? { email: who.json.email } : {}),
+        expiresAt: minted.expiresAt, ...(minted.endpoint ? { endpoint: minted.endpoint } : {}),
+      };
+      await deps.secrets.set(secretName(id), JSON.stringify({ access_token: minted.token, refresh_token: githubToken } satisfies Tokens));
+      deps.storage.save(account);
+      finish(account);
+    } catch (error) {
+      fail(error as Error);
+    }
+  })();
+
+  void (deps.open ?? openInBrowser)(verifyUrl).catch(() => {});
+  return { url: verifyUrl, userCode, done, cancel: () => { cancelled = true; fail(new SiwcError("denied", "cancelled")); } };
+}
+
+/** The chat models a Copilot account offers, with each model's own thinking levels when it lists them. */
+export async function listCopilotModels(token: string, base: string): Promise<Array<{ slug: string; name: string; efforts?: string[] }>> {
+  const res = await fetch(`${base}/models`, { headers: { authorization: `Bearer ${token}`, ...copilotHeaders() }, signal: AbortSignal.timeout(15_000) })
+    .catch((e: Error) => { throw new SiwcError("network", `Copilot is unreachable: ${e.message}`); });
+  if (!res.ok) throw new SiwcError(res.status === 401 ? "signin_required" : "network", `the Copilot model list answered ${res.status}`);
+  const json = (await res.json()) as { data?: Array<{ id?: string; name?: string; model_picker_enabled?: boolean; capabilities?: { type?: string; supports?: { reasoning_effort?: string[] } } }> };
+  return (json.data ?? [])
+    .filter(m => m.id && m.model_picker_enabled !== false && (m.capabilities?.type ?? "chat") === "chat")
+    .map(m => {
+      const efforts = (m.capabilities?.supports?.reasoning_effort ?? []).map(String);
+      return { slug: String(m.id), name: m.name ?? String(m.id), ...(efforts.length ? { efforts } : {}) };
+    });
+}
+
+export function copilotDefaultBase(): string {
+  return process.env.EASYSWITCH_COPILOT_API ?? COPILOT_API_DEFAULT;
 }

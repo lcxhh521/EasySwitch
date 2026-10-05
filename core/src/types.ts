@@ -35,7 +35,7 @@ export interface Provider {
   modelEfforts?: Record<string, string[]>;
   probe?: ProbeReport;
   /** This provider is a ChatGPT plan reached through "Sign in with ChatGPT": the key is a renewed OAuth token, not a stored key. */
-  plan?: { kind: "chatgpt" | "codex"; accountId: string };
+  plan?: { kind: "chatgpt" | "codex" | "copilot"; accountId: string };
   /** How the user pays: per token (default) or a flat subscription, where per-call cost is not meaningful. */
   billing?: "usage" | "subscription";
   /** The user's own prices (USD per 1M tokens) by model id; they win over the built-in table. */

@@ -20,7 +20,7 @@ import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts"
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
-import { accessToken, apiBase, beginCodexSignIn, beginSignIn, codexBase, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
+import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
 import { discoverEfforts } from "./efforts.ts";
@@ -215,16 +215,25 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   /** Makes sure the account has a provider, and brings its models (and each model's own levels) up to date. */
   async function syncPlanProvider(account: SiwcAccount): Promise<Provider> {
     let provider = store.providers().find(p => p.plan?.accountId === account.id);
-    const kind = account.kind === "codex" ? "codex" : "chatgpt";
-    const models = account.planUsage ? await listPlanModels(await accessToken({ storage: siwcStore, secrets }, account.id), kind) : [];
-    const name = `ChatGPT 订阅 · ${account.label}`;
+    const kind = account.kind === "codex" ? "codex" : account.kind === "copilot" ? "copilot" : "chatgpt";
+    const token = account.planUsage ? await accessToken({ storage: siwcStore, secrets }, account.id) : "";
+    const refreshed = siwcStore.accounts().find(a => a.id === account.id) ?? account;
+    const copilotBase = (refreshed.endpoint ?? copilotDefaultBase()).replace(/\/+$/, "");
+    const models = !token ? [] : kind === "copilot" ? await listCopilotModels(token, copilotBase) : await listPlanModels(token, kind);
+    const name = kind === "copilot" ? `GitHub Copilot · ${account.label}` : `ChatGPT 订阅 · ${account.label}`;
     if (!provider) {
       provider = {
-        id: slugify(name, store.providers().map(p => p.id)), name, baseUrl: kind === "codex" ? codexBase() : apiBase(), models: [], route: "responses-native", routePinned: true,
-        streamUsage: false, billing: "subscription", plan: { kind, accountId: account.id }, icon: "openai", createdAt: new Date().toISOString(),
+        id: slugify(name, store.providers().map(p => p.id)), name,
+        baseUrl: kind === "codex" ? codexBase() : kind === "copilot" ? copilotBase : apiBase(), models: [],
+        // A Copilot account speaks Chat Completions, so it goes through the ordinary translation path with fixed client headers.
+        route: kind === "copilot" ? "chat-translate" : "responses-native", routePinned: true,
+        streamUsage: kind === "copilot", billing: "subscription", plan: { kind, accountId: account.id },
+        ...(kind === "copilot" ? { wire: { headers: copilotHeaders() } } : {}),
+        icon: kind === "copilot" ? "github-copilot-color" : "openai", createdAt: new Date().toISOString(),
       };
     }
     provider.name = name;
+    if (kind === "copilot") provider.baseUrl = copilotBase;
     if (models.length) {
       provider.models = models.map(m => m.slug);
       provider.defaultModel = provider.defaultModel && provider.models.includes(provider.defaultModel) ? provider.defaultModel : provider.models[0];
@@ -370,6 +379,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         // own registered-client route stays available (mode "open") but is not offered in the console.
         const si = body.mode === "open"
           ? await beginSignIn(signInDeps, { ...label, ...(typeof body.accountId === "string" && body.accountId ? { existingId: body.accountId } : {}) })
+          : body.mode === "copilot" ? await beginCopilotSignIn(signInDeps, label)
           : await beginCodexSignIn(signInDeps, label);
         const current: NonNullable<typeof planSignIn> = { status: "waiting", url: si.url, ...(si.userCode ? { userCode: si.userCode } : {}), cancel: si.cancel };
         planSignIn = current;

@@ -12,7 +12,7 @@ import { endpointUrl, upstreamHeaders } from "./upstream.ts";
  */
 export function sendChat(provider: Provider, apiKey: string | undefined, payload: unknown, signal: AbortSignal): Promise<Response | Error> {
   const chat = payload as ChatRequest;
-  if (provider.plan) {
+  if (provider.plan && provider.plan.kind !== "copilot") {
     const { body } = chatToResponses(chat);
     // The Codex backend refuses a request with no instructions.
     if (provider.plan.kind === "codex" && !body.instructions) body.instructions = "You are a helpful assistant.";
@@ -34,7 +34,7 @@ export function sendChat(provider: Provider, apiKey: string | undefined, payload
 
 /** A Responses request forwarded as it is, to a provider that speaks Responses (the ChatGPT plan, or a relay). */
 export function sendResponses(provider: Provider, apiKey: string | undefined, body: Record<string, unknown>, accept: string, signal: AbortSignal): Promise<Response | Error> {
-  if (provider.plan) {
+  if (provider.plan && provider.plan.kind !== "copilot") {
     const shaped = shapePlanRequest(body).body;
     const target = planTarget(provider.plan.kind, apiKey ?? "", "/responses");
     return fetch(target.url, {

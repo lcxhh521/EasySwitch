@@ -665,8 +665,8 @@ function planCard() {
   const si = planInfo?.signIn;
   const row = a => `
     <div class="row">
-      ${icon("openai", "lg")}
-      <div class="grow"><div class="title">${esc(a.label)}${a.email && a.email !== a.label ? ` <span class="hint">${esc(a.email)}</span>` : ""}</div>
+      ${icon(a.kind === "copilot" ? "github-copilot-color" : "openai", "lg")}
+      <div class="grow"><div class="title">${esc(a.kind === "copilot" ? "GitHub Copilot · " : "")}${esc(a.label)}${a.email && a.email !== a.label ? ` <span class="hint">${esc(a.email)}</span>` : ""}</div>
         <div class="sub">${a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : "已接入：它的模型出现在下面的来源里，所有 agent 都能选"}</div></div>
       ${a.needsSignIn || !a.planUsage ? `<span class="chip warn">${a.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : `<span class="chip ok"><span class="dot"></span>可用</span>`}
       <button class="btn secondary" data-plan-signin-again="${esc(a.id)}" data-plan-kind="${esc(a.kind ?? "open")}">${a.needsSignIn || !a.planUsage ? "重新登录" : "重新登录一次"}</button>
@@ -681,8 +681,9 @@ function planCard() {
       ${si?.status === "error" ? `<div class="row"><div class="grow"><div class="title">没有登录成功</div><div class="sub">${esc(si.message ?? "")}</div></div></div>` : ""}
       ${si?.status === "done" && si.message ? `<div class="row"><div class="grow"><div class="sub">${esc(si.message)}</div></div></div>` : ""}
       <button class="add-row" data-plan-signin>${icon("openai", "sm")} Continue with ChatGPT</button>
+      <button class="add-row" data-plan-signin data-plan-mode="copilot">${icon("github-copilot-color", "sm")} 用 GitHub Copilot 订阅</button>
     </div>
-    <p class="hint">这里用 Codex 的登录身份一步完成（Hermes、opencodex 也是这样做的；这不是 OpenAI 给第三方工具的官方登记方式，所以 OpenAI 以后可能调整）。额度和你的 ChatGPT 订阅共用，登录只在这台电脑上，令牌存在钥匙串里。Claude 的订阅不在这里用。</p>`;
+    <p class="hint">ChatGPT 这边用 Codex 的登录身份一步完成（Hermes、opencodex 也是这样做的；这不是 OpenAI 给第三方工具的官方登记方式，所以 OpenAI 以后可能调整）。GitHub Copilot 同理，用的是 VS Code Copilot 插件的登录身份，GitHub 对 Copilot 在官方客户端之外的用法管得比较严，高频自动化调用有被限流的可能。额度和你的 ChatGPT 订阅共用，登录只在这台电脑上，令牌存在钥匙串里。Claude 的订阅不在这里用。</p>`;
 }
 
 function renderProviders() {
@@ -1106,7 +1107,8 @@ document.addEventListener("click", async e => {
     const againBtn = t.closest("[data-plan-signin-again]");
     // A Codex-identity account just signs in again the same way; one made with OpenAI's own route signs in again with its own client.
     const again = againBtn && againBtn.dataset.planKind !== "codex" ? againBtn.dataset.planSigninAgain : undefined;
-    try { await call("POST", "/api/plan/signin", again ? { accountId: again, mode: "open" } : {}); } catch (error) { toast(error.message); }
+    const mode = againBtn?.dataset.planKind === "copilot" ? "copilot" : t.closest("[data-plan-mode]")?.dataset.planMode;
+    try { await call("POST", "/api/plan/signin", again ? { accountId: again, mode: "open" } : mode ? { mode } : {}); } catch (error) { toast(error.message); }
     await refresh(true);
     return;
   }
