@@ -18,7 +18,7 @@ import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
-import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "./agent-launch.ts";
+import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
 import { TaskBook, type Task } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
@@ -146,6 +146,26 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
     return { task, done };
+  }
+
+  /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
+  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string } | { error: string; status: number }> {
+    const launcher = LAUNCHERS[id];
+    const known = AGENTS.find(a => a.id === id);
+    const bin = await agentBinary(id);
+    if (!known || !launcher?.interactive) return { status: 409, error: "这个 agent 还没有接入交互启动" };
+    if (!bin) return { status: 404, error: "没有检测到这个 agent 的命令" };
+    const b = store.binding(id);
+    const first = catalogModels(store.providers())[0];
+    const model = opts.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
+    if (!model || !resolveModel(store, model)) return { status: 409, error: "还没有可用的模型：先在「模型来源」里添加一个" };
+    const effort = opts.effort && (launcher.efforts ?? []).includes(opts.effort) ? opts.effort : undefined;
+    const sessionDir = newSessionDir();
+    const token = sessionToken(id);
+    const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers()) : undefined;
+    const spec = launcher.interactive({ bin, port, model, token, sessionDir, ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
+    materialize(spec, sessionDir);
+    return { spec, sessionDir, model, name: known.name };
   }
 
   const mcpDeps: McpDeps = {
@@ -379,32 +399,23 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null })) });
       return;
     }
-    const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/launch$/.exec(path);
+    const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|command)$/.exec(path);
     if (agentAction && method === "POST") {
       const id = agentAction[1] ?? "";
-      const found = (agentCache?.list ?? await detectAgents()).find(a => a.id === id);
-      const launcher = LAUNCHERS[id];
-      const binding = store.binding(id);
-      const bin = await agentBinary(id);
-      if (!found || !bin) {
-        json(res, 404, { error: "没有检测到这个 agent 的命令" });
+      const q = new URL(req.url ?? "", "http://x").searchParams;
+      const made = await interactiveSpec(id, {
+        ...(typeof body.model === "string" && body.model ? { model: body.model } : q.get("model") ? { model: q.get("model")! } : {}),
+        ...(typeof body.effort === "string" && body.effort ? { effort: body.effort } : q.get("effort") ? { effort: q.get("effort")! } : {}),
+      });
+      if ("error" in made) { json(res, made.status, { error: made.error }); return; }
+      if (agentAction[2] === "command") {
+        // For the `es` command: the caller runs this in its own terminal and removes sessionDir afterwards.
+        json(res, 200, { command: made.spec.command, args: made.spec.args, env: made.spec.env, unset: made.spec.unset ?? [], sessionDir: made.sessionDir, model: made.model, name: made.name });
         return;
       }
-      if (!launcher?.interactive) {
-        json(res, 409, { error: "这个 agent 还没有接入交互启动" });
-        return;
-      }
-      const model = typeof body.model === "string" && body.model ? body.model : binding ? `${binding.providerId}/${binding.model}` : "";
-      if (!model || !resolveModel(store, model)) {
-        json(res, 409, { error: "先给这个 agent 选一个模型" });
-        return;
-      }
-      const sessionDir = newSessionDir();
-      const token = sessionToken(id);
-      const spec = launcher.interactive({ bin, port, model, token, sessionDir, ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
-      materialize(spec, sessionDir);
-      await launchInTerminal(commandLine(spec), `${found.name} · ${model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`);
-      json(res, 200, { ok: true, model, verified: launcher.verified });
+      const launcher = LAUNCHERS[id]!;
+      await launchInTerminal(commandLine(made.spec), `${made.name} · ${made.model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`);
+      json(res, 200, { ok: true, model: made.model, verified: launcher.verified });
       return;
     }
     const agentOpen = /^\/api\/agents\/([a-z0-9-]+)\/open$/.exec(path);

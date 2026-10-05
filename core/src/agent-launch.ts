@@ -34,6 +34,8 @@ export interface LaunchInput {
   sessionDir: string;
   /** Present for the headless form. */
   task?: string;
+  /** Codex only: the merged model catalog to hand it (see catalog.ts). */
+  catalog?: string;
   /** Reasoning level for this launch, one of the launcher's `efforts`. */
   effort?: string;
   /** The EasySwitch MCP server to attach for this launch, so this agent can call the others. */
@@ -93,11 +95,16 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   codex: {
     verified: true,
     efforts: ["minimal", "low", "medium", "high", "xhigh"],
+    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp), ...(i.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(i.effort)}`] : [])], env: {} }),
     headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, undefined, i.mcp), ...(i.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(i.effort)}`] : []), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
   },
   claude: {
     verified: true,
     efforts: ["low", "medium", "high", "xhigh", "max"],
+    interactive: i => {
+      const env = claudeEnv(i.port, i.model, i.token);
+      return { command: i.bin, args: [...(i.effort ? ["--effort", i.effort] : []), ...claudeArgs(env, i.mcp)], env };
+    },
     headless: i => {
       const env = claudeEnv(i.port, i.model, i.token);
       return { command: i.bin, args: ["-p", i.task ?? "", ...(i.effort ? ["--effort", i.effort] : []), ...claudeArgs(env, i.mcp)], env, unset: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] };
