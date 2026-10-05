@@ -1,16 +1,25 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeCodexCatalog } from "./catalog.ts";
-import { handleResponses, listExposedModels } from "./gateway.ts";
+import { handleChatgpt, handleChatgptUpgrade, isChatgptPath } from "./chatgpt-gateway.ts";
+import { handleChatCompletions } from "./gateway-chat.ts";
+import { handleResponses, listExposedModels, resolveModel } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
 import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
+import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
+import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "./agent-launch.ts";
+import { sessionToken } from "./gateway-chat.ts";
+import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
+import { costOf, ratesFor } from "./pricing/cost.ts";
 import { accountCommandLine, clearResting, createAccount, isResting, markResting, pickAccount, touch as touchAccount } from "./accounts.ts";
 import { keySecretId, newKeyId } from "./keypool.ts";
 import { nativeFiles } from "./native.ts";
@@ -18,7 +27,7 @@ import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { slugify, type Store } from "./store.ts";
 import { expandUrl, UnresolvedPlaceholder } from "./upstream.ts";
-import type { Account, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
+import type { Account, DisplaySettings, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -58,6 +67,29 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/** Stamps an estimated cost on a finished call, using the price in force right now. */
+export function priceEntry(store: Store, entry: GatewayLogEntry): void {
+  const provider = entry.providerId ? store.provider(entry.providerId) : undefined;
+  if (!provider || entry.inputTokens === undefined || entry.outputTokens === undefined) return;
+  if (provider.billing === "subscription") {
+    entry.costNote = "subscription";
+    return;
+  }
+  const model = entry.model.slice(entry.model.indexOf("/") + 1);
+  const priced = ratesFor(provider, model);
+  if (!priced) {
+    entry.costNote = "unpriced";
+    return;
+  }
+  entry.costUsd = costOf(priced.rates, { input: entry.inputTokens, output: entry.outputTokens, cached: entry.cachedTokens ?? 0 });
+}
+
+let agentCache: { at: number; list: DetectedAgent[] } | undefined;
+
+async function runOpen(appPath: string): Promise<void> {
+  await promisify(execFile)("open", [appPath]);
+}
+
 function publicAccount(a: Account) {
   return { ...a, resting: isResting(a) };
 }
@@ -66,13 +98,19 @@ function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
   // Key metadata is public inside the console; the secrets themselves never leave the Keychain.
   const keys = (p.keys ?? []).map(({ id, label, enabled, addedAt, lastUsedAt, restUntil, lastError }) =>
     ({ id, label, enabled, addedAt, ...(lastUsedAt ? { lastUsedAt } : {}), ...(restUntil ? { restUntil } : {}), ...(lastError ? { lastError } : {}) }));
-  return { ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy };
+  const sample = p.defaultModel ?? p.models[0];
+  const priced = sample ? ratesFor(p, sample) : undefined;
+  return {
+    ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
+    ...(sample ? { priceSample: { model: sample, ...(priced ? { rates: priced.rates, source: priced.source } : {}) } } : {}),
+  };
 }
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
   const { store, secrets, port, ledger } = deps;
   const log: GatewayLogEntry[] = [];
   const pushLog = (entry: GatewayLogEntry) => {
+    priceEntry(store, entry);
     log.unshift(entry);
     log.length = Math.min(log.length, 100);
     ledger?.append(entry);
@@ -169,9 +207,136 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         sessionDetails: await sessionDetails(),
         accounts: store.accounts().map(publicAccount),
         accountSettings: store.accountSettings(),
+        display: store.display(),
         native: nativeFiles(),
         log,
       });
+      return;
+    }
+
+    // --- ChatGPT desktop app: start it on this gateway, or plainly ------------
+    if (path === "/api/chatgpt" && method === "GET") {
+      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port) });
+      return;
+    }
+    if ((path === "/api/chatgpt/enhance" || path === "/api/chatgpt/native") && method === "POST") {
+      const status = await chatgptStatus(port);
+      if (!status.installed) {
+        json(res, 404, { error: "没有找到 ChatGPT 桌面端" });
+        return;
+      }
+      // Restarting closes the user's running app, so it only happens when the console asked for it explicitly.
+      if (status.running && body.restart !== true) {
+        json(res, 409, { error: "ChatGPT 正在运行，需要重启才能切换", needsRestart: true });
+        return;
+      }
+      let launcher: string | undefined;
+      if (path === "/api/chatgpt/enhance") {
+        if (!store.providers().length) {
+          json(res, 409, { error: "还没有模型来源，先添加一个再增强" });
+          return;
+        }
+        launcher = (await prepareLauncher(store.dir, port, store.providers()))?.launcher;
+        if (!launcher) {
+          json(res, 500, { error: "生成启动器失败：找不到 ChatGPT 自带的 Codex 程序" });
+          return;
+        }
+      }
+      const result = await restartChatgpt(launcher);
+      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: Boolean(launcher), staticCatalog: status.staticCatalog } : { error: result.error });
+      return;
+    }
+
+    // --- billing: display currency, per-provider billing mode and prices ----
+    if (path === "/api/display") {
+      if (method === "GET") { json(res, 200, store.display()); return; }
+      if (method === "PUT") {
+        const patch: Partial<DisplaySettings> = {};
+        if (body.currency === "USD" || body.currency === "CNY") patch.currency = body.currency;
+        if (typeof body.usdToCny === "number" && body.usdToCny > 0 && body.usdToCny < 1000) patch.usdToCny = body.usdToCny;
+        json(res, 200, store.setDisplay(patch));
+        return;
+      }
+    }
+    const billingMatch = /^\/api\/providers\/([a-z0-9-]+)\/(billing|prices)$/.exec(path);
+    if (billingMatch && method === "PUT") {
+      const provider = store.provider(billingMatch[1] ?? "");
+      if (!provider) { json(res, 404, { error: "没有这个模型来源" }); return; }
+      if (billingMatch[2] === "billing") {
+        if (body.billing !== "usage" && body.billing !== "subscription") { json(res, 400, { error: "billing 需要是 usage 或 subscription" }); return; }
+        provider.billing = body.billing;
+      } else {
+        const model = String(body.model ?? "").trim();
+        if (!model) { json(res, 400, { error: "需要模型名" }); return; }
+        const prices = { ...(provider.prices ?? {}) };
+        const r = body.rates as Record<string, unknown> | null | undefined;
+        if (r === null) delete prices[model];
+        else {
+          const num = (v: unknown) => (typeof v === "number" && v >= 0 && v <= 1_000_000 ? v : 0);
+          prices[model] = { input: num(r?.input), output: num(r?.output), cacheRead: num(r?.cacheRead), cacheWrite: num(r?.cacheWrite) };
+        }
+        if (Object.keys(prices).length) provider.prices = prices; else delete provider.prices;
+      }
+      store.upsertProvider(provider);
+      json(res, 200, publicProvider(provider, Boolean(await secrets.get(provider.id))));
+      return;
+    }
+
+    // --- every agent we know of, with what is installed on this Mac ---------
+    if (path === "/api/agents" && method === "GET") {
+      if (!agentCache || Date.now() - agentCache.at > 30_000) agentCache = { at: Date.now(), list: await detectAgents() };
+      json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null })) });
+      return;
+    }
+    const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|run)$/.exec(path);
+    if (agentAction && method === "POST") {
+      const [, id, action] = agentAction as unknown as [string, string, "launch" | "run"];
+      const found = (agentCache?.list ?? await detectAgents()).find(a => a.id === id);
+      const launcher = LAUNCHERS[id];
+      const binding = store.binding(id);
+      if (!found?.installed || !found.where || found.where.endsWith(".app")) {
+        json(res, 404, { error: "没有检测到这个 agent 的命令" });
+        return;
+      }
+      if (!launcher || !(action === "launch" ? launcher.interactive : launcher.headless)) {
+        json(res, 409, { error: action === "launch" ? "这个 agent 还没有接入交互启动" : "这个 agent 还没有无界面的调用方式" });
+        return;
+      }
+      const model = typeof body.model === "string" && body.model ? body.model : binding ? `${binding.providerId}/${binding.model}` : "";
+      if (!model || !resolveModel(store, model)) {
+        json(res, 409, { error: "先给这个 agent 选一个模型" });
+        return;
+      }
+      if (action === "run") {
+        const task = String(body.task ?? "").trim();
+        if (!task) { json(res, 400, { error: "需要任务内容" }); return; }
+        const cwd = typeof body.cwd === "string" && body.cwd.startsWith("/") ? body.cwd : undefined;
+        try {
+          const result = await runHeadless(id, { bin: found.where, port, model, task }, { ...(cwd ? { cwd } : {}) });
+          json(res, 200, { ...result, agent: id, model, verified: launcher.verified });
+        } catch (error) {
+          json(res, 500, { error: String((error as Error).message ?? error) });
+        }
+        return;
+      }
+      const sessionDir = newSessionDir();
+      const spec = launcher.interactive!({ bin: found.where, port, model, token: sessionToken(id), sessionDir });
+      materialize(spec, sessionDir);
+      await launchInTerminal(commandLine(spec), `${found.name} · ${model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`);
+      json(res, 200, { ok: true, model, verified: launcher.verified });
+      return;
+    }
+    const agentOpen = /^\/api\/agents\/([a-z0-9-]+)\/open$/.exec(path);
+    if (agentOpen && method === "POST") {
+      const found = (agentCache?.list ?? await detectAgents()).find(a => a.id === agentOpen[1]);
+      if (!found?.installed || !found.where) {
+        json(res, 404, { error: "没有检测到这个 agent" });
+        return;
+      }
+      // An app bundle opens as itself; a command opens in a Terminal window. Nothing is configured.
+      if (found.where.endsWith(".app")) await runOpen(found.where);
+      else await launchInTerminal(`'${found.where.replace(/'/g, `'\\''`)}'`, `${found.name}（EasySwitch 只负责打开，没有改动它的任何配置）`);
+      json(res, 200, { ok: true });
       return;
     }
 
@@ -315,6 +480,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         ...(Object.keys(urlParams).length ? { urlParams } : {}),
         ...(preset?.wire ? { wire: preset.wire } : {}),
         ...(preset && preset.id !== "relay" ? { icon: preset.icon } : {}),
+        // Coding plans are flat monthly subscriptions: per-call cost would be fiction.
+        ...(preset?.category === "编程套餐" ? { billing: "subscription" as const } : {}),
         createdAt: new Date().toISOString(),
       };
       try {
@@ -461,7 +628,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
 
-    const bindingMatch = /^\/api\/bindings\/(codex|claude)$/.exec(path);
+    const bindingMatch = /^\/api\/bindings\/([a-z0-9-]+)$/.exec(path);
+    if (bindingMatch && !AGENTS.some(a => a.id === bindingMatch[1])) {
+      json(res, 404, { error: "不认识这个 agent" });
+      return;
+    }
     if (method === "DELETE" && bindingMatch) {
       // Back to native for this harness: no augmented model at all.
       store.clearBinding(bindingMatch[1] as Harness);
@@ -521,7 +692,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
   }
 
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://placeholder");
     const path = url.pathname;
     try {
@@ -534,8 +705,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 200, { ok: true, service: "easyswitch", version: VERSION, port });
         return;
       }
+      if (isChatgptPath(path)) {
+        // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
+        await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog });
+        return;
+      }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         await handleResponses(req, res, await readBody(req), { store, secrets, log: pushLog });
+        return;
+      }
+      if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
+        await handleChatCompletions(req, res, await readBody(req), { store, secrets, log: pushLog });
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -565,4 +745,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       else res.end();
     }
   });
+  server.on("upgrade", (req, socket, head) => {
+    const path = new URL(req.url ?? "/", "http://placeholder").pathname;
+    // Only the ChatGPT app's WebSocket, and only from our own loopback authority.
+    if (!isChatgptPath(path) || !allowedHosts.has(String(req.headers.host ?? ""))) {
+      socket.destroy();
+      return;
+    }
+    handleChatgptUpgrade(req, socket as import("node:net").Socket, head);
+  });
+  return server;
 }

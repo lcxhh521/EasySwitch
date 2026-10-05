@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
-import type { Account, AccountSettings, HarnessBinding, Provider } from "./types.ts";
+import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Provider } from "./types.ts";
 
 interface StateFile {
   version: 1;
@@ -10,6 +10,7 @@ interface StateFile {
   bindings: HarnessBinding[];
   accounts?: Account[];
   accountSettings?: AccountSettings;
+  display?: DisplaySettings;
 }
 
 const EMPTY: StateFile = { version: 1, providers: [], bindings: [] };
@@ -104,6 +105,16 @@ export class Store {
   removeAccount(id: string): void {
     this.state.accounts = (this.state.accounts ?? []).filter(a => a.id !== id);
     this.save();
+  }
+
+  display(): DisplaySettings {
+    return { currency: "CNY", usdToCny: 7.2, ...(this.state.display ?? {}) };
+  }
+
+  setDisplay(patch: Partial<DisplaySettings>): DisplaySettings {
+    this.state.display = { ...this.display(), ...patch };
+    this.save();
+    return this.display();
   }
 
   accountSettings(): AccountSettings {

@@ -79,6 +79,12 @@ export function anthropicModelList(models: readonly CatalogModel[]): Json {
  * fields are replaced. Nothing from Codex is stored in this repository.
  */
 export async function codexTemplate(codexPath: string, dataDir: string): Promise<Json | undefined> {
+  const models = await nativeCatalog(codexPath, dataDir);
+  return models ? pickTemplate(models) : undefined;
+}
+
+/** The model catalog the installed Codex ships with (read from a clean home, cached per binary). */
+export async function nativeCatalog(codexPath: string, dataDir: string): Promise<Json[] | undefined> {
   const cacheDir = join(dataDir, "codex-template");
   const cacheFile = join(cacheDir, "native-models.json");
   const stamp = (() => {
@@ -114,9 +120,14 @@ export async function codexTemplate(codexPath: string, dataDir: string): Promise
     }
     writeAtomic(cacheFile, JSON.stringify({ stamp, catalog }));
   }
-  const models = Array.isArray(catalog.models) ? (catalog.models as Json[]) : [];
-  // Prefer a model on classic function tools: its base instructions describe
-  // the tools our entries will get (see codexCatalog).
+  return Array.isArray(catalog.models) ? (catalog.models as Json[]) : [];
+}
+
+/**
+ * Prefer a model on classic function tools: its base instructions describe the
+ * tools our entries will get (see codexCatalog).
+ */
+export function pickTemplate(models: readonly Json[]): Json | undefined {
   const listed = models.filter(m => m.visibility === "list");
   return listed.find(m => m.tool_mode == null && m.use_responses_lite !== true) ?? listed[0] ?? models[0];
 }
@@ -162,13 +173,18 @@ export function codexCatalog(template: Json, models: readonly CatalogModel[]): J
 }
 
 /** Writes the catalog for the next Codex launch; undefined when no template could be made. */
-export async function writeCodexCatalog(codexPath: string, dataDir: string, providers: readonly Provider[]): Promise<string | undefined> {
+export async function writeCodexCatalog(
+  codexPath: string, dataDir: string, providers: readonly Provider[], opts: { includeNative?: boolean } = {},
+): Promise<string | undefined> {
   const models = catalogModels(providers);
   if (!models.length) return undefined;
-  const template = await codexTemplate(codexPath, dataDir);
-  if (!template) return undefined;
+  const native = await nativeCatalog(codexPath, dataDir);
+  const template = native ? pickTemplate(native) : undefined;
+  if (!native || !template) return undefined;
+  const ours = codexCatalog(template, models).models as Json[];
   const file = join(dataDir, "codex-catalog.json");
-  writeAtomic(file, JSON.stringify(codexCatalog(template, models)));
+  // For the desktop app the native entries are kept, so one picker holds both.
+  writeAtomic(file, JSON.stringify(opts.includeNative ? { models: [...native, ...ours] } : { models: ours }));
   return file;
 }
 

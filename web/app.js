@@ -9,7 +9,7 @@ const $ = sel => document.querySelector(sel);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 const HARNESS = {
-  codex: { name: "ChatGPT", icon: "codex-color", protocol: "Responses" },
+  codex: { name: "ChatGPT", icon: "openai", protocol: "Responses" },
   claude: { name: "Claude Code", icon: "claudecode-color", protocol: "Anthropic Messages" },
 };
 const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样转发", "chat-translate": "协议转换" };
@@ -18,9 +18,13 @@ const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_ag
 let state = null;
 let page = PANEL ? "agents" : (location.hash.slice(1) || "agents");
 let usageRange = "7d";
+let chartMetric = "tokens"; // "tokens" | "cost"
 let usage = null;
 let openProvider = null;
 let addForm = null; // { preset } while the add panel is open
+let chatgptInfo = null; // /api/chatgpt: installed, running, enhanced
+let chatgptConfirm = null; // "enhance" | "native" while the restart notice is open
+let agentList = null; // every agent we know of, from /api/agents
 let ocxImport = null; // { candidates, chosen:Set } while the opencodex import panel is open
 let presets = [];
 let popover = null;
@@ -53,6 +57,16 @@ function icon(name, cls = "") {
   return mono
     ? `<span class="ic mono ${cls}" style="--src:url(${src})"></span>`
     : `<img class="ic ${cls}" src="${src}" alt="">`;
+}
+
+/** Money in the user's chosen currency; USD is what prices are kept in, CNY uses their own rate. */
+function money(usd, digits) {
+  const d = state?.display ?? { currency: "USD", usdToCny: 7.2 };
+  const cny = d.currency === "CNY";
+  const v = usd * (cny ? d.usdToCny : 1);
+  const sign = cny ? "¥" : "$";
+  const places = digits ?? (v >= 100 ? 0 : v >= 1 ? 2 : v > 0 ? 3 : 2);
+  return `${sign}${v.toLocaleString("en-US", { minimumFractionDigits: places, maximumFractionDigits: places })}`;
 }
 
 const compactFmt = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
@@ -164,6 +178,54 @@ function agentRow(harness) {
     </div>`;
 }
 
+const SUPPORT_CHIP = {
+  ready: `<span class="chip ok"><span class="dot"></span>已接入</span>`,
+  planned: `<span class="chip accent">接入中</span>`,
+  open: `<span class="chip">只能打开</span>`,
+};
+
+/** The ChatGPT desktop app: start it on the EasySwitch gateway, or plainly. A restart closes the running app, so it asks first. */
+function chatgptCard() {
+  const c = chatgptInfo;
+  if (!c?.installed) return "";
+  const chip = c.enhanced ? `<span class="chip ok"><span class="dot"></span>桌面端已用 EasySwitch 启动</span>`
+    : c.running ? `<span class="chip">桌面端运行中 · 普通启动</span>` : `<span class="chip">桌面端未运行</span>`;
+  const notice = chatgptConfirm ? `
+    <div class="detail" style="display:block">
+      <p class="hint">${chatgptConfirm === "enhance"
+        ? `这会<b>关闭并重新打开 ChatGPT</b>${c.running ? "（正在运行的任务会中断，对话记录不受影响）" : ""}，重新打开时保留你原来的启动参数（比如代理）。这一次启动里，它的模型菜单会同时有 ChatGPT 自己的模型和你的外接模型；ChatGPT 自己模型的请求仍带着你的登录原样转发给 ChatGPT。${c.staticCatalog ? "<br>检测到 ~/.codex/config.toml 里有别的工具写的固定模型目录，这一次启动会改用 EasySwitch 生成的目录来盖住它（配置文件本身不动）。" : ""}`
+        : `这会<b>关闭并重新打开 ChatGPT</b>，不再经过 EasySwitch，恢复成普通启动。`}</p>
+      <div class="controls"><button class="btn" data-chatgpt-go="${chatgptConfirm}">确认，重启 ChatGPT</button><button class="btn secondary" data-chatgpt-cancel>取消</button></div>
+    </div>` : "";
+  return `
+    <div class="card" style="margin-top:12px"><div class="row">
+      ${icon("openai", "lg")}
+      <div class="grow"><div class="title">ChatGPT 桌面端</div><div class="sub">每次启动单独指向 EasySwitch，不改 ~/.codex；退回只要普通地重新打开</div></div>
+      ${chip}
+      ${c.enhanced ? `<button class="btn secondary" data-chatgpt-ask="native">退回普通启动</button>` : `<button class="btn" data-chatgpt-ask="enhance">用 EasySwitch 启动</button>`}
+    </div>${notice}</div>`;
+}
+
+/** The wider catalog under the two ready rows: what is installed here, then the rest. */
+function agentCatalog() {
+  if (!agentList) return "";
+  const rest = agentList.filter(a => a.support !== "ready");
+  const row = a => `
+    <div class="row">
+      ${icon(a.icon, "lg")}
+      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span></div><div class="sub">${esc(a.note)}</div></div>
+      ${SUPPORT_CHIP[a.support]}
+      ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
+    </div>`;
+  const here = rest.filter(a => a.installed);
+  const other = rest.filter(a => !a.installed);
+  return `
+    <div class="section-head"><h2>更多 Agent</h2><span class="aside">${agentList.length} 个；你这台 Mac 上装了 ${agentList.filter(a => a.installed).length} 个</span></div>
+    <div class="card">${here.map(row).join("") || `<div class="empty">还没检测到其他 agent</div>`}</div>
+    <details class="card" style="margin-top:12px"><summary class="row" style="cursor:pointer"><span class="grow title">还没安装的（${other.length}）</span></summary>${other.map(row).join("")}</details>
+    <p class="hint">「接入中」的 agent 都支持按次启动时指向 EasySwitch，正在逐个接入；「只能打开」的是闭源或绑定登录的，没有可改的端点，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>`;
+}
+
 function renderAgents() {
   const rows = Object.keys(HARNESS).map(agentRow).join("");
   if (PANEL) {
@@ -179,8 +241,10 @@ function renderAgents() {
   return `
     <div class="section-head"><h2>Agent</h2><span class="aside">每个 agent 平时都走原生；增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${rows}</div>
+    ${chatgptCard()}
     <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT和 Claude Code 永远不受影响。</p>
-    ${state.providers.length ? "" : onboarding()}`;
+    ${state.providers.length ? "" : onboarding()}
+    ${agentCatalog()}`;
 }
 
 let autoConfirm = false; // the inline terms notice for auto pick is open
@@ -348,6 +412,29 @@ function openPicker(anchor, harness) {
 
 // ---------------------------------------------------------------- providers
 
+/** How the user pays this provider, and what a model costs: from the table, or the user's own number. */
+function billingBlock(p) {
+  const s = p.priceSample;
+  const sub = p.billing === "subscription";
+  const r = s?.rates;
+  const own = p.prices?.[s?.model ?? ""];
+  const priceText = !s ? "" : r
+    ? `${esc(s.model)}：输入 $${r.input} · 输出 $${r.output} · 缓存读 $${r.cacheRead}（每百万 token，${s.source === "user" ? "你填的" : "价格表"}）`
+    : `${esc(s.model)}：还没有价格，用量页会显示「—」；可以在下面填`;
+  return `
+    <div class="section-head"><h3>计费</h3><span class="aside">估算用，不是账单</span></div>
+    <div class="controls"><label class="hint">计费方式</label>
+      <select class="billing-select"><option value="usage" ${sub ? "" : "selected"}>按量（按 token 估算花费）</option><option value="subscription" ${sub ? "selected" : ""}>包月套餐（不估算单次花费）</option></select></div>
+    ${sub ? "" : `<div class="hint">${priceText}</div>
+    ${s ? `<form class="controls" data-price-form="${esc(s.model)}">
+      <span class="hint">自己填 $/百万 token：</span>
+      <input type="number" step="any" min="0" name="input" placeholder="输入" value="${own?.input ?? ""}" style="width:90px">
+      <input type="number" step="any" min="0" name="output" placeholder="输出" value="${own?.output ?? ""}" style="width:90px">
+      <input type="number" step="any" min="0" name="cacheRead" placeholder="缓存读" value="${own?.cacheRead ?? ""}" style="width:90px">
+      <button class="btn secondary" type="submit">保存</button>${own ? `<button class="btn secondary" type="button" data-price-clear="${esc(s.model)}">清除</button>` : ""}
+    </form>` : ""}`}`;
+}
+
 /** The key pool of one provider: each row is a key (an account); the first enabled one answers next. */
 function keyList(p) {
   const keys = p.keys ?? [];
@@ -392,6 +479,7 @@ function providerRow(p) {
       </div>
       ${checks ? `<div class="checks">${checks}</div>` : ""}
       <div class="hint">OpenAI 兼容地址：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
+      ${billingBlock(p)}
       ${keyList(p)}
       <div><button class="btn danger" data-remove>删除这个来源</button></div>
     </div>` : "";
@@ -607,7 +695,9 @@ function drawChart() {
   const host = $("#chart");
   if (!host || !usage) return;
   const days = usage.days;
-  const values = days.map(d => d.inputTokens + d.outputTokens);
+  const cost = chartMetric === "cost";
+  const values = days.map(d => cost ? d.costUsd : d.inputTokens + d.outputTokens);
+  const fmt = v => cost ? money(v, v >= 1 ? 0 : 2) : compact(v);
   const W = host.clientWidth - 36, H = 200, left = 46, bottom = 22, top = 8;
   const plotW = W - left, plotH = H - bottom - top;
   const max = niceMax(Math.max(...values, 0));
@@ -617,14 +707,14 @@ function drawChart() {
   const y = v => top + plotH - (v / max) * plotH;
   const labelEvery = Math.max(1, Math.ceil(days.length / 7));
   const svg = `
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日 token 用量柱状图">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${cost ? "每日估算花费柱状图" : "每日 token 用量柱状图"}">
       <g class="grid">${ticks.map(t => `<line x1="${left}" x2="${W}" y1="${y(t)}" y2="${y(t)}"/>`).join("")}</g>
-      <g class="axis">${ticks.map(t => `<text x="${left - 8}" y="${y(t) + 4}" text-anchor="end">${compact(t)}</text>`).join("")}
+      <g class="axis">${ticks.map(t => `<text x="${left - 8}" y="${y(t) + 4}" text-anchor="end">${fmt(t)}</text>`).join("")}
         ${days.map((d, i) => i % labelEvery === 0 ? `<text x="${left + slot * i + slot / 2}" y="${H - 4}" text-anchor="middle">${d.day.slice(5).replace("-", "/")}</text>` : "").join("")}</g>
       ${values.map((v, i) => v > 0 ? `<path class="bar" d="${barPath(left + slot * i + (slot - bw) / 2, y(v), bw, top + plotH - y(v))}"/>` : "").join("")}
       ${days.map((d, i) => `<rect class="bar-hit" data-i="${i}" x="${left + slot * i}" y="${top}" width="${slot}" height="${plotH}"/>`).join("")}
     </svg>`;
-  host.innerHTML = `${svg}${values.every(v => v === 0) ? `<div class="empty" style="position:absolute;inset:0;display:grid;place-items:center">这段时间还没有用量</div>` : ""}`;
+  host.innerHTML = `${svg}${values.every(v => v === 0) ? `<div class="empty" style="position:absolute;inset:0;display:grid;place-items:center">${cost ? "这段时间没有可估价的用量" : "这段时间还没有用量"}</div>` : ""}`;
   const tip = document.createElement("div");
   tip.className = "tip";
   tip.hidden = true;
@@ -633,13 +723,20 @@ function drawChart() {
     const hit = e.target.closest(".bar-hit");
     if (!hit) { tip.hidden = true; return; }
     const d = days[Number(hit.dataset.i)];
-    tip.innerHTML = `<b>${d.day}</b><br>${thousands(d.inputTokens + d.outputTokens)} tokens · ${d.calls} 次调用`;
+    tip.innerHTML = `<b>${d.day}</b><br>${thousands(d.inputTokens + d.outputTokens)} tokens · ${d.calls} 次调用${d.costUsd ? `<br>估算 ${money(d.costUsd)}` : ""}`;
     const hb = host.getBoundingClientRect();
     tip.style.left = `${e.clientX - hb.left}px`;
     tip.style.top = `${e.clientY - hb.top - 10}px`;
     tip.hidden = false;
   });
   host.querySelector("svg").addEventListener("mouseleave", () => { tip.hidden = true; });
+}
+
+/** One table cell of money: a subscription says so, an unpriced model says "—", never a false zero. */
+function costCell(v, provider) {
+  if (provider?.billing === "subscription" || (v.subscription && !v.costUsd)) return `<span class="hint">包月</span>`;
+  if (!v.costUsd) return v.unpriced ? `<span class="hint" title="这个模型没有价格，可以在模型来源里自己填">—</span>` : "—";
+  return `${money(v.costUsd)}${v.unpriced ? `<span class="hint" title="另有 ${v.unpriced} 次没有价格，没有计入"> +</span>` : ""}`;
 }
 
 function renderUsage() {
@@ -651,31 +748,41 @@ function renderUsage() {
     const p = providerById(id);
     return `<tr><td>${p ? icon(p.icon, "sm") : ""} ${esc(p?.name ?? id)}</td><td class="num">${thousands(v.calls)}</td>
       <td class="num">${compact(v.inputTokens)}</td><td class="num">${compact(v.outputTokens)}</td>
-      <td class="num">${v.inputTokens ? `${Math.round((v.cachedTokens / v.inputTokens) * 100)}%` : "—"}</td><td class="num">${v.errors}</td></tr>`;
+      <td class="num">${v.inputTokens ? `${Math.round((v.cachedTokens / v.inputTokens) * 100)}%` : "—"}</td><td class="num">${v.errors}</td>
+      <td class="num">${costCell(v, p)}</td></tr>`;
   }).join("");
   const harnessRows = Object.entries(usage.byHarness).map(([h, v]) => `
     <tr><td>${icon(HARNESS[h]?.icon ?? "newapi-color", "sm")} ${HARNESS[h]?.name ?? esc(h)}</td><td class="num">${thousands(v.calls)}</td>
-      <td class="num">${compact(v.inputTokens)}</td><td class="num">${compact(v.outputTokens)}</td><td class="num">${v.errors}</td></tr>`).join("");
+      <td class="num">${compact(v.inputTokens)}</td><td class="num">${compact(v.outputTokens)}</td><td class="num">${v.errors}</td>
+      <td class="num">${costCell(v)}</td></tr>`).join("");
+  const costTile = t.subscription && !t.costUsd
+    ? `<div class="tile"><div class="v">包月</div><div class="l">估算花费</div><div class="d">${t.subscription} 次调用在套餐内</div></div>`
+    : `<div class="tile"><div class="v">${t.costUsd || !t.unpriced ? money(t.costUsd) : "—"}</div><div class="l">估算花费</div><div class="d">${[t.unpriced ? `${t.unpriced} 次没有价格` : "", t.subscription ? `${t.subscription} 次在套餐内` : ""].filter(Boolean).join(" · ") || "按各家公开的按量价格估算"}</div></div>`;
   return `
     <div class="section-head"><h2>用量</h2>
-      <nav class="seg" id="range">${Object.entries(ranges).map(([k, v]) => `<button data-range="${k}" class="${usageRange === k ? "on" : ""}">${v}</button>`).join("")}</nav>
+      <span style="display:flex;gap:10px;align-items:center">
+        <nav class="seg" id="currency"><button data-currency="CNY" class="${state.display?.currency !== "USD" ? "on" : ""}">¥</button><button data-currency="USD" class="${state.display?.currency === "USD" ? "on" : ""}">$</button></nav>
+        <nav class="seg" id="range">${Object.entries(ranges).map(([k, v]) => `<button data-range="${k}" class="${usageRange === k ? "on" : ""}">${v}</button>`).join("")}</nav></span>
     </div>
     <div class="card tiles">
       <div class="tile"><div class="v">${compact(t.inputTokens + t.outputTokens)}</div><div class="l">Token</div><div class="d">输入 ${compact(t.inputTokens)} · 输出 ${compact(t.outputTokens)}</div></div>
       <div class="tile"><div class="v">${compact(t.cachedTokens)}</div><div class="l">缓存读取</div><div class="d">命中率 ${hit}</div></div>
       <div class="tile"><div class="v">${thousands(t.calls)}</div><div class="l">调用次数</div><div class="d">${t.unmetered ? `${t.unmetered} 次原样转发未计量` : "全部已计量"}</div></div>
+      ${costTile}
       <div class="tile"><div class="v">${thousands(t.errors)}</div><div class="l">失败</div><div class="d">${t.calls ? `占 ${Math.round((t.errors / t.calls) * 100)}%` : "—"}</div></div>
     </div>
-    <div class="card"><div class="chart" id="chart"></div>
+    <div class="card"><div class="section-head" style="padding:12px 18px 0"><span class="hint">每日</span>
+        <nav class="seg" id="metric"><button data-metric="tokens" class="${chartMetric === "tokens" ? "on" : ""}">Token</button><button data-metric="cost" class="${chartMetric === "cost" ? "on" : ""}">花费</button></nav></div>
+      <div class="chart" id="chart"></div>
       <details style="padding:0 18px 12px"><summary class="hint">查看每日数据表</summary>
-        <table class="tbl"><tr><th>日期</th><th class="num">输入</th><th class="num">输出</th><th class="num">调用</th></tr>
-        ${usage.days.map(d => `<tr><td>${d.day}</td><td class="num">${thousands(d.inputTokens)}</td><td class="num">${thousands(d.outputTokens)}</td><td class="num">${d.calls}</td></tr>`).join("")}</table>
+        <table class="tbl"><tr><th>日期</th><th class="num">输入</th><th class="num">输出</th><th class="num">调用</th><th class="num">估算花费</th></tr>
+        ${usage.days.map(d => `<tr><td>${d.day}</td><td class="num">${thousands(d.inputTokens)}</td><td class="num">${thousands(d.outputTokens)}</td><td class="num">${d.calls}</td><td class="num">${d.costUsd ? money(d.costUsd) : "—"}</td></tr>`).join("")}</table>
       </details>
     </div>
     <div class="section-head"><h2>按模型来源</h2></div>
-    <div class="card">${providerRows ? `<table class="tbl"><tr><th>来源</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存命中</th><th class="num">失败</th></tr>${providerRows}</table>` : `<div class="empty">还没有用量</div>`}</div>
+    <div class="card">${providerRows ? `<table class="tbl"><tr><th>来源</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存命中</th><th class="num">失败</th><th class="num">估算花费</th></tr>${providerRows}</table>` : `<div class="empty">还没有用量</div>`}</div>
     <div class="section-head"><h2>按 Agent</h2></div>
-    <div class="card">${harnessRows ? `<table class="tbl"><tr><th>Agent</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">失败</th></tr>${harnessRows}</table>` : `<div class="empty">还没有用量</div>`}</div>`;
+    <div class="card">${harnessRows ? `<table class="tbl"><tr><th>Agent</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">失败</th><th class="num">估算花费</th></tr>${harnessRows}</table>` : `<div class="empty">还没有用量</div>`}</div>`;
 }
 
 async function loadUsage() {
@@ -709,6 +816,11 @@ async function refresh(force = false) {
     state = await call("GET", "/api/state");
   } catch {
     state = null;
+  }
+  if (page === "agents" && !PANEL) chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
+  if (page === "agents" && !PANEL && !agentList) {
+    agentList = await call("GET", "/api/agents").then(r => r.agents).catch(() => null);
+    if (agentList) force = true;
   }
   if (page === "usage" && (force || !usage)) await loadUsage();
   if (force || !busy()) render();
@@ -795,6 +907,35 @@ document.addEventListener("click", async e => {
     return;
   }
 
+  const gAsk = t.closest("[data-chatgpt-ask]");
+  if (gAsk) { chatgptConfirm = gAsk.dataset.chatgptAsk; render(); return; }
+  if (t.closest("[data-chatgpt-cancel]")) { chatgptConfirm = null; render(); return; }
+  const gGo = t.closest("[data-chatgpt-go]");
+  if (gGo) {
+    const mode = gGo.dataset.chatgptGo;
+    chatgptConfirm = null;
+    gGo.disabled = true;
+    toast("正在重启 ChatGPT…");
+    try {
+      const r = await call("POST", `/api/chatgpt/${mode}`, { restart: true });
+      toast(mode === "enhance" ? "ChatGPT 已用 EasySwitch 启动：打开模型菜单就能看到外接模型" : "ChatGPT 已恢复普通启动");
+      void r;
+    } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+
+  const agentOpen = t.closest("[data-agent-open]");
+  if (agentOpen) {
+    try { await call("POST", `/api/agents/${agentOpen.dataset.agentOpen}/open`); toast("已打开"); } catch (error) { toast(error.message); }
+    return;
+  }
+
+  const currency = t.closest("[data-currency]");
+  if (currency) { try { await call("PUT", "/api/display", { currency: currency.dataset.currency }); } catch (error) { toast(error.message); } await refresh(true); return; }
+  const metric = t.closest("[data-metric]");
+  if (metric) { chartMetric = metric.dataset.metric; render(); return; }
+
   const range = t.closest("[data-range]");
   if (range) { usageRange = range.dataset.range; await loadUsage(); render(); return; }
 
@@ -848,6 +989,12 @@ document.addEventListener("click", async e => {
   const detail = t.closest(".detail");
   if (detail) {
     const id = detail.dataset.provider;
+    const priceClear = t.closest("[data-price-clear]");
+    if (priceClear) {
+      try { await call("PUT", `/api/providers/${id}/prices`, { model: priceClear.dataset.priceClear, rates: null }); toast("已清除，改用价格表"); } catch (error) { toast(error.message); }
+      await refresh(true);
+      return;
+    }
     const keyPatch = t.closest("[data-key-patch]");
     if (keyPatch) {
       try { await call("PATCH", `/api/providers/${id}/keys/${keyPatch.dataset.keyPatch}`, { enabled: keyPatch.dataset.enabled === "1" }); } catch (error) { toast(error.message); }
@@ -883,6 +1030,13 @@ document.addEventListener("click", async e => {
   if (toggle) { openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
 });
 
+document.addEventListener("change", async e => {
+  if (!e.target.matches(".billing-select")) return;
+  const id = e.target.closest(".detail")?.dataset.provider;
+  try { await call("PUT", `/api/providers/${id}/billing`, { billing: e.target.value }); toast(e.target.value === "subscription" ? "已改为包月套餐" : "已改为按量计费"); } catch (error) { toast(error.message); }
+  await refresh(true);
+});
+
 document.addEventListener("input", e => {
   if (e.target.matches("#import-form textarea")) importFormOpen = true;
   if (e.target.id === "preset-search") {
@@ -909,6 +1063,16 @@ document.addEventListener("submit", async e => {
       msg.className = "msg bad";
       msg.textContent = error.message;
     }
+    await refresh(true);
+    return;
+  }
+  const priceForm = e.target.closest("form[data-price-form]");
+  if (priceForm) {
+    e.preventDefault();
+    const f = new FormData(priceForm);
+    const num = k => Number(f.get(k) || 0);
+    const id = priceForm.closest(".detail")?.dataset.provider;
+    try { await call("PUT", `/api/providers/${id}/prices`, { model: priceForm.dataset.priceForm, rates: { input: num("input"), output: num("output"), cacheRead: num("cacheRead"), cacheWrite: 0 } }); toast("已保存价格"); } catch (error) { toast(error.message); }
     await refresh(true);
     return;
   }

@@ -182,9 +182,12 @@ export function shapeChat(chat: ChatRequest, opts: ShapeOptions): ChatRequest {
       // Some upstreams (Volcengine, several relays) reject null content next to tool_calls.
       if (m.content === null || m.content === undefined) m.content = "";
       if (quirks.replayReasoning && m.tool_calls?.length) {
-        const known = m.tool_calls.map(c => memory.recall(c.id)).find(Boolean);
-        // A thinking-mode upstream insists on the field; a blank is accepted where the text is gone.
-        (m as unknown as Json).reasoning_content = known ?? " ";
+        // A client that already sends it back (some do) is left alone.
+        if (!(m as unknown as Json).reasoning_content) {
+          const known = m.tool_calls.map(c => memory.recall(c.id)).find(Boolean);
+          // A thinking-mode upstream insists on the field; a blank is accepted where the text is gone.
+          (m as unknown as Json).reasoning_content = known ?? " ";
+        }
       }
     }
   }

@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node core/src/main.ts",
     "mock-relay": "node core/test/mock-relay.ts",
-    "test": "node --test core/test/*.test.ts",
+    "test": "node --test --test-force-exit core/test/*.test.ts",
     "typecheck": "tsc -p ."
   },
   "devDependencies": {

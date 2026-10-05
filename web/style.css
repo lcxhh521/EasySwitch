@@ -171,7 +171,7 @@ input:focus, select:focus { outline: 2px solid var(--accent-soft); }
 .event .why { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 
 /* ---- usage ---- */
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); }
+.tiles { display: grid; grid-template-columns: repeat(5, 1fr); }
 .tile { padding: 16px 18px; border-left: 1px solid var(--line-2); }
 .tile:first-child { border-left: 0; }
 .tile .v { font-size: 26px; font-weight: 600; letter-spacing: -.01em; }

@@ -30,6 +30,10 @@ export interface Provider {
   /** Whether the provider accepts `stream_options.include_usage`. */
   streamUsage: boolean;
   probe?: ProbeReport;
+  /** How the user pays: per token (default) or a flat subscription, where per-call cost is not meaningful. */
+  billing?: "usage" | "subscription";
+  /** The user's own prices (USD per 1M tokens) by model id; they win over the built-in table. */
+  prices?: Record<string, Rates>;
   /** Icon chosen when the provider was added (from its preset); otherwise derived from the address. */
   icon?: string;
   /**
@@ -45,6 +49,14 @@ export interface Provider {
    */
   keys?: ProviderKey[];
   createdAt: string;
+}
+
+/** USD per million tokens. */
+export interface Rates {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
 }
 
 /** Wire-level differences a provider may have; all optional, all plain data. */
@@ -110,6 +122,13 @@ export interface Account {
   restUntil?: string;
 }
 
+/** How money is shown: USD as priced, or converted at the user's own rate. */
+export interface DisplaySettings {
+  currency: "USD" | "CNY";
+  /** CNY per USD, chosen by the user; there is no live exchange rate here. */
+  usdToCny: number;
+}
+
 /** How "auto" picks an account. Off unless the user switched it on. */
 export interface AccountSettings {
   /** The user turned on automatic account choice after reading the terms notice. */
@@ -119,7 +138,7 @@ export interface AccountSettings {
 }
 
 /** Which provider model a harness uses in an EasySwitch session. */
-export type Harness = "codex" | "claude";
+export type Harness = string;
 
 export interface HarnessBinding {
   harness: Harness;
@@ -133,7 +152,8 @@ export interface GatewayLogEntry {
   model: string;
   providerId?: string;
   route: ProviderRoute | MessagesRoute;
-  harness?: Harness;
+  /** The agent that made the call: "codex", "claude", or another agent's id; "chat" when unknown. */
+  harness?: string;
   status: number;
   ms: number;
   /** Token usage when the upstream reported it; absent on passthrough routes. */
@@ -144,6 +164,10 @@ export interface GatewayLogEntry {
   dropped?: string[];
   /** Which key of the provider's pool answered. */
   keyId?: string;
+  /** Estimated USD at the vendor's pay-as-you-go price when the call was made; absent when unpriced or on a subscription. */
+  costUsd?: number;
+  /** Why there is no cost: the provider is a flat subscription, or no price is known for the model. */
+  costNote?: "subscription" | "unpriced";
   /** Short failure or recovery description. */
   note?: string;
 }

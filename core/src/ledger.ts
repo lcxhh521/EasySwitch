@@ -51,10 +51,16 @@ interface Totals {
   cachedTokens: number;
   /** Calls whose upstream reported no usage (passthrough routes). */
   unmetered: number;
+  /** Estimated USD at pay-as-you-go prices, over the calls that could be priced. */
+  costUsd: number;
+  /** Calls with usage but no known price; their cost is missing, not zero. */
+  unpriced: number;
+  /** Calls on a flat subscription: tokens count, per-call cost does not. */
+  subscription: number;
 }
 
 function emptyTotals(): Totals {
-  return { calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, unmetered: 0 };
+  return { calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, unmetered: 0, costUsd: 0, unpriced: 0, subscription: 0 };
 }
 
 function add(t: Totals, e: GatewayLogEntry): void {
@@ -64,6 +70,9 @@ function add(t: Totals, e: GatewayLogEntry): void {
   t.inputTokens += e.inputTokens ?? 0;
   t.outputTokens += e.outputTokens ?? 0;
   t.cachedTokens += e.cachedTokens ?? 0;
+  t.costUsd += e.costUsd ?? 0;
+  if (e.costNote === "unpriced") t.unpriced += 1;
+  if (e.costNote === "subscription") t.subscription += 1;
 }
 
 function dayKey(at: string): string {
