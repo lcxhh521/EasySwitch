@@ -9,7 +9,7 @@ const $ = sel => document.querySelector(sel);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 const HARNESS = {
-  codex: { name: "ChatGPT（Codex）", icon: "codex-color", protocol: "Responses" },
+  codex: { name: "ChatGPT", icon: "codex-color", protocol: "Responses" },
   claude: { name: "Claude Code", icon: "claudecode-color", protocol: "Anthropic Messages" },
 };
 const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样转发", "chat-translate": "协议转换" };
@@ -169,7 +169,7 @@ function renderAgents() {
   return `
     <div class="section-head"><h2>Agent</h2><span class="aside">每个 agent 平时都走原生；增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${rows}</div>
-    <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT（Codex）和 Claude Code 永远不受影响。</p>
+    <p class="hint">点模型选择框挑一个外接模型，再点「启动增强会话」。会话里输入 <code>/model</code>，可以随时换成任何一个外接模型。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT和 Claude Code 永远不受影响。</p>
     ${state.providers.length ? "" : onboarding()}`;
 }
 
@@ -220,7 +220,7 @@ function renderAccounts() {
       <div class="controls"><button class="btn" data-acc-autopick="on">我已了解，开启</button><button class="btn secondary" data-acc-autopick="cancel">取消</button></div></div>` : ""}
     </div>
     ${section("codex")}${section("claude")}
-    <p class="hint">每个账号有自己的登录目录（ChatGPT（Codex）用 <code>CODEX_HOME</code>，Claude Code 用 <code>CLAUDE_CONFIG_DIR</code>），只对这一次启动生效，不会改动你平时用的 ~/.codex 和 ~/.claude。移除账号只删记录，目录和登录会保留在 EasySwitch 的数据目录里。</p>`;
+    <p class="hint">每个账号有自己的登录目录（ChatGPT用 <code>CODEX_HOME</code>，Claude Code 用 <code>CLAUDE_CONFIG_DIR</code>），只对这一次启动生效，不会改动你平时用的 ~/.codex 和 ~/.claude。移除账号只删记录，目录和登录会保留在 EasySwitch 的数据目录里。</p>`;
 }
 
 /** First-run onboarding: paste whatever the vendor handed you, everything else is automatic. */
@@ -231,7 +231,7 @@ function onboarding() {
       <div class="section-head"><h2>三步接入</h2><span class="aside">刚买的中转站或新订阅，把它给你的东西整段粘进来</span></div>
       <ol class="steps">
         <li>把<strong>使用说明、地址、Key 或教程链接</strong>整段粘贴到下面的框里（export 命令、JSON、中文说明都行）</li>
-        <li>点「一键接入」，EasySwitch 自动识别地址和 Key、测一遍、给 ChatGPT（Codex）和 Claude Code 接上</li>
+        <li>点「一键接入」，EasySwitch 自动识别地址和 Key、测一遍、给 ChatGPT和 Claude Code 接上</li>
         <li>回来点「启动增强会话」</li>
       </ol>
       <form class="form" id="import-form">
@@ -369,9 +369,9 @@ function providerRow(p) {
   const detail = open ? `
     <div class="detail" data-provider="${esc(p.id)}">
       <div class="controls">
-        <span class="chip">ChatGPT（Codex）：${ROUTE[p.route]}${p.routePinned ? "（手动）" : p.probe ? "（自动）" : ""}</span>
+        <span class="chip">ChatGPT：${ROUTE[p.route]}${p.routePinned ? "（手动）" : p.probe ? "（自动）" : ""}</span>
         <span class="chip">Claude Code：${ROUTE[p.messagesRoute ?? "chat-translate"]}</span>
-        <button class="btn secondary" data-route="${nextRoute}">ChatGPT（Codex）改为${ROUTE[nextRoute]}</button>
+        <button class="btn secondary" data-route="${nextRoute}">ChatGPT改为${ROUTE[nextRoute]}</button>
         ${p.routePinned ? `<button class="btn secondary" data-route="auto">恢复自动</button>` : ""}
       </div>
       <div class="controls">
