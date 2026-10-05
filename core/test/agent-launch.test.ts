@@ -153,11 +153,33 @@ test("effort and extra models are saved on the agent, survive a model change, an
   assert.equal((await api("PUT", "/api/bindings/claude/tiers/nonsense", { providerId, model: "mock-coder" })).status, 404);
   assert.equal((await api("PUT", "/api/bindings/claude/tiers/small", { providerId, model: "no-such-model" })).status, 400);
   await api("PUT", "/api/bindings/claude", { providerId, model: "mock-coder" });
-  const b = (await (await api("GET", "/api/state")).json()) as { bindings: Record<string, { effort?: string; tiers?: Record<string, string> }> };
-  assert.equal(b.bindings.claude?.effort, "high", "changing the main model keeps the level");
-  assert.equal(b.bindings.claude?.tiers?.subagent, `${providerId}/mock-coder`);
+  const b = (await (await api("GET", "/api/state")).json()) as { prefs: Record<string, { effort?: string; tiers?: Record<string, string> }> };
+  assert.equal(b.prefs.claude?.effort, "high", "changing the main model keeps the level");
+  assert.equal(b.prefs.claude?.tiers?.subagent, `${providerId}/mock-coder`);
   const cmd = (await (await api("POST", "/api/agents/claude/command", {})).json()) as { args: string[]; env: Record<string, string> };
   assert.ok(cmd.args.join(" ").includes("--effort high"), "the saved level is used when launching");
   assert.ok(cmd.env.CLAUDE_CODE_SUBAGENT_MODEL, "and so is the saved sub-agent model");
   assert.equal((await api("DELETE", "/api/bindings/claude/tiers/subagent")).status, 200);
+});
+
+test("an agent's other models do not need a main model: only a sub-agent model can be set while the main one stays native", async () => {
+  const H = { "content-type": "application/json", "x-easyswitch": "1" };
+  const api = (m: string, p: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${p}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
+  await api("DELETE", "/api/bindings/codex");
+  assert.equal((await api("PUT", "/api/bindings/codex/tiers/subagent", { providerId, model: "mock-coder" })).status, 200, "no main model chosen, still allowed");
+  const state = (await (await api("GET", "/api/state")).json()) as { prefs: Record<string, { tiers?: Record<string, string> }>; bindings: Record<string, unknown> };
+  assert.ok(!state.bindings.codex, "the main model stays native");
+  assert.equal(state.prefs.codex?.tiers?.subagent, `${providerId}/mock-coder`);
+  await api("DELETE", "/api/bindings/codex/tiers/subagent");
+});
+
+test("Hermes and Aider take a small-task model of their own", () => {
+  const input = { bin: "/bin/x", port: 7, model: "a/main", token: "t", sessionDir: "/tmp/hs", stateDir: "/tmp/hs-state", task: "do", tiers: { small: "b/tiny", vision: "c/eyes" } };
+  const files = LAUNCHERS.hermes!.headless!(input).files!;
+  const yaml = Object.values(files)[0]!;
+  assert.match(yaml, /auxiliary:\n  compression:\n    provider: custom:easyswitch\n    model: "b\/tiny"/);
+  assert.match(yaml, /  vision:\n    provider: custom:easyswitch\n    model: "c\/eyes"/);
+  assert.match(yaml, /"b\/tiny": \{\}/, "the small model is declared on the private provider too");
+  assert.ok(LAUNCHERS.aider!.headless!(input).args.join(" ").includes("--weak-model openai/b/tiny"));
+  assert.ok(!LAUNCHERS.aider!.headless!({ ...input, tiers: {} }).args.join(" ").includes("--weak-model"));
 });

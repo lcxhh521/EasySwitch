@@ -46,7 +46,7 @@ function errorBody(message: string, type = "easyswitch_error") {
  */
 export function applyThinking(chat: ChatRequest, store: Store, agent: string, requested: unknown, provider: Provider, quirks: Quirks): void {
   const style = provider.plan ? "effort" : provider.reasoningEffort === undefined ? quirks.reasoning : provider.reasoningEffort ? "effort" : "none";
-  const saved = store.binding(agent)?.effort;
+  const saved = store.prefs(agent).effort;
   const has = modelEfforts(provider, chat.model);
   if (saved) applyEffort(chat, saved, style, has);
   else if (style === "effort") applyEffort(chat, requested, style, has);
@@ -88,7 +88,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     // for the model name, and stream its bytes straight back.
     const forwarded: Json = { ...body, model: upstreamModelId(model) };
     // The thinking level saved for this agent is carried in the request's own `reasoning` field.
-    const saved = deps.store.binding(agentOf(req.headers.authorization, "codex"))?.effort;
+    const saved = deps.store.prefs(agentOf(req.headers.authorization, "codex")).effort;
     if (saved && modelEfforts(provider, model).includes(saved)) forwarded.reasoning = { ...((body.reasoning as Json | undefined) ?? {}), effort: saved };
     const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
       sendResponses(provider, apiKey, forwarded, String(req.headers.accept ?? "text/event-stream"), abort.signal));

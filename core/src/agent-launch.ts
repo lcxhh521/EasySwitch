@@ -137,6 +137,10 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   // Its home is kept between runs (it installs its runtime into it, which takes a minute); only the config is rewritten each launch.
   hermes: {
     verified: true,
+    tiers: [
+      { id: "small", label: "后台小任务", hint: "压缩对话、起标题、网页摘要、审批这类辅助调用用这个模型" },
+      { id: "vision", label: "看图", hint: "识别图片用这个模型" },
+    ],
     efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     interactive: i => ({ command: i.bin, args: i.effort ? ["chat", "--reasoning", i.effort] : [], env: { HERMES_HOME: hermesHome(i) }, files: hermesFiles(i) }),
     headless: i => ({ command: i.bin, args: ["chat", "-Q", ...(i.effort ? ["--reasoning", i.effort] : []), "-q", i.task ?? ""], env: { HERMES_HOME: hermesHome(i) }, files: hermesFiles(i) }),
@@ -161,8 +165,9 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
   aider: {
     verified: false,
-    interactive: i => ({ command: i.bin, args: ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`], env: {} }),
-    headless: i => ({ command: i.bin, args: ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`, "--message", i.task ?? "", "--yes-always", "--no-auto-commits"], env: {} }),
+    tiers: [{ id: "small", label: "小任务", hint: "提交说明、对话摘要这类用 Aider 的「弱模型」" }],
+    interactive: i => ({ command: i.bin, args: ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`, ...(i.tiers?.small ? ["--weak-model", `openai/${i.tiers.small}`] : [])], env: {} }),
+    headless: i => ({ command: i.bin, args: ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`, ...(i.tiers?.small ? ["--weak-model", `openai/${i.tiers.small}`] : []), "--message", i.task ?? "", "--yes-always", "--no-auto-commits"], env: {} }),
   },
   "copilot-cli": {
     verified: false,
@@ -196,7 +201,13 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       "    api_mode: chat_completions",
       "    discover_models: false",
       "    models:",
-      `      ${q(i.model)}: {}`,
+      ...[...new Set([i.model, ...Object.values(i.tiers ?? {})])].map(m => `      ${q(m)}: {}`),
+      // Hermes runs these side jobs on models of their own; each is pointed at the same private provider.
+      ...(i.tiers && Object.keys(i.tiers).length ? ["auxiliary:"] : []),
+      ...[
+        ...(i.tiers?.small ? ["compression", "title_generation", "web_extract", "skills_hub", "approval", "mcp"].map(k => [k, i.tiers!.small!] as const) : []),
+        ...(i.tiers?.vision ? [["vision", i.tiers.vision] as const] : []),
+      ].flatMap(([k, m]) => [`  ${k}:`, "    provider: custom:easyswitch", `    model: ${q(m)}`]),
       "",
     ].join("\n"),
   };

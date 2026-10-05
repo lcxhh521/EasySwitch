@@ -166,20 +166,24 @@ function openGuard(anchor) {
 
 // ---------------------------------------------------------------- agents
 
-/** Under an agent's row: its reasoning level and the other models it runs next to the main one. */
+const ALL_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+let levelsEditor = null; // "providerId/model" whose levels are being edited
+
+/** Under an agent's row: its thinking level and the other models it runs next to the main one. Independent of the main model, which can stay native. */
 function agentSettings(id) {
   const binding = state.bindings?.[id];
   const can0 = (agentList ?? []).find(a => a.id === id)?.can;
-  if (!binding || !can0) return "";
-  // A level is offered only if the model has it and the agent can say it.
-  const modelHas = state.modelEfforts?.[`${binding.providerId}/${binding.model}`];
-  // An agent with levels of its own offers those the model has too; one without offers whatever the model has.
-  const can = { ...can0, efforts: can0.anyEffort ? (modelHas ?? []) : (can0.efforts ?? []).filter(l => !modelHas || modelHas.includes(l)) };
-  if (!can.efforts.length && !can.tiers?.length) {
-    return `<div class="row settings" style="padding-top:0"><span class="grow"></span><span class="hint">${esc(binding.model)} 没有可调的思考档位</span></div>`;
-  }
+  if (!can0) return "";
+  const prefs = state.prefs?.[id] ?? {};
+  const modelKey = binding ? `${binding.providerId}/${binding.model}` : null;
+  const modelHas = modelKey ? state.modelEfforts?.[modelKey] ?? [] : null;
+  // With a model of ours the levels are the model's that the agent can say (or all of the model's, for an agent with none of its own); on a native model, the agent's own.
+  const own = can0.efforts ?? [];
+  const levels = modelKey ? (can0.anyEffort ? modelHas : own.filter(l => modelHas.includes(l))) : own;
+  const tiers = can0.tiers ?? [];
+  if (!levels.length && !tiers.length && !(modelKey && can0.anyEffort !== undefined)) return "";
   const tierBtn = t => {
-    const name = binding.tiers?.[t.id];
+    const name = prefs.tiers?.[t.id];
     const slash = name ? name.indexOf("/") : -1;
     const provider = name && providerById(name.slice(0, slash));
     const face = provider
@@ -187,12 +191,24 @@ function agentSettings(id) {
       : `<span class="label">跟随主模型<small>点一下可以换</small></span>`;
     return `<span class="hint" title="${esc(t.hint)}">${esc(t.label)}</span><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}" title="${esc(t.hint)}">${face}<span class="caret">▾</span></button>`;
   };
+  const effort = levels.length
+    ? `<span class="hint">想得多深</span><select data-effort-select="${esc(id)}" title="只对这个 agent 生效">
+      ${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${EFFORT_LABEL[l] ?? l}${l ? `（${esc(l)}）` : "（它自己的默认）"}</option>`).join("")}</select>`
+    : modelKey
+      // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
+      ? `<span class="hint">想得多深</span><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="这个模型没有已知的思考档位；告诉 EasySwitch 它有哪些">${esc(binding.model)} 的档位：未知，点这里设置</button>`
+      : "";
+  const editor = levelsEditor && levelsEditor === modelKey ? `
+    <div class="row settings" style="padding-top:0;gap:10px;flex-wrap:wrap" data-levels-editor="${esc(modelKey)}">
+      <span class="grow"></span><span class="hint">这个模型有哪些档位：</span>
+      ${ALL_LEVELS.map(l => `<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" value="${l}" ${(modelHas ?? []).includes(l) ? "checked" : ""}>${esc(EFFORT_LABEL[l] ?? l)}</label>`).join("")}
+      <button class="btn" data-levels-save="${esc(modelKey)}">保存</button><button class="btn secondary" data-levels-cancel>取消</button>
+    </div>` : "";
   return `<div class="row settings" style="padding-top:0;gap:10px;flex-wrap:wrap">
     <span class="grow"></span>
-    ${can.efforts?.length ? `<span class="hint">想得多深</span><select data-effort-select="${esc(id)}" title="只对这个 agent 生效；档位是它自己的">
-      ${["", ...can.efforts].map(l => `<option value="${esc(l)}" ${(binding.effort ?? "") === l ? "selected" : ""}>${EFFORT_LABEL[l] ?? l}${l ? `（${esc(l)}）` : "（它自己的默认）"}</option>`).join("")}</select>` : ""}
-    ${(can.tiers ?? []).map(tierBtn).join("")}
-  </div>`;
+    ${effort}
+    ${tiers.map(tierBtn).join("")}
+  </div>${editor}`;
 }
 
 function agentRow(harness) {
@@ -1125,6 +1141,19 @@ document.addEventListener("click", async e => {
     if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
     planConfirmOut = null;
     try { await call("DELETE", `/api/plan/${id}`); toast("已退出登录，并在 OpenAI 那边撤销了这次登录"); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const lvEdit = t.closest("[data-levels-edit]");
+  if (lvEdit) { levelsEditor = lvEdit.dataset.levelsEdit; render(); return; }
+  if (t.closest("[data-levels-cancel]")) { levelsEditor = null; render(); return; }
+  const lvSave = t.closest("[data-levels-save]");
+  if (lvSave) {
+    const key = lvSave.dataset.levelsSave;
+    const slash = key.indexOf("/");
+    const levels = [...document.querySelectorAll(`[data-levels-editor="${CSS.escape(key)}"] input[type=checkbox]:checked`)].map(i => i.value);
+    try { await call("PUT", `/api/providers/${key.slice(0, slash)}/model-efforts`, { model: key.slice(slash + 1), levels }); toast(levels.length ? "已记下这个模型的档位" : "已清除这个模型的档位"); } catch (error) { toast(error.message); }
+    levelsEditor = null;
     await refresh(true);
     return;
   }

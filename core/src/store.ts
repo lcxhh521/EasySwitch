@@ -16,6 +16,14 @@ interface StateFile {
   /** Signed-in ChatGPT plan accounts (tokens are in the Keychain, never here). */
   siwc?: SiwcAccount[];
   siwcHostId?: string;
+  /** Per agent, apart from its main model: thinking level and the other models it runs (sub-agent, small tasks). */
+  prefs?: Record<string, AgentPrefs>;
+}
+
+export interface AgentPrefs {
+  effort?: string;
+  /** Tier id → `<provider>/<model>`. */
+  tiers?: Record<string, string>;
 }
 
 const EMPTY: StateFile = { version: 1, providers: [], bindings: [] };
@@ -38,7 +46,17 @@ export class Store {
   private load(): StateFile {
     try {
       const parsed = JSON.parse(readFileSync(this.file, "utf8")) as StateFile;
-      if (parsed.version === 1 && Array.isArray(parsed.providers) && Array.isArray(parsed.bindings)) return parsed;
+      if (parsed.version === 1 && Array.isArray(parsed.providers) && Array.isArray(parsed.bindings)) {
+        // Earlier versions kept these on the main-model binding; they belong to the agent, not to its main model.
+        for (const b of parsed.bindings as Array<HarnessBinding & { effort?: string; tiers?: Record<string, string> }>) {
+          if (!b.effort && !b.tiers) continue;
+          parsed.prefs ??= {};
+          parsed.prefs[b.harness] = { ...(b.effort ? { effort: b.effort } : {}), ...(b.tiers ? { tiers: b.tiers } : {}), ...(parsed.prefs[b.harness] ?? {}) };
+          delete b.effort;
+          delete b.tiers;
+        }
+        return parsed;
+      }
     } catch {
       // Missing or unreadable: start empty rather than guess.
     }
@@ -114,6 +132,30 @@ export class Store {
   removeAccount(id: string): void {
     this.state.accounts = (this.state.accounts ?? []).filter(a => a.id !== id);
     this.save();
+  }
+
+  prefs(agent: string): AgentPrefs {
+    return structuredClone(this.state.prefs?.[agent] ?? {});
+  }
+
+  allPrefs(): Record<string, AgentPrefs> {
+    return structuredClone(this.state.prefs ?? {});
+  }
+
+  /** Changes one agent's preferences. `effort: ""` clears the level; a tier set to `""` clears that tier. */
+  setPrefs(agent: string, patch: { effort?: string; tiers?: Record<string, string> }): AgentPrefs {
+    const cur = this.prefs(agent);
+    const next: AgentPrefs = { ...cur };
+    if (patch.effort !== undefined) { if (patch.effort) next.effort = patch.effort; else delete next.effort; }
+    if (patch.tiers) {
+      const tiers = { ...(cur.tiers ?? {}) };
+      for (const [k, v] of Object.entries(patch.tiers)) { if (v) tiers[k] = v; else delete tiers[k]; }
+      if (Object.keys(tiers).length) next.tiers = tiers; else delete next.tiers;
+    }
+    this.state.prefs = { ...(this.state.prefs ?? {}) };
+    if (Object.keys(next).length) this.state.prefs[agent] = next; else delete this.state.prefs[agent];
+    this.save();
+    return structuredClone(next);
   }
 
   /** Where "Sign in with ChatGPT" keeps its account records. */
