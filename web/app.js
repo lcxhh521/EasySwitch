@@ -21,6 +21,7 @@ let usageRange = "7d";
 let usage = null;
 let openProvider = null;
 let addForm = null; // { preset } while the add panel is open
+let ocxImport = null; // { candidates, chosen:Set } while the opencodex import panel is open
 let presets = [];
 let popover = null;
 
@@ -289,7 +290,7 @@ function keyList(p) {
         <button class="btn danger" data-key-del="${esc(k.id)}">删除</button></td></tr>`;
   }).join("");
   return `
-    <div class="section-head"><h3>Key（账号）池</h3><span class="aside">按顺序轮着用；一把被拒或限流，就休息一会儿，别的先上</span></div>
+    <div class="section-head"><h3>我的 Key 池</h3><span class="aside">你自己的几把 Key 按顺序用；一把被拒或限流，就休息一会儿，别的先上——全部在本机，不经过任何服务器</span></div>
     ${rows ? `<table class="tbl"><tr><th>名称</th><th>状态</th><th class="num"></th></tr>${rows}</table>` : `<div class="hint">这把来源只有一把 Key（老的存法）。</div>`}
     <form class="form" data-add-key>
       <div class="field"><label>备注（比如“主力订阅”）</label><input type="text" name="label" placeholder="Key ${keys.length + 1}"></div>
@@ -351,12 +352,31 @@ function renderAddForm() {
     </form>`;
 }
 
+function renderOcxImport() {
+  const cands = ocxImport.candidates;
+  const usable = cands.filter(c => !c.skipReason);
+  return `
+    <div class="detail" style="display:block">
+      <div class="controls"><b>从 opencodex 导入</b><span class="hint">读 ~/.opencodex/config.json；Key 直接进钥匙串，不会显示或保存明文</span></div>
+      ${cands.length ? usable.map(c => `
+        <label class="row" style="cursor:pointer">
+          <input type="checkbox" data-ocx="${esc(c.sourceId)}" ${ocxImport.chosen.has(c.sourceId) ? "checked" : ""}>
+          ${icon(iconForBaseUrl(c.baseUrl), "sm")}
+          <div class="grow"><div class="title">${esc(c.name)}</div><div class="sub">${esc(c.baseUrl)} · ${c.keys} 把 Key · ${c.models.length} 个模型</div></div>
+        </label>`).join("") : ""}
+        ${cands.filter(c => c.skipReason).map(c => `<div class="hint">· ${esc(c.name)}：${esc(c.skipReason)}</div>`).join("")}
+      <div class="controls"><button class="btn" data-ocx-go ${usable.length ? "" : "disabled"}>导入选中的来源</button>
+        <button class="btn secondary" data-ocx-cancel>取消</button></div>
+    </div>`;
+}
+
 function renderProviders() {
   return `
     <div class="section-head"><h2>模型来源</h2><span class="aside">中转站、官方 API、本地模型都可以；加进来先自动测一遍</span></div>
     <div class="card">
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
-      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button>`}
+      ${ocxImport ? renderOcxImport() : ""}
+      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-ocx-open>从 opencodex 导入</button>`}
     </div>`;
 }
 
@@ -586,7 +606,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || importFormOpen || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || ocxImport || importFormOpen || document.activeElement?.matches("input, select, textarea");
 }
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
@@ -654,7 +674,37 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-add]")) {
     if (!presets.length) presets = await call("GET", "/api/presets").catch(() => []);
     addForm = { preset: null };
+    ocxImport = null;
     render();
+    return;
+  }
+  if (t.closest("[data-ocx-open]")) {
+    try {
+      const { candidates } = await call("GET", "/api/import/opencodex");
+      ocxImport = { candidates: candidates ?? [], chosen: new Set((candidates ?? []).filter(c => !c.skipReason).map(c => c.sourceId)) };
+    } catch (error) {
+      ocxImport = { candidates: [], chosen: new Set() };
+      toast(error.message);
+    }
+    addForm = null;
+    render();
+    return;
+  }
+  if (t.closest("[data-ocx-cancel]")) { ocxImport = null; render(); return; }
+  const ocxBox = t.closest('[data-ocx]');
+  if (ocxBox) {
+    ocxImport.chosen.has(ocxBox.dataset.ocx) ? ocxImport.chosen.delete(ocxBox.dataset.ocx) : ocxImport.chosen.add(ocxBox.dataset.ocx);
+    return;
+  }
+  if (t.closest("[data-ocx-go]")) {
+    try {
+      const result = await call("POST", "/api/import/opencodex", { chosen: [...ocxImport.chosen] });
+      const ok = result.imported.length;
+      const bad = result.failed.map(f => `${f.sourceId}: ${f.reason}`).join("；");
+      toast(ok ? `已导入 ${ok} 个来源${bad ? `；失败的：${bad}` : ""}` : `导入失败：${bad}`);
+      ocxImport = null;
+    } catch (error) { toast(error.message); }
+    await refresh(true);
     return;
   }
   const preset = t.closest("[data-preset]");

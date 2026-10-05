@@ -3,8 +3,11 @@ import type { SecretStore } from "./secrets.ts";
 import type { Store } from "./store.ts";
 
 /**
- * A provider's key pool: several keys (accounts, subscriptions) under one
- * provider, tried in order so one exhausted key never stops the work.
+ * A provider's key pool: several of the user's own keys (their subscriptions,
+ * their relay tokens) under one provider, tried in order so one exhausted key
+ * never stops the work. Everything is local: secrets live in this Mac's
+ * Keychain and requests go straight to the provider — this is one person
+ * managing their own subscriptions, not account sharing.
  *
  * Policies, kept deliberately boring:
  *  - rotation is round-robin (an in-memory cursor; restart resets it, which is fine);

@@ -10,6 +10,7 @@ import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, find
 import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
+import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
 import { keySecretId, newKeyId } from "./keypool.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
@@ -188,6 +189,28 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const attached = attachFreeHarnesses(provider.id);
       json(res, 201, { provider: publicProvider(provider, Boolean(parsed.apiKey)), attached, summary: importSummary(provider, parsed) });
       return;
+    }
+
+    // --- import from an existing opencodex config --------------------------
+    if (path === "/api/import/opencodex") {
+      const configPath = typeof body.configPath === "string" && body.configPath.trim() ? body.configPath.trim() : undefined;
+      if (method === "GET") {
+        json(res, 200, { candidates: opencodexCandidates(configPath) });
+        return;
+      }
+      if (method === "POST") {
+        const chosen = Array.isArray(body.chosen) ? body.chosen.filter((c: unknown) => typeof c === "string") : [];
+        if (!chosen.length) {
+          json(res, 400, { error: "没有选择要导入的来源" });
+          return;
+        }
+        const result = await importFromOpencodex(chosen, configPath, store, secrets, async (provider, apiKey) => {
+          const { models } = await listModels(provider, apiKey);
+          return { models };
+        });
+        json(res, 200, result);
+        return;
+      }
     }
 
     if (method === "POST" && path === "/api/providers") {
