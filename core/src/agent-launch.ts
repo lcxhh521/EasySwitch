@@ -7,6 +7,7 @@ import { sessionToken } from "./gateway-chat.ts";
 import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
 import { mcpEndpoint } from "./mcp.ts";
 import { knownEfforts } from "./efforts.ts";
+import { EXTRA_LAUNCHERS } from "./launchers-extra.ts";
 
 const run = promisify(execFile);
 
@@ -69,6 +70,10 @@ export interface AgentLauncher {
   efforts?: string[];
   interactive?: (i: LaunchInput) => LaunchSpec;
   headless?: (i: LaunchInput) => LaunchSpec;
+  /** What in the launch is a guess from memory rather than the vendor's own format, to be checked with `--help`. */
+  caveat?: string;
+  /** The same, for how the MCP server is attached. */
+  mcpCaveat?: string;
 }
 
 const gateway = (i: LaunchInput) => `http://127.0.0.1:${i.port}`;
@@ -140,40 +145,57 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
     tiers: [
       { id: "small", label: "后台小任务", hint: "压缩对话、起标题、网页摘要、审批这类辅助调用用这个模型" },
       { id: "vision", label: "看图", hint: "识别图片用这个模型" },
+      { id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" },
     ],
     efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-    interactive: i => ({ command: i.bin, args: i.effort ? ["chat", "--reasoning", i.effort] : [], env: { HERMES_HOME: hermesHome(i) }, files: hermesFiles(i) }),
-    headless: i => ({ command: i.bin, args: ["chat", "-Q", ...(i.effort ? ["--reasoning", i.effort] : []), "-q", i.task ?? ""], env: { HERMES_HOME: hermesHome(i) }, files: hermesFiles(i) }),
+    interactive: i => ({ command: i.bin, args: i.effort ? ["chat", "--reasoning", i.effort] : [], env: { HERMES_HOME: hermesHome(i), ...hermesMcpEnv(i) }, files: hermesFiles(i) }),
+    headless: i => ({ command: i.bin, args: ["chat", "-Q", ...(i.effort ? ["--reasoning", i.effort] : []), "-q", i.task ?? ""], env: { HERMES_HOME: hermesHome(i), ...hermesMcpEnv(i) }, files: hermesFiles(i) }),
   },
 
   // Documented overrides, not yet run against the real programs.
   "gemini-cli": {
     verified: false,
-    interactive: i => ({ command: i.bin, args: [], env: geminiEnv(i) }),
-    headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: geminiEnv(i) }),
+    caveat: "环境变量来自它的文档；无界面的 `-p` 默认拿不到工具权限（要 --yolo，我们没开）",
+    mcpCaveat: "MCP 通过「系统设置文件」环境变量挂上，变量名和格式是凭记忆写的，要核实",
+    interactive: i => ({ command: i.bin, args: [], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
+    headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
   },
   "qwen-code": {
     verified: false,
-    interactive: i => ({ command: i.bin, args: [], env: openaiEnv(i) }),
-    headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: openaiEnv(i) }),
+    caveat: "没有任何本地资料可对，命令行参数全凭记忆；无界面的 `-p` 默认拿不到工具权限",
+    mcpCaveat: "MCP 的系统设置文件环境变量名是猜的（从 Gemini CLI 改名而来），要核实",
+    interactive: i => ({ command: i.bin, args: ["--auth-type", "openai"], env: { ...openaiEnv(i), ...geminiSystemSettings(i, true) }, files: geminiSettingsFiles(i) }),
+    headless: i => ({ command: i.bin, args: ["--auth-type", "openai", "-p", i.task ?? ""], env: { ...openaiEnv(i), ...geminiSystemSettings(i, true) }, files: geminiSettingsFiles(i) }),
   },
   opencode: {
     verified: false,
-    tiers: [{ id: "small", label: "小任务", hint: "标题、摘要这类轻量请求用这个模型" }],
-    interactive: i => ({ command: i.bin, args: ["--model", `easyswitch/${i.model}`], env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(i) } }),
-    headless: i => ({ command: i.bin, args: ["run", "--model", `easyswitch/${i.model}`, i.task ?? ""], env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(i) } }),
+    tiers: [
+      { id: "small", label: "小任务", hint: "标题、摘要这类轻量请求用这个模型" },
+      { id: "subagent", label: "子 agent", hint: "它的 general / explore 子 agent 用这个模型" },
+    ],
+    caveat: "环境变量和 `opencode run` 有文档；`--variant` 和子 agent 的写法是凭记忆的；OpenCode 2 可能读另一套 provider 键",
+    mcpCaveat: "MCP 条目的写法是凭记忆的",
+    interactive: i => ({ command: i.bin, args: ["--model", `easyswitch/${i.model}`, ...(i.effort ? ["--variant", i.effort] : [])], env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(i) } }),
+    headless: i => ({ command: i.bin, args: ["run", "--model", `easyswitch/${i.model}`, ...(i.effort ? ["--variant", i.effort] : []), i.task ?? ""], env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(i) } }),
   },
   aider: {
     verified: false,
+    efforts: ["low", "medium", "high"],
     tiers: [{ id: "small", label: "小任务", hint: "提交说明、对话摘要这类用 Aider 的「弱模型」" }],
-    interactive: i => ({ command: i.bin, args: ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`, ...(i.tiers?.small ? ["--weak-model", `openai/${i.tiers.small}`] : [])], env: {} }),
-    headless: i => ({ command: i.bin, args: ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`, ...(i.tiers?.small ? ["--weak-model", `openai/${i.tiers.small}`] : []), "--message", i.task ?? "", "--yes-always", "--no-auto-commits"], env: {} }),
+    caveat: "参数来自它的文档；自定义模型名下 `--reasoning-effort` 可能被忽略（它不认识这个模型）",
+    interactive: i => ({ command: i.bin, args: [...aiderBase(i)], env: {} }),
+    headless: i => ({ command: i.bin, args: [...aiderBase(i), "--message", i.task ?? "", "--yes-always", "--no-auto-commits"], env: {} }),
   },
   "copilot-cli": {
     verified: false,
-    interactive: i => ({ command: i.bin, args: [], env: copilotEnv(i) }),
-    headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: copilotEnv(i) }),
+    caveat: "BYOK 环境变量凭记忆；无界面的 `-p` 默认拿不到工具权限（要 --allow-all-tools，我们没开）",
+    mcpCaveat: "`--additional-mcp-config` 是凭记忆写的，要核实",
+    interactive: i => ({ command: i.bin, args: copilotMcp(i), env: copilotEnv(i) }),
+    headless: i => ({ command: i.bin, args: ["-p", i.task ?? "", ...copilotMcp(i)], env: copilotEnv(i) }),
   },
+
+  // Each on a private directory for this launch only (see launchers-extra.ts).
+  ...EXTRA_LAUNCHERS,
 };
 
 /** Codex: reasoning level and the model its sub-agents use, as per-launch -c overrides. */
@@ -187,6 +209,10 @@ function codexExtras(i: LaunchInput): string[] {
 const hermesHome = (i: LaunchInput) => join(i.stateDir ?? i.sessionDir, "hermes-home");
 
 function hermesFiles(i: LaunchInput): Record<string, string> {
+  const aux: Array<readonly [string, string]> = [
+    ...(i.tiers?.small ? ["compression", "title_generation", "web_extract", "skills_hub", "approval", "mcp"].map(k => [k, i.tiers!.small!] as const) : []),
+    ...(i.tiers?.vision ? [["vision", i.tiers.vision] as const] : []),
+  ];
   return {
     [join(hermesHome(i), "config.yaml")]: [
       "model:",
@@ -203,11 +229,10 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       "    models:",
       ...[...new Set([i.model, ...Object.values(i.tiers ?? {})])].map(m => `      ${q(m)}: {}`),
       // Hermes runs these side jobs on models of their own; each is pointed at the same private provider.
-      ...(i.tiers && Object.keys(i.tiers).length ? ["auxiliary:"] : []),
-      ...[
-        ...(i.tiers?.small ? ["compression", "title_generation", "web_extract", "skills_hub", "approval", "mcp"].map(k => [k, i.tiers!.small!] as const) : []),
-        ...(i.tiers?.vision ? [["vision", i.tiers.vision] as const] : []),
-      ].flatMap(([k, m]) => [`  ${k}:`, "    provider: custom:easyswitch", `    model: ${q(m)}`]),
+      ...(aux.length ? ["auxiliary:"] : []),
+      ...aux.flatMap(([k, m]) => [`  ${k}:`, "    provider: custom:easyswitch", `    model: ${q(m)}`]),
+      ...(i.tiers?.subagent ? ["delegation:", `  model: ${q(i.tiers.subagent)}`, `  base_url: ${q(`${gateway(i)}/v1`)}`, `  api_key: ${q("es-session-hermes-private")}`] : []),
+      ...(i.mcp ? ["mcp_servers:", "  easyswitch:", `    url: ${q(i.mcp.url)}`, "    enabled: true", "    headers:", ...Object.entries(i.mcp.headers).map(([k, v]) => `      ${q(k)}: ${k.toLowerCase() === "authorization" ? q("Bearer ${EASYSWITCH_MCP_TOKEN}") : q(v)}`)] : []),
       "",
     ].join("\n"),
   };
@@ -229,11 +254,41 @@ function opencodeConfig(i: LaunchInput): string {
         npm: "@ai-sdk/openai-compatible",
         name: "EasySwitch",
         options: { baseURL: `${gateway(i)}/v1`, apiKey: i.token },
-        models: Object.fromEntries([i.model, ...(i.tiers?.small ? [i.tiers.small] : [])].map(m => [m, { name: m.slice(m.indexOf("/") + 1) }])),
+        models: Object.fromEntries([...new Set([i.model, ...Object.values(i.tiers ?? {})])].map(m => [m, { name: m.slice(m.indexOf("/") + 1), variants: Object.fromEntries([...new Set(["low", "medium", "high", ...(i.effort ? [i.effort] : [])])].map(l => [l, { reasoningEffort: l }])) }])),
       },
     },
     ...(i.tiers?.small ? { small_model: `easyswitch/${i.tiers.small}` } : {}),
+    ...(i.tiers?.subagent ? { agent: { general: { model: `easyswitch/${i.tiers.subagent}` }, explore: { model: `easyswitch/${i.tiers.subagent}` } } } : {}),
+    ...(i.mcp ? { mcp: { easyswitch: { type: "remote", url: i.mcp.url, headers: i.mcp.headers, enabled: true } } } : {}),
   });
+}
+
+/** Hermes expands ${VAR} in its config, so the MCP token travels in the environment and not in the file. */
+function hermesMcpEnv(i: LaunchInput): Record<string, string> {
+  const auth = i.mcp?.headers.Authorization ?? i.mcp?.headers.authorization;
+  return auth ? { EASYSWITCH_MCP_TOKEN: auth.replace(/^Bearer /i, "") } : {};
+}
+
+function aiderBase(i: LaunchInput): string[] {
+  return ["--openai-api-base", `${gateway(i)}/v1`, "--openai-api-key", i.token, "--model", `openai/${i.model}`,
+    ...(i.tiers?.small ? ["--weak-model", `openai/${i.tiers.small}`] : []), ...(i.effort ? ["--reasoning-effort", i.effort] : [])];
+}
+
+/** The system settings file that Gemini CLI and its forks read as their highest layer; written only for this launch. */
+const GEMINI_SETTINGS = "gemini-system-settings.json";
+function geminiSystemSettings(i: LaunchInput, qwen = false): Record<string, string> {
+  const path = join(i.sessionDir, GEMINI_SETTINGS);
+  return { GEMINI_CLI_SYSTEM_SETTINGS_PATH: path, ...(qwen ? { QWEN_CODE_SYSTEM_SETTINGS_PATH: path } : {}) };
+}
+function geminiSettingsFiles(i: LaunchInput): Record<string, string> {
+  return { [GEMINI_SETTINGS]: JSON.stringify({
+    security: { auth: { selectedType: "gemini-api-key" } },
+    ...(i.mcp ? { mcpServers: { easyswitch: { httpUrl: i.mcp.url, headers: i.mcp.headers, trust: true } } } : {}),
+  }) };
+}
+
+function copilotMcp(i: LaunchInput): string[] {
+  return i.mcp ? ["--additional-mcp-config", JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers, tools: ["*"] } } })] : [];
 }
 
 /**

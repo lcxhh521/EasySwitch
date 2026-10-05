@@ -50,12 +50,14 @@ test("closed apps are never claimed to launch, and a launcher implies launch or 
 });
 
 test("MCP and thinking-level support are read off what the launchers really do", () => {
-  // Codex and Claude Code carry the MCP server today; nobody else yet.
+  // The launchers that carry the MCP server today; a new one has to be added here on purpose.
   const carrying = AGENTS.filter(a => launcherCarriesMcp(LAUNCHERS[a.id])).map(a => a.id).sort();
-  assert.deepEqual(carrying, ["claude", "codex"], "update the matrix expectation when another launcher learns to carry MCP");
+  assert.deepEqual(carrying, ["claude", "cline", "codex", "copilot-cli", "crush", "droid", "gemini-cli", "goose", "grok-build", "hermes", "openclaw", "opencode", "qoder-cli", "qwen-code"], "update the matrix expectation when another launcher learns to carry MCP");
   assert.equal(matrix.codex!.mcp.state, "verified");
   assert.equal(matrix.claude!.mcp.state, "verified");
-  assert.equal(matrix.hermes!.mcp.state, "todo");
+  assert.equal(matrix.hermes!.mcp.state, "documented");
+  assert.equal(matrix.dsh!.mcp.state, "todo", "dsh can take an MCP plugin through its patch; not done yet");
+  assert.equal(matrix.aider!.mcp.state, "impossible");
   // A launcher that grows an MCP argument is noticed without anyone editing a table.
   const fake: AgentLauncher = { verified: false, headless: i => ({ command: i.bin, args: i.mcp ? ["--mcp", i.mcp.url] : [], env: {} }) };
   assert.equal(launcherCarriesMcp(fake), true);
@@ -69,8 +71,11 @@ test("Claude's subscription is never offered to other harnesses, and Claude's de
   assert.equal(matrix.claude!.source.state, "impossible");
   assert.match(matrix.claude!.source.note!, /不借给别的 harness/);
   assert.ok(AGENTS.some(a => a.id === "claude-desktop"), "the Claude desktop app is in the catalog");
-  assert.equal(matrix["claude-desktop"]!.launch.state, "impossible");
-  assert.match(matrix["claude-desktop"]!.launch.note!, /拦截/);
+  // The desktop app has an official third-party gateway mode, so launching it is possible (a separate
+  // instance on its own data directory); what we refuse is intercepting its traffic.
+  assert.equal(matrix["claude-desktop"]!.launch.state, "todo");
+  assert.match(matrix["claude-desktop"]!.launch.note!, /官方/);
+  assert.match(matrix["claude-desktop"]!.launch.note!, /不拦截/);
 });
 
 test("the coverage summary adds up, and says plainly how much is still to do", t => {
@@ -83,4 +88,97 @@ test("the coverage summary adds up, and says plainly how much is still to do", t
   }
   // Printed in the test run, so every run shows where things stand.
   for (const row of rows) t.diagnostic(`${row.label}: 已定 ${row.settled}/${row.applies}（实测 ${row.counts.verified}，按文档 ${row.counts.documented}，手动 ${row.counts.manual}，做不了 ${row.counts.impossible}，没做 ${row.counts.todo}）`);
+});
+
+// ---- the private-directory launchers
+
+import { materialize, type LaunchInput } from "../src/agent-launch.ts";
+import { EXTRA_LAUNCHERS } from "../src/launchers-extra.ts";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+
+function input(sessionDir: string, over: Partial<LaunchInput> = {}): LaunchInput {
+  return { bin: "/bin/agent", port: 18999, model: "deepseek/deepseek-chat", token: "es-session-x-123", sessionDir, task: "say hi", mcp: { url: "http://127.0.0.1:18999/mcp", headers: { Authorization: "Bearer es-session-x-123", "x-easyswitch-depth": "1" } }, ...over };
+}
+
+function walk(dir: string): string[] {
+  return readdirSync(dir).flatMap(n => (statSync(join(dir, n)).isDirectory() ? walk(join(dir, n)) : [join(dir, n)]));
+}
+
+test("every private-directory launcher keeps everything under its own session directory and never touches the user's home", () => {
+  for (const [id, l] of Object.entries(EXTRA_LAUNCHERS)) {
+    for (const form of ["interactive", "headless"] as const) {
+      const make = l[form];
+      if (!make) continue;
+      const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
+      try {
+        const spec = make(input(dir));
+        // Every path an environment variable points at lies inside the session directory (or is the gateway token / name).
+        for (const [k, v] of Object.entries(spec.env)) if (v.startsWith("/")) assert.ok(v.startsWith(dir), `${id}.${form}: ${k}=${v} leaves the session directory`);
+        materialize(spec, dir);
+        for (const f of walk(dir)) assert.ok(f.startsWith(dir) && !f.startsWith(homedir()) || f.startsWith(dir), `${id}: ${f}`);
+        // Everything that mentions the gateway token also names the gateway, and nothing contains a real-looking home path.
+        const all = walk(dir).map(f => readFileSync(f, "utf8")).join("\n") + JSON.stringify(spec.args);
+        assert.ok(!all.includes(homedir()), `${id}.${form} mentions the user's home`);
+        assert.ok(all.includes("127.0.0.1:18999"), `${id}.${form} never names the gateway`);
+        assert.ok(all.includes("es-session-x-123") || Object.values(spec.env).includes("es-session-x-123"), `${id}.${form} carries no token`);
+        if (form === "headless") assert.ok(spec.args.includes("say hi"), `${id}: the task text is not passed on`);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+  }
+});
+
+test("the JSON files these launchers write are valid JSON and carry the MCP server only when one is attached", () => {
+  for (const [id, l] of Object.entries(EXTRA_LAUNCHERS)) {
+    const make = l.headless ?? l.interactive!;
+    for (const withMcp of [true, false]) {
+      const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
+      try {
+        const spec = make(input(dir, withMcp ? {} : { mcp: undefined as never }));
+        materialize(spec, dir);
+        for (const f of walk(dir).filter(f => f.endsWith(".json"))) {
+          const text = readFileSync(f, "utf8");
+          assert.doesNotThrow(() => JSON.parse(text), `${id}: ${f} is not valid JSON`);
+          if (!withMcp) assert.ok(!text.includes("/mcp"), `${id}: ${f} has an MCP entry although none was attached`);
+        }
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+  }
+});
+
+test("a thinking level and the extra models reach the files of the launchers that take them", () => {
+  const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
+  try {
+    const spec = EXTRA_LAUNCHERS.omp!.headless!(input(dir, { effort: "xhigh", tiers: { subagent: "kimi/k2", small: "deepseek/fast" } }));
+    materialize(spec, dir);
+    const config = readFileSync(join(dir, "omp-agent", "config.yml"), "utf8");
+    assert.match(config, /defaultThinkingLevel: "xhigh"/);
+    assert.match(config, /task: "easyswitch\/kimi\/k2"/);
+    assert.match(config, /smol: "easyswitch\/deepseek\/fast"/);
+    assert.deepEqual(spec.unset, ["OMP_PROFILE", "PI_PROFILE"], "a profile variable would send omp to the user's own directory");
+    const crush = EXTRA_LAUNCHERS.crush!.headless!(input(dir, { effort: "high", tiers: { small: "deepseek/fast" } }));
+    materialize(crush, dir);
+    const parsed = JSON.parse(readFileSync(join(dir, "crush-config", "crush.json"), "utf8"));
+    assert.equal(parsed.models.large.reasoning_effort, "high");
+    assert.equal(parsed.models.small.model, "deepseek/fast");
+    assert.ok(parsed.mcp.easyswitch.url.endsWith("/mcp"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("Hermes' config keeps delegation and the MCP server at the top level, with the token left to the environment", async () => {
+  const { LAUNCHERS } = await import("../src/agent-launch.ts");
+  const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
+  try {
+    const spec = LAUNCHERS.hermes!.headless!(input(dir, { stateDir: dir, tiers: { subagent: "kimi/k2", small: "deepseek/fast" } }));
+    const yaml = Object.values(spec.files!)[0]!;
+    const top = yaml.split("\n").filter(l => /^[a-z_]+:/.test(l)).map(l => l.split(":")[0]);
+    assert.deepEqual(top, ["model", "custom_providers", "auxiliary", "delegation", "mcp_servers"]);
+    assert.ok(!yaml.includes("es-session-x-123"), "the MCP token must not be written to the file");
+    assert.match(yaml, /Bearer \$\{EASYSWITCH_MCP_TOKEN\}/);
+    assert.equal(spec.env.EASYSWITCH_MCP_TOKEN, "es-session-x-123");
+    // Only a sub-agent model: no empty `auxiliary:` section.
+    const only = Object.values(LAUNCHERS.hermes!.headless!(input(dir, { stateDir: dir, tiers: { subagent: "kimi/k2" }, mcp: undefined as never })).files!)[0]!;
+    assert.ok(!only.includes("auxiliary:") && only.includes("delegation:") && !only.includes("mcp_servers:"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

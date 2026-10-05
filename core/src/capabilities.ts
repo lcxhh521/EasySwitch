@@ -104,18 +104,46 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     task: { state: "impossible", note: "闭源，没有自定义端点" },
     source: { state: "todo", note: "还没调研它的订阅怎么接" },
   },
+  amp: {
+    launch: { state: "impossible", note: "请求走它自己的 ampcode.com 并要求账号登录，没有 OpenAI 兼容的自定义端点；只能检测并打开" },
+    task: { state: "impossible", note: "它只认自己的账号服务，没法把别的模型接进它" },
+    mcp: { state: "impossible", note: "它只认自己的账号服务，没法给它挂我们的 MCP" },
+    effort: { state: "impossible", note: "它自己挑模型，不开放档位" },
+    tiers: { state: "impossible", note: "它自己挑模型，不开放" },
+  },
+  codebuddy: {
+    task: { state: "impossible", note: "命令行版没有改地址的办法（只能切换区域和账号）；桌面版 WorkBuddy 可以读私有 models.json，但具体用哪个模型要在它的窗口里选，没法每次启动指定" },
+    mcp: { state: "impossible", note: "命令行版没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它，所以也没法给它挂 MCP" },
+    effort: { state: "impossible", note: "命令行版没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它，档位由它自己的服务决定" },
+    tiers: { state: "impossible", note: "命令行版没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它，用什么模型由它自己的服务决定" },
+  },
+  "minimax-code": {
+    mcp: { state: "impossible", note: "它没有用户级的 MCP 配置文件，只有插件自带的；每次启动挂不上" },
+  },
+  pi: {
+    mcp: { state: "impossible", note: "核心没有内置 MCP（靠扩展包）" },
+  },
+  dsh: {
+    mcp: { state: "todo", note: "做得了：在 patch 里加 dsh-mcp-client 插件（每个服务一个实例），但这个插件不在默认配置里，要先让私有 DSH_HOME 找得到它（预置符号链接）；还没实做，要先 --dump-config 校验再实跑" },
+  },
+  aider: {
+    mcp: { state: "impossible", note: "原版 Aider 没有 MCP 客户端" },
+  },
+  "trae-agent": {
+    mcp: { state: "todo", note: "它只认 stdio 形式的 MCP；要加一个把 HTTP 转成 stdio 的小桥才能挂" },
+  },
   "claude-desktop": {
-    launch: { state: "impossible", note: "它的模型菜单由 claude.ai 账号决定，没有官方的扩展口；让外接模型出现在里面只能拦截它的流量，我们不做。需要外接模型时用 Claude Code 或 EasySwitch 自己的界面" },
+    launch: { state: "todo", note: "做得了：Claude 桌面端有官方的「第三方推理（网关）」配置，且能用 CLAUDE_USER_DATA_DIR 换一个独立数据目录。做法是另开一个独立的 Claude 窗口，指向 EasySwitch，不碰你平时那个 Claude，也不拦截任何流量。代价：这个窗口里只有外接模型，没有 claude.ai 账号功能；原生 Claude 在平时的窗口里用" },
     task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
-    mcp: { state: "impossible", note: "不能启动它，也就没法给它挂 MCP" },
-    effort: { state: "impossible", note: "不经过 EasySwitch" },
-    tiers: { state: "impossible", note: "不经过 EasySwitch" },
+    mcp: { state: "todo", note: "还没查桌面端的 MCP 配置在第三方模式下怎么给" },
+    effort: { state: "todo", note: "网关模式下档位由我们返回的模型信息决定（opencodex 就是这么做的），还没做" },
+    tiers: { state: "todo", note: "还没查桌面端有没有子 agent / 小任务的模型设置" },
     source: { state: "impossible", note: "按你的决定：Claude 订阅不借给别的 harness" },
   },
 };
 
 /** Closed apps that need EasySwitch to hand the user the settings to type in by hand: see the setup helper. */
-const BY_HAND = new Set(["trae", "zcode", "windsurf"]);
+const BY_HAND = new Set(["trae", "zcode", "windsurf", "codebuddy", "doubao"]);
 
 /** The agents whose own subscription is worth turning into a model source (everyone else: not applicable). */
 const HAS_SUBSCRIPTION = new Set(["gemini-cli", "qoder-cli", "codebuddy", "trae", "amp", "doubao", "grok-build", "minimax-code", "kimi-cli", "droid"]);
@@ -125,7 +153,7 @@ function derive(agent: AgentInfo): AgentCaps {
   const d = DECLARED[agent.id] ?? {};
   const closed = agent.support === "open";
   const withForm = (form: unknown, what: string): Cap =>
-    form ? { state: l!.verified ? "verified" : "documented", note: l!.verified ? undefined : `${what}按官方文档写的，还没在真实程序上跑过` } : { state: "todo" };
+    form ? { state: l!.verified ? "verified" : "documented", ...(l!.verified ? {} : { note: l!.caveat ? `没在真实程序上跑过。${l!.caveat}` : `${what}按官方文档写的，还没在真实程序上跑过` }) } : { state: "todo" };
 
   const launch: Cap = d.launch ?? (l?.interactive ? withForm(l.interactive, "启动方式")
     : BY_HAND.has(agent.id) ? { state: "todo", note: "要做「手动配置向导」：地址、令牌、模型一键复制，再附它的操作步骤" }
@@ -137,10 +165,10 @@ function derive(agent: AgentInfo): AgentCaps {
 
   const hasLauncher = Boolean(l);
   const mcp: Cap = d.mcp ?? (launcherCarriesMcp(l)
-    ? { state: MCP_VERIFIED.has(agent.id) ? "verified" : "documented" }
+    ? { state: MCP_VERIFIED.has(agent.id) ? "verified" : "documented", ...(l?.mcpCaveat && !MCP_VERIFIED.has(agent.id) ? { note: l.mcpCaveat } : {}) }
     : { state: "todo", note: hasLauncher ? "还没查它每次启动怎么指定 MCP" : "要先有启动方式" });
   const effort: Cap = d.effort ?? (!hasLauncher ? { state: "todo", note: "要先有启动方式" }
-    : launcherHasOwnEffort(l) ? { state: l!.verified ? "verified" : "documented", note: `用它自己的档位：${(effortsOf(agent.id) ?? []).join(" / ") || "读自程序"}` }
+    : launcherHasOwnEffort(l) ? { state: l!.verified ? "verified" : "documented", note: effortsOf(agent.id) ? `用它自己的档位：${effortsOf(agent.id)!.join(" / ")}` : "模型有哪些档位就能设哪些，我们写进它的配置" }
     : { state: "documented", note: "没有自己的档位参数，由网关改写它发出的请求（上游认才有效）" });
   const tiers: Cap = d.tiers ?? ((l?.tiers?.length ?? 0) > 0 ? { state: "documented", note: l!.tiers!.map(t => t.label).join("、") }
     : { state: "todo", note: hasLauncher ? "还没调研它有没有对应设置" : "要先有启动方式" });

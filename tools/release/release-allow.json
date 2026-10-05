@@ -1,0 +1,14 @@
+[
+ {
+  "path": "^(core/src/opencodex-import\\.ts|core/test/opencodex-import\\.test\\.ts|core/src/server\\.ts|web/app\\.js|core/test/chatgpt-launcher\\.test\\.ts)$",
+  "pattern": "opencodex"
+ },
+ {
+  "path": "^core/test/import-parse\\.test\\.ts$",
+  "pattern": "sk-(abc|xyz|ccc|[a-z]{3}\\d{6})"
+ },
+ {
+  "path": "^AGENTS\\.md$",
+  "pattern": "third_party/<项目>/LICENSE"
+ }
+]
