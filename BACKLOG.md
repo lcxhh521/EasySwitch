@@ -42,7 +42,7 @@
 - [ ] B20 · Cursor、Kiro、Antigravity 的订阅适配 — 来源：「这几个我都交给gpt了」（10-05），2026-10-06 改给 Dot：「是给gpt做的那个给dot做」· 备注：本地 GPT 在 main 工作区已有未提交的进展（见 B44）；协议事实在 AGENTS.md 私有段
 - [ ] B21 · 协议层重构（按出站来源选适配器）— 来源：AGENTS.md 硬性原则 5；原本是 GPT 的，2026-10-06 改给 Dot · 备注：本地 GPT 在 main 工作区已有未提交的进展，要先推到云端分支（见 B44）
 - [ ] B44 · 把本地 GPT 在 main 工作区里未提交的进展（风险档适配、协议层重构的 WIP）提交并推到云端一个分支（建议 `gpt-wip`），让 Dot 能看到再接着做，避免重复或丢失 — 来源：「是给gpt做的那个给dot做」（10-06）· 备注：需要用户让本地 GPT 去提交推送；Claude 不碰那个工作区
-- [ ] B45 · Claude 桌面端（B38）的测试和实现交给 Dot — 来源：「claude桌面端那个也让dot做测试」（10-06）· 备注：这一项必须在用户的 Mac 上跑（要启动 /Applications/Claude.app）；Dot 在云端，需要它写好一条能照着跑的脚本和核对步骤，由用户在本机运行并把输出贴回，或 Dot 自己有办法操作用户的 Mac 就直接做；详细步骤在 HANDOVER.md 的 B38 段
+- [ ] B45 · Claude 桌面端（B38）的测试和实现交给 Dot — 来源：「claude桌面端那个也让dot做测试」（10-06）· 备注：用户建议 Dot 在自己的云电脑上下载 Claude 桌面端来测（Claude 桌面端只有 macOS / Windows 版，Linux 云电脑测不了，要说明）；测通后仍要在用户的 Mac 上跑一次短确认（macOS 路径）；详细步骤在 HANDOVER.md 的 B38 段
 
 ## 加固与发布
 
