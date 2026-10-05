@@ -6,7 +6,7 @@ import type { GatewayLogEntry } from "./types.ts";
 import { fromClaudeModelId } from "./catalog.ts";
 import { createHash } from "node:crypto";
 import { withKey } from "./keypool.ts";
-import { quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
+import { applyEffort, quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
 import { resolveModel } from "./gateway.ts";
 import { anthropicHeaders } from "./probe.ts";
 import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
@@ -83,7 +83,9 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   const sessionKey = typeof (body.metadata as Json | undefined)?.user_id === "string"
     ? createHash("sha256").update(String((body.metadata as Json).user_id)).digest("hex").slice(0, 32)
     : undefined;
-  shapeChat(chat, { quirks: quirksFor(provider.baseUrl, model), ...(sessionKey ? { cacheKey: sessionKey } : {}) });
+  const quirks = quirksFor(provider.baseUrl, model);
+  applyEffort(chat, (body.output_config as Json | undefined)?.effort, provider.reasoningEffort ?? quirks.reasoningEffort);
+  shapeChat(chat, { quirks, ...(sessionKey ? { cacheKey: sessionKey } : {}) });
   const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(endpointUrl(provider, "chat"), {
     method: "POST",
     headers: { "content-type": "application/json", ...upstreamHeaders(provider, apiKey) },

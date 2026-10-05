@@ -29,6 +29,8 @@ export interface Provider {
   anthropicBaseUrl?: string;
   /** Whether the provider accepts `stream_options.include_usage`. */
   streamUsage: boolean;
+  /** Overrides the built-in guess about whether it takes Chat's `reasoning_effort` (true: send, false: never). */
+  reasoningEffort?: boolean;
   probe?: ProbeReport;
   /** How the user pays: per token (default) or a flat subscription, where per-call cost is not meaningful. */
   billing?: "usage" | "subscription";

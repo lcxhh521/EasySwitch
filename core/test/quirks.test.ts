@@ -114,3 +114,18 @@ test("both streams capture the reasoning and the tool call ids of a turn", () =>
   assert.deepEqual(responses.turn, { reasoning: "think more", callIds: ["call_9"] });
   assert.deepEqual(anthropic.turn, { reasoning: "think more", callIds: ["call_9"] });
 });
+
+test("the agent's reasoning level reaches upstreams that take reasoning_effort, and only those", async () => {
+  const { applyEffort } = await import("../src/quirks.ts");
+  const chat = () => ({ model: "m", messages: [], stream: false }) as never;
+  const a = chat(); applyEffort(a, "medium", true);
+  assert.equal((a as { reasoning_effort?: string }).reasoning_effort, "medium");
+  const b = chat(); applyEffort(b, "max", true);
+  assert.equal((b as { reasoning_effort?: string }).reasoning_effort, "high", "Chat stops at high");
+  const c = chat(); applyEffort(c, "high", false);
+  assert.equal((c as { reasoning_effort?: string }).reasoning_effort, undefined, "an upstream that would 400 never sees it");
+  const d = chat(); applyEffort(d, "turbo", true);
+  assert.equal((d as { reasoning_effort?: string }).reasoning_effort, undefined);
+  assert.equal(quirksFor("https://api.openai.com/v1", "gpt-5").reasoningEffort, true);
+  assert.equal(quirksFor("https://api.deepseek.com/v1", "deepseek-chat").reasoningEffort, false);
+});

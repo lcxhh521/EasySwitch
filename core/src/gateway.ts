@@ -1,6 +1,6 @@
 import { anthropicModelList, catalogModels } from "./catalog.ts";
 import { withKey } from "./keypool.ts";
-import { quirksFor, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
+import { applyEffort, quirksFor, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
@@ -90,8 +90,10 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   }
 
   const { chat, customTools, dropped, namespaced } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
+  const quirks = quirksFor(provider.baseUrl, model);
+  applyEffort(chat, (body.reasoning as Json | undefined)?.effort, provider.reasoningEffort ?? quirks.reasoningEffort);
   shapeChat(chat, {
-    quirks: quirksFor(provider.baseUrl, model),
+    quirks,
     ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}),
   });
   const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>

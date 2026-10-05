@@ -27,7 +27,7 @@ export const MAX_CONCURRENT = 3;
 export interface McpDeps extends GatewayDeps {
   /** Agents that can take a task right now: id, name, bound model. */
   agents(): Promise<Array<{ id: string; name: string; model?: string }>>;
-  run(agentId: string, input: { task: string; model?: string; cwd?: string; depth: number; from: string }): Promise<RunResult & { model: string }>;
+  run(agentId: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<RunResult & { model: string }>;
 }
 
 const TOOLS = [
@@ -49,6 +49,7 @@ const TOOLS = [
         agent: { type: "string", description: "Agent id from list_agents, e.g. claude, codex, dsh." },
         task: { type: "string", description: "The complete task, with all the context the agent needs." },
         model: { type: "string", description: "Optional <provider>/<model> from list_models; default is the agent's own model." },
+        effort: { type: "string", description: "Optional reasoning level: minimal, low, medium, high, xhigh or max. Ignored by agents that do not support it. Higher is slower and costs more." },
         cwd: { type: "string", description: "Optional absolute working directory; default is a private empty directory." },
       },
       required: ["agent", "task"],
@@ -89,6 +90,7 @@ async function callTool(name: string, args: Json, depth: number, caller: string,
       const result = await deps.run(agent, {
         task,
         ...(typeof args.model === "string" && args.model ? { model: args.model } : {}),
+        ...(typeof args.effort === "string" && args.effort ? { effort: args.effort } : {}),
         ...(typeof args.cwd === "string" && args.cwd.startsWith("/") ? { cwd: args.cwd } : {}),
         depth: depth + 1,
         from: caller,

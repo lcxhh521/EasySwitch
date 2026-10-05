@@ -51,12 +51,12 @@ export const AGENTS: AgentInfo[] = [
 
   // Planned: open protocol, per-launch override exists
   A("qwen-code", "Qwen Code", "阿里", "cli", "planned", ["chat"], "qwen-color", "OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL", { bins: ["qwen"] }),
-  A("gemini-cli", "Gemini CLI", "Google", "cli", "planned", ["gemini"], "gemini-color", "GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY（需要网关提供 Gemini 协议入口）", { bins: ["gemini"] }),
+  A("gemini-cli", "Gemini CLI", "Google", "cli", "ready", ["gemini"], "gemini-color", "GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY（网关已提供 Gemini 协议入口）", { bins: ["gemini"] }),
   A("opencode", "opencode", "sst", "cli", "planned", ["chat", "anthropic", "responses"], "opencode", "OPENCODE_CONFIG_CONTENT 内联配置", { bins: ["opencode"] }),
   A("dsh", "DeepSeek Harness", "深度求索", "cli", "planned", ["chat"], "deepseek-harness", "dsh --patch 每次启动叠加一层配置", { bins: ["dsh"], apps: ["DeepSeek Harness"], paths: ["/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"] }),
   A("kimi-cli", "Kimi Code", "月之暗面", "cli", "planned", ["chat"], "kimi-color", "KIMI_CODE_HOME 临时目录 + 配置", { bins: ["kimi"] }),
   A("copilot-cli", "Copilot CLI", "GitHub", "cli", "planned", ["chat", "anthropic"], "github-copilot-color", "官方 BYOK：COPILOT_PROVIDER_BASE_URL / TYPE / API_KEY", { bins: ["copilot"] }),
-  A("hermes", "Hermes Agent", "Nous", "cli", "planned", ["chat"], "hermes-agent", "HERMES_HOME 临时目录；--provider -m --ignore-user-config", { bins: ["hermes"], paths: [join(homedir(), ".local/bin/hermes")], apps: ["Hermes"] }),
+  A("hermes", "Hermes Agent", "Nous", "cli", "ready", ["chat"], "hermes-agent", "私有 HERMES_HOME 临时目录，不碰 ~/.hermes（已在真实程序上跑通）", { bins: ["hermes"], paths: [join(homedir(), ".local/bin/hermes")], apps: ["Hermes"] }),
   A("pi", "Pi", "pi-mono", "cli", "planned", ["chat", "anthropic", "responses"], "pi", "PI_CODING_AGENT_DIR 临时目录 + models.json", { bins: ["pi"] }),
   A("omp", "Oh My Pi", "社区", "cli", "planned", ["chat"], "oh-my-pi", "PI_CONFIG_DIR + models.yml", { bins: ["omp"] }),
   A("droid", "Droid", "Factory", "cli", "planned", ["chat", "anthropic", "responses"], "factory-droid", "FACTORY_HOME_OVERRIDE + customModels", { bins: ["droid"] }),

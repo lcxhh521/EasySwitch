@@ -21,6 +21,8 @@ export interface Task {
   from: string;
   task: string;
   cwd?: string;
+  /** Reasoning level it was started with, when one was asked for. */
+  effort?: string;
   status: TaskStatus;
   exitCode?: number | null;
   output?: string;
@@ -64,7 +66,7 @@ export class TaskBook {
   }
 
   /** Starts a record and returns it with an abort handle for the run. */
-  start(input: { agent: string; model: string; from: string; task: string; cwd?: string }): { task: Task; signal: AbortSignal } {
+  start(input: { agent: string; model: string; from: string; task: string; cwd?: string; effort?: string }): { task: Task; signal: AbortSignal } {
     const task: Task = { id: `t-${crypto.randomUUID().slice(0, 8)}`, at: new Date().toISOString(), status: "running", ...input };
     const abort = new AbortController();
     this.tasks.set(task.id, task);

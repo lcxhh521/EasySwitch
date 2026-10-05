@@ -25,6 +25,8 @@ export interface Quirks {
   promptCacheKey: boolean;
   /** `$ref` next to sibling keywords in a tool schema is a 400 (Moonshot). */
   flattenSchemaRefs: boolean;
+  /** The upstream understands Chat's `reasoning_effort`. */
+  reasoningEffort: boolean;
 }
 
 function hostOf(baseUrl: string): string {
@@ -47,7 +49,23 @@ export function quirksFor(baseUrl: string, model: string): Quirks {
     replayReasoning: deepseek || kimi || glm || minimax,
     promptCacheKey: host === "api.kimi.com",
     flattenSchemaRefs: kimiHost,
+    reasoningEffort: /(^|\.)openai\.com$|(^|\.)openrouter\.ai$|(^|\.)x\.ai$|(^|\.)groq\.com$|(^|\.)together\.xyz$|(^|\.)fireworks\.ai$/.test(host),
   };
+}
+
+/** The levels agents speak, in order; Chat's `reasoning_effort` stops at "high". */
+export const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * Carries the agent's reasoning level to the upstream. Only where the upstream is known (or
+ * told by the user) to take `reasoning_effort`; elsewhere a stray field would be a 400, so it is
+ * left out and the model thinks as it normally does.
+ */
+export function applyEffort(chat: ChatRequest, effort: unknown, accepts: boolean): void {
+  if (!accepts || typeof effort !== "string") return;
+  const level = effort.toLowerCase();
+  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) return;
+  (chat as unknown as Json).reasoning_effort = ["xhigh", "max"].includes(level) ? "high" : level;
 }
 
 /** Claude Code appends context markers such as `glm-5.3[1m]`; Chat upstreams reject them. */

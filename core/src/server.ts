@@ -19,6 +19,7 @@ import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "./agent-launch.ts";
+import { catalogModels } from "./catalog.ts";
 import { TaskBook, type Task } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
@@ -130,14 +131,18 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const tasks = new TaskBook(store.dir);
 
   /** Hands a task to an agent: records it, runs it headlessly in the background, records how it ended. */
-  async function startTask(id: string, input: { task: string; model?: string; cwd?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
+  async function startTask(id: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
     const bin = await agentBinary(id);
     if (!bin) throw new Error(`没有找到 ${id} 的命令`);
     const b = store.binding(id);
-    const model = input.model ?? (b ? `${b.providerId}/${b.model}` : "");
-    if (!model || !resolveModel(store, model)) throw new Error(`${id} 还没有选模型：在 EasySwitch 里给它选一个，或者在调用时传 model（用 list_models 看有哪些）`);
-    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}) });
-    const done = runHeadless(id, { bin, port, model, task: input.task }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    // A model is never a dead end: the one asked for, else the agent's own, else the first one EasySwitch serves.
+    const first = catalogModels(store.providers())[0];
+    const model = input.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
+    if (!model || !resolveModel(store, model)) throw new Error("还没有可用的模型：先在「模型来源」里添加一个");
+    const efforts = LAUNCHERS[id]?.efforts ?? [];
+    const effort = input.effort && efforts.includes(input.effort) ? input.effort : undefined;
+    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}) });
+    const done = runHeadless(id, { bin, port, model, task: input.task, ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
     return { task, done };
@@ -277,6 +282,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const { task } = await startTask(agent, {
           task: text, from: "console", depth: 1,
           ...(typeof body.model === "string" && body.model ? { model: body.model } : {}),
+          ...(typeof body.effort === "string" && body.effort ? { effort: body.effort } : {}),
           ...(typeof body.cwd === "string" && body.cwd.startsWith("/") ? { cwd: body.cwd } : {}),
         });
         json(res, 202, { task });

@@ -43,7 +43,8 @@ after(() => {
 });
 
 test("each launcher says what it can do, and which forms were run against the real program", () => {
-  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true });
+  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true, efforts: [] });
+  assert.deepEqual(hasLauncher("claude")?.efforts, ["low", "medium", "high", "xhigh", "max"], "each agent names its own levels");
   assert.equal(hasLauncher("qwen-code")?.verified, false, "documented but not yet run here");
   assert.equal(hasLauncher("doubao"), undefined);
 });
@@ -104,4 +105,22 @@ test("a task handed over from the console is recorded, runs in the background an
   assert.equal(final?.status, "done");
   assert.match(final?.output ?? "", /Hello from the mock relay|pong/i);
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/tasks/${task.id}/stop`, { method: "POST", headers: H })).status, 404, "a finished task cannot be stopped");
+});
+
+test("the real Hermes, handed a task headlessly with a private HERMES_HOME, answers through the gateway", async t => {
+  const hermes = process.env.HOME + "/.local/bin/hermes";
+  if (!existsSync(hermes)) { t.skip("Hermes not installed"); return; }
+  const before = relay.requests.length;
+  const result = await runHeadless("hermes", { bin: hermes, port, model: `${providerId}/mock-coder`, task: "Reply with exactly the word: pong" }, { timeoutMs: 120_000, attachMcp: false });
+  assert.ok(relay.requests.length > before, `the request went through the gateway: ${result.output.slice(0, 300)}`);
+  assert.match(result.output, /Hello from the mock relay|pong/i);
+});
+
+test("a reasoning level becomes each agent's own flag, and nothing when none is asked for", () => {
+  const input = { bin: "/bin/x", port: 1, model: "p/m", token: "t", sessionDir: "/tmp/s", task: "do" };
+  const args = (id: string, effort?: string) => LAUNCHERS[id]!.headless!({ ...input, ...(effort ? { effort } : {}) }).args;
+  assert.ok(args("claude", "xhigh").join(" ").includes("--effort xhigh"));
+  assert.ok(args("codex", "high").join(" ").includes('model_reasoning_effort="high"'));
+  assert.ok(args("hermes", "low").join(" ").includes("--reasoning low"));
+  for (const id of ["claude", "codex", "hermes"]) assert.ok(!args(id).join(" ").match(/effort|--reasoning/), `${id}: no flag unless asked`);
 });

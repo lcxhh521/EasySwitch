@@ -248,22 +248,35 @@ function agentCatalog() {
     <p class="hint">「接入中」的 agent 都支持按次启动时指向 EasySwitch，正在逐个接入；「只能打开」的是闭源或绑定登录的，没有可改的端点，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>`;
 }
 
+const EFFORT_LABEL = { "": "默认", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深" };
+const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
 const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已停止", ""], timeout: ["超时", "warn"] };
 
 function renderTasks() {
-  const agents = (agentList ?? []).filter(a => a.installed && a.can?.headless && !a.where?.endsWith(".app"));
+  const agents = (agentList ?? []).filter(a => a.installed && a.can?.headless && (!a.where?.endsWith(".app") || ["codex", "claude"].includes(a.id)));
   const models = (state.providers ?? []).flatMap(p => modelsOf(p).map(m => `${p.id}/${m}`));
   const list = taskList?.tasks ?? [];
   const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
+  const keep = (k, d = "") => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+  const chosen = agents.find(a => a.id === (taskForm.agent || keep("es.taskAgent"))) ?? agents[0];
+  const levels = chosen?.can?.efforts ?? [];
+  const effort = levels.includes(taskForm.effort) ? taskForm.effort : "";
   const form = agents.length ? `
     <form class="form card" data-task-form style="padding:16px 18px">
-      <div class="field"><label>交给谁</label><select name="agent">${agents.map(a => `<option value="${esc(a.id)}">${esc(a.name)}${state.bindings?.[a.id] ? "" : "（还没选模型）"}</option>`).join("")}</select></div>
-      <div class="field"><label>任务（把背景写全，它看不到你们之前的对话）</label><textarea name="task" rows="3" required placeholder="例如：读一下 README，总结这个项目是做什么的"></textarea></div>
-      <div class="field"><label>用哪个模型（可选，不选就用它自己的）</label><select name="model"><option value="">它自己的模型</option>${models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("")}</select></div>
-      <div class="field"><label>工作目录（可选，绝对路径；不填是一个空的临时目录）</label><input type="text" name="cwd" placeholder="/Users/你/项目"></div>
-      <div class="controls"><button class="btn" type="submit">派出去</button></div>
+      <textarea name="task" rows="3" required style="font-size:15px" placeholder="想让谁做什么？比如：读一下 README，告诉我这个项目是做什么的">${esc(taskForm.task)}</textarea>
+      <div class="controls" style="margin-top:10px;flex-wrap:wrap">
+        ${agents.map(a => `<button type="button" class="btn ${a.id === chosen.id ? "" : "secondary"}" data-task-agent="${esc(a.id)}">${esc(a.name)}</button>`).join("")}
+        <span class="grow"></span>
+        <button class="btn" type="submit">派出去</button>
+      </div>
+      ${levels.length ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><span class="hint">想得多深</span>
+        ${["", ...levels].map(l => `<button type="button" class="btn ${l === effort ? "" : "secondary"}" data-task-effort="${esc(l)}" title="${l ? `${esc(chosen.name)} 的「${esc(l)}」档` : "不指定，用它自己的默认"}">${EFFORT_LABEL[l] ?? l}</button>`).join("")}</div>` : ""}
+      <details data-keep="task-more" ${keepOpen("task-more")} style="margin-top:10px"><summary class="hint" style="cursor:pointer">更多选项（模型、工作目录）</summary>
+        <div class="field"><label>用哪个模型</label><select name="model"><option value="">${state.bindings?.[chosen.id] ? "它自己的模型" : "自动选一个"}</option>${models.map(m => `<option value="${esc(m)}" ${m === taskForm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
+        <div class="field"><label>在哪个文件夹里干活（绝对路径；不填是一个空的临时文件夹）</label><input type="text" name="cwd" value="${esc(taskForm.cwd)}" placeholder="/Users/你/项目"></div>
+      </details>
       ${taskNote ? `<p class="hint" style="color:var(--bad)">${esc(taskNote)}</p>` : ""}
-    </form>` : `<div class="card empty">${agentList ? "还没有可以接活的 agent：到 Agent 页确认已安装并选好模型" : "正在检测…"}</div>`;
+    </form>` : `<div class="card empty">${agentList ? "还没有可以接活的 agent：到 Agent 页确认已安装" : "正在检测…"}</div>`;
   const row = t => {
     const [label, tone] = TASK_STATUS[t.status] ?? [t.status, ""];
     const open = taskOpenIds.has(t.id);
@@ -866,6 +879,15 @@ function render() {
 function busy() {
   return popover || addForm || ocxImport || importFormOpen || document.activeElement?.matches("input, select, textarea");
 }
+/** Typing survives a re-render: copy what is in the task form into taskForm first. */
+function syncTaskForm() {
+  const f = document.querySelector("form[data-task-form]");
+  if (!f) return;
+  taskForm.task = f.elements.task?.value ?? "";
+  taskForm.model = f.elements.model?.value ?? "";
+  taskForm.cwd = f.elements.cwd?.value ?? "";
+}
+document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
 
@@ -992,6 +1014,10 @@ document.addEventListener("click", async e => {
     try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { toast(error.message); }
     return;
   }
+  const pickAgent = t.closest("[data-task-agent]");
+  if (pickAgent) { syncTaskForm(); taskForm.agent = pickAgent.dataset.taskAgent; taskForm.effort = ""; try { localStorage.setItem("es.taskAgent", taskForm.agent); } catch {} render(); return; }
+  const pickEffort = t.closest("[data-task-effort]");
+  if (pickEffort) { syncTaskForm(); taskForm.effort = pickEffort.dataset.taskEffort; render(); return; }
   const taskToggle = t.closest("[data-task-toggle]");
   if (taskToggle) { const id = taskToggle.dataset.taskToggle; if (taskOpenIds.has(id)) taskOpenIds.delete(id); else taskOpenIds.add(id); render(); return; }
   const taskStop = t.closest("[data-task-stop]");
@@ -1145,10 +1171,11 @@ document.addEventListener("submit", async e => {
     const f = new FormData(runForm);
     taskNote = "";
     try {
-      const body = { agent: f.get("agent"), task: f.get("task"), ...(f.get("model") ? { model: f.get("model") } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
+      const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || runForm.querySelector("[data-task-agent]")?.dataset.taskAgent;
+      const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(f.get("model") ? { model: f.get("model") } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
       const r = await call("POST", "/api/tasks", body);
       taskOpenIds.add(r.task.id);
-      runForm.reset();
+      taskForm.task = "";
     } catch (error) {
       taskNote = `没有派出去：${error.message}`;
     }
