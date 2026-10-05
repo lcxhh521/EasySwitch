@@ -23,6 +23,7 @@ import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
+import { isMimoFree } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
@@ -266,7 +267,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return { exitCode: t.exitCode ?? null, output: t.output ?? "", timedOut: t.status === "timeout", model: t.model };
     },
   };
+  // A test that asks for port 0 learns the real one only after listen(); both spellings are allowed.
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const allowBoundPort = (bound: number | undefined): void => {
+    if (bound) { allowedHosts.add(`127.0.0.1:${bound}`); allowedHosts.add(`localhost:${bound}`); }
+  };
 
   /** Adds a provider, lists models, then probes with the best model available. */
   async function addAndProbe(input: { name: string; baseUrl: string; apiKey: string; anthropicBaseUrl?: string; afterAdd?: () => string[] | void }): Promise<Provider> {
@@ -275,11 +280,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const provider: Provider = {
       id: slugify(name, [...store.providers().map(p => p.id), "pool"]),
       name, baseUrl, models: [], route: "chat-translate", routePinned: false, streamUsage: true,
+      // The free tier has no key: its JWT is bootstrapped per call (see mimo-free.ts).
+      ...(isMimoFree({ baseUrl }) ? { mimoFree: true } : {}),
       ...(input.anthropicBaseUrl ? { anthropicBaseUrl: input.anthropicBaseUrl } : {}),
       createdAt: new Date().toISOString(),
     };
     if (apiKey) await secrets.set(provider.id, apiKey);
-    const { models } = await listModels(provider, apiKey || undefined).catch(() => ({ models: [] as string[] }));
+    const { models } = provider.mimoFree ? { models: ["mimo-auto"] } : await listModels(provider, apiKey || undefined).catch(() => ({ models: [] as string[] }));
     provider.models = models;
     store.upsertProvider(provider);
     const model = provider.defaultModel ?? provider.models[0] ?? "";
@@ -779,7 +786,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       const provider: Provider = {
         id: slugify(name, [...store.providers().map(p => p.id), "pool"]),
-        name, baseUrl, models: [], route: "chat-translate", routePinned: false, streamUsage: true,
+        name, baseUrl, models: preset?.models ? [...preset.models] : [], route: "chat-translate", routePinned: false, streamUsage: true,
+        // The free tier has no key: its JWT is bootstrapped per call (see mimo-free.ts).
+        ...(isMimoFree({ baseUrl }) ? { mimoFree: true } : {}),
         ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
         ...(Object.keys(urlParams).length ? { urlParams } : {}),
         ...(preset?.wire ? { wire: preset.wire } : {}),
@@ -1112,6 +1121,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       else res.end();
     }
   });
+  allowBoundPort((server.address() as { port: number } | null)?.port);
+  server.on("listening", () => allowBoundPort((server.address() as { port: number } | null)?.port));
   server.on("upgrade", (req, socket, head) => {
     const path = new URL(req.url ?? "/", "http://placeholder").pathname;
     // Only the ChatGPT app's WebSocket, and only from our own loopback authority.

@@ -1,8 +1,13 @@
+import { join } from "node:path";
 import { chatToResponses, responsesToChatResponse, shapePlanRequest } from "./responses-upstream.ts";
 import { planTarget } from "./siwc.ts";
+import { mimoChatUrl, mimoHeaders, mimoJwt, withMimoMarker } from "./mimo-free.ts";
+import { dataDir } from "./paths.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
 import { endpointUrl, upstreamHeaders } from "./upstream.ts";
+
+const mimoStateDir = (): string => join(dataDir(), "mimo");
 
 /**
  * The one place a Chat Completions request leaves for its provider. For almost every provider that is
@@ -10,8 +15,23 @@ import { endpointUrl, upstreamHeaders } from "./upstream.ts";
  * the request is turned into a Responses request and the event stream that comes back into Chat
  * chunks; the handlers above never need to know the difference.
  */
-export function sendChat(provider: Provider, apiKey: string | undefined, payload: unknown, signal: AbortSignal): Promise<Response | Error> {
+export async function sendChat(provider: Provider, apiKey: string | undefined, payload: unknown, signal: AbortSignal): Promise<Response | Error> {
   const chat = payload as ChatRequest;
+  if (provider.mimoFree) {
+    // The free tier wants its own marker and a bootstrapped JWT instead of a stored key.
+    let jwt: string;
+    try {
+      jwt = await mimoJwt(mimoStateDir());
+    } catch (error) {
+      return new Response(JSON.stringify({ error: { message: `MiMo Free bootstrap failed: ${(error as Error).message}`, type: "api_error" } }), { status: 502, headers: { "content-type": "application/json" } });
+    }
+    return fetch(mimoChatUrl(), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: chat.stream ? "text/event-stream" : "application/json", ...mimoHeaders(jwt) },
+      body: JSON.stringify(withMimoMarker(payload)),
+      signal,
+    }).catch((error: Error) => error);
+  }
   if (provider.plan && provider.plan.kind !== "copilot") {
     const { body } = chatToResponses(chat);
     // The Codex backend refuses a request with no instructions.

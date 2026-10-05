@@ -52,6 +52,8 @@ export function endpointUrl(provider: Pick<Provider, "baseUrl" | "anthropicBaseU
   const path = provider.wire?.paths?.[kind] ?? DEFAULT_PATH[kind];
   // A base that already names the chat endpoint (some relays) must not get it twice.
   const trimmed = kind === "chat" ? base.replace(/\/+$/, "").replace(/\/chat\/completions$/, "") : base;
+  // An explicitly empty path override means "the base address is the whole endpoint".
+  if (provider.wire?.paths?.[kind] === "") return trimmed;
   const url = new URL(joinUrl(trimmed, path));
   for (const [k, v] of Object.entries(provider.wire?.query ?? {})) url.searchParams.set(k, v);
   return url.toString();

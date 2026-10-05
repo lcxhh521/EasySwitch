@@ -152,6 +152,7 @@ export const PRESETS: ProviderPreset[] = [
 
   // 自定义
   { id: "relay", name: "自定义中转站", category: "自定义", icon: "newapi-color", baseUrl: "", note: "任何 OpenAI 兼容地址；也可以回到首页把使用说明整段粘贴" },
+  { id: "mimo-free", name: "小米 MiMo Free", category: "国内官方", icon: "xiaomi-color", baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat", models: ["mimo-auto"], wire: { paths: { chat: "", models: "" } }, note: "小米的免费公开档位，不需要 key；提示词会由小米处理，别发敏感内容。非公开接口，随时可能变化或受限" },
 ];
 
 /** The icon for a provider, from its address: a preset on the same host first, then the vendor table, else a letter avatar. */

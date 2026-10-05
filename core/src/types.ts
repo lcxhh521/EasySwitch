@@ -33,7 +33,10 @@ export interface Provider {
   reasoningEffort?: boolean;
   /** Thinking levels the user says a model on this provider has, by model id. Overrides what EasySwitch knows. */
   modelEfforts?: Record<string, string[]>;
+  /** This provider is Xiaomi's MiMo Free endpoint: no key, a bootstrapped JWT and a required system marker (see mimo-free.ts). */
+  mimoFree?: boolean;
   probe?: ProbeReport;
+
   /** This provider is a ChatGPT plan reached through "Sign in with ChatGPT": the key is a renewed OAuth token, not a stored key. */
   plan?: { kind: "chatgpt" | "codex" | "copilot"; accountId: string };
   /** How the user pays: per token (default) or a flat subscription, where per-call cost is not meaningful. */
@@ -233,4 +236,6 @@ export interface ProviderPreset {
   /** Placeholders in baseUrl / anthropicBaseUrl the user has to fill in. */
   urlParams?: Array<{ key: string; label: string; example?: string }>;
   wire?: WireConfig;
+  /** Models this preset serves when none can be discovered (a keyless endpoint with a fixed list). */
+  models?: string[];
 }
