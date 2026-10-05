@@ -58,7 +58,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   const { provider, model } = resolved;
   const apiKey = await deps.secrets.get(provider.id);
   const finish = (status: number, note?: string) =>
-    deps.log({ at: new Date().toISOString(), model: exposed, route: provider.route, status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}) });
+    deps.log({ at: new Date().toISOString(), model: exposed, route: provider.route, harness: "codex", status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}) });
 
   const abort = new AbortController();
   res.on("close", () => abort.abort());

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
@@ -72,9 +73,14 @@ export class Store {
   }
 }
 
-/** A slug from a display name: lowercase ascii, digits and dashes. */
+/**
+ * A slug from a display name: lowercase ascii, digits and dashes. A name with
+ * no ascii letters at all (a Chinese name, say) gets a short stable hash
+ * instead of a meaningless "provider".
+ */
 export function slugify(name: string, taken: readonly string[]): string {
-  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "provider";
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    || `p-${createHash("sha256").update(name).digest("hex").slice(0, 6)}`;
   let slug = base;
   for (let n = 2; taken.includes(slug); n += 1) slug = `${base}-${n}`;
   return slug;
