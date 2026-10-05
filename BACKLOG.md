@@ -35,13 +35,14 @@
 - [x] B40 · 差异化写成长期方向：借鉴 Magpie 的地方不能变成“长得一样”，要走出自己的路；写进交接单和规则 — 来源：「虽然我们借鉴了magpie，但是我们一定要走出差异化的」（10-06）· 验证：HANDOVER.md 第 1.5 节、AGENTS.md 私有段
 - [ ] B41 · 差异化评审：把界面、信息架构、命名、功能逐项和 Magpie / opencodex 对一遍，列出相同点和我们的不同点，相同又没有理由的要改（现在 4 页界面和菜单栏面板是照它们的样子重做的）— 来源：同上（10-06）
 - [x] B42 · 新版 Claude Code 下 `es claude` 的真实测试失败 — 来源：全套测试发现（10-06）· 原因：不是 Claude Code 升级，是我加的 Stop 钩子（项目 .claude/settings.json）把在本仓库目录里运行的无界面 Claude 拦住了，因为待办里有「进行中」条目 · 验证：钩子改为跳过 EasySwitch 启动的会话（ANTHROPIC_BASE_URL 指向 127.0.0.1 或令牌以 es-session- 开头），capabilities.test.ts 新增用例，es-cli.test.ts 5/5 通过；旧提交 d040764 对照实验证明是这次引入的
-- [~] B43 · Claude 桌面端的本机实测由 Claude 自己做；Cursor/Kiro/Antigravity 原本说给 GPT 做（Claude 不碰，B20）— 来源：「claude桌面端实测这个也让claude自己测吧，然后之前说给gpt那几个也让他做」（10-06）· 备注：实测前后对比真实的 ~/Library/Application Support/Claude* 目录，证明没被改动
+- [x] B43 · （已被取代）先说 Claude 自己测，随后用户改为交给 Dot，见 B45；Cursor/Kiro/Antigravity 原本说给 GPT 做（Claude 不碰，B20）— 来源：「claude桌面端实测这个也让claude自己测吧，然后之前说给gpt那几个也让他做」（10-06）· 验证：我没有启动过 Claude 桌面端，没有改动任何 Claude 数据；只做了准备（本机截图和 `open --env` 可用，装的是 Claude 2.19675.0，开着的是用户平时在用的实例）
 
 ## 委托 Dot（Claude 不碰）
 
 - [ ] B20 · Cursor、Kiro、Antigravity 的订阅适配 — 来源：「这几个我都交给gpt了」（10-05），2026-10-06 改给 Dot：「是给gpt做的那个给dot做」· 备注：本地 GPT 在 main 工作区已有未提交的进展（见 B44）；协议事实在 AGENTS.md 私有段
 - [ ] B21 · 协议层重构（按出站来源选适配器）— 来源：AGENTS.md 硬性原则 5；原本是 GPT 的，2026-10-06 改给 Dot · 备注：本地 GPT 在 main 工作区已有未提交的进展，要先推到云端分支（见 B44）
 - [ ] B44 · 把本地 GPT 在 main 工作区里未提交的进展（风险档适配、协议层重构的 WIP）提交并推到云端一个分支（建议 `gpt-wip`），让 Dot 能看到再接着做，避免重复或丢失 — 来源：「是给gpt做的那个给dot做」（10-06）· 备注：需要用户让本地 GPT 去提交推送；Claude 不碰那个工作区
+- [ ] B45 · Claude 桌面端（B38）的测试和实现交给 Dot — 来源：「claude桌面端那个也让dot做测试」（10-06）· 备注：这一项必须在用户的 Mac 上跑（要启动 /Applications/Claude.app）；Dot 在云端，需要它写好一条能照着跑的脚本和核对步骤，由用户在本机运行并把输出贴回，或 Dot 自己有办法操作用户的 Mac 就直接做；详细步骤在 HANDOVER.md 的 B38 段
 
 ## 加固与发布
 
