@@ -115,17 +115,30 @@ test("both streams capture the reasoning and the tool call ids of a turn", () =>
   assert.deepEqual(anthropic.turn, { reasoning: "think more", callIds: ["call_9"] });
 });
 
-test("the agent's reasoning level reaches upstreams that take reasoning_effort, and only those", async () => {
+test("the thinking level is said the way each upstream wants it, and never to one that would not understand", async () => {
   const { applyEffort } = await import("../src/quirks.ts");
   const chat = () => ({ model: "m", messages: [], stream: false }) as never;
-  const a = chat(); applyEffort(a, "medium", true);
-  assert.equal((a as { reasoning_effort?: string }).reasoning_effort, "medium");
-  const b = chat(); applyEffort(b, "max", true);
-  assert.equal((b as { reasoning_effort?: string }).reasoning_effort, "high", "Chat stops at high");
-  const c = chat(); applyEffort(c, "high", false);
-  assert.equal((c as { reasoning_effort?: string }).reasoning_effort, undefined, "an upstream that would 400 never sees it");
-  const d = chat(); applyEffort(d, "turbo", true);
-  assert.equal((d as { reasoning_effort?: string }).reasoning_effort, undefined);
-  assert.equal(quirksFor("https://api.openai.com/v1", "gpt-5").reasoningEffort, true);
-  assert.equal(quirksFor("https://api.deepseek.com/v1", "deepseek-chat").reasoningEffort, false);
+  const raw = (c: unknown) => c as Record<string, unknown>;
+  const a = chat(); applyEffort(a, "medium", "effort");
+  assert.equal(raw(a).reasoning_effort, "medium");
+  const b = chat(); applyEffort(b, "max", "effort");
+  assert.equal(raw(b).reasoning_effort, "high", "Chat stops at high");
+  const c = chat(); applyEffort(c, "high", "none");
+  assert.equal(raw(c).reasoning_effort, undefined, "an upstream that would 400 never sees it");
+  const d = chat(); applyEffort(d, "Not A Level!", "effort");
+  assert.equal(raw(d).reasoning_effort, undefined, "garbage is never sent");
+  const d2 = chat(); applyEffort(d2, "ultra", "effort");
+  assert.equal(raw(d2).reasoning_effort, "high", "an agent's own top level means as much as the scale goes");
+  const d3 = chat(); applyEffort(d3, "none", "thinking");
+  assert.deepEqual(raw(d3).thinking, { type: "disabled" }, "none turns thinking off where it is a switch");
+  const e = chat(); applyEffort(e, "high", "thinking");
+  assert.deepEqual(raw(e).thinking, { type: "enabled" });
+  const f = chat(); applyEffort(f, "minimal", "thinking");
+  assert.deepEqual(raw(f).thinking, { type: "disabled" }, "the lowest level is off on an on/off upstream");
+  const g = chat(); applyEffort(g, "low", "enable_thinking");
+  assert.equal(raw(g).enable_thinking, true);
+  assert.equal(quirksFor("https://api.openai.com/v1", "gpt-5").reasoning, "effort");
+  assert.equal(quirksFor("https://api.deepseek.com/v1", "deepseek-chat").reasoning, "thinking");
+  assert.equal(quirksFor("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3").reasoning, "enable_thinking");
+  assert.equal(quirksFor("https://example-relay.com/v1", "whatever").reasoning, "none");
 });

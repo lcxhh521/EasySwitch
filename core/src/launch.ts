@@ -74,26 +74,56 @@ export async function findClaude(): Promise<string | undefined> {
  * the bound model, and gateway model discovery makes Claude Code's own /model
  * menu list every EasySwitch model, so switching mid-session works.
  */
-export function claudeEnv(port: number, exposedModel: string, sessionToken: string, tiers: Record<string, string> = {}): Record<string, string> {
+/**
+ * `keepLogin`: leave the user's own Claude login in place. No auth token is set, so Claude Code keeps
+ * signing in as itself and the gateway can hand its requests for Claude's own models on to Anthropic;
+ * the session token travels in a custom header instead. Without it (not signed in, or switched off)
+ * the session runs on a placeholder token and only EasySwitch's models are available.
+ */
+export function claudeEnv(port: number, exposedModel: string | undefined, sessionToken: string, tiers: Record<string, string> = {}, keepLogin = false, caps = ""): Record<string, string> {
   const toId = (name: string) => {
     const at = name.indexOf("/");
     return at > 0 ? claudeModelId(name.slice(0, at), name.slice(at + 1)) : name;
   };
-  const id = toId(exposedModel);
+  const id = exposedModel ? toId(exposedModel) : undefined;
   const small = tiers.small ? toId(tiers.small) : id;
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_AUTH_TOKEN: sessionToken,
-    ANTHROPIC_MODEL: id,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: id,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: id,
+    ...(keepLogin
+      // Blank, not absent: a key or model a provider switcher left in ~/.claude/settings.json must not reach Anthropic or pin a model.
+      ? { ANTHROPIC_CUSTOM_HEADERS: `x-easyswitch-session: ${sessionToken}`, ANTHROPIC_AUTH_TOKEN: "", ANTHROPIC_API_KEY: "" }
+      : { ANTHROPIC_AUTH_TOKEN: sessionToken }),
+    ...(id
+      ? { ANTHROPIC_MODEL: id, ANTHROPIC_DEFAULT_OPUS_MODEL: id, ANTHROPIC_DEFAULT_SONNET_MODEL: id }
+      : keepLogin ? { ANTHROPIC_MODEL: "", ANTHROPIC_DEFAULT_OPUS_MODEL: "", ANTHROPIC_DEFAULT_SONNET_MODEL: "" } : {}),
     // Claude Code runs titles, summaries and other small requests on the haiku tier, and sub-agents on their own setting.
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: small,
+    ...(small ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: small } : keepLogin ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: "" } : {}),
     ...(tiers.small ? { ANTHROPIC_SMALL_FAST_MODEL: small } : {}),
     ...(tiers.subagent ? { CLAUDE_CODE_SUBAGENT_MODEL: toId(tiers.subagent) } : {}),
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+    ...(caps ? { CLAUDE_CODE_MODEL_CAPABILITIES: caps } : {}),
     [CLAUDE_SESSION_MARKER]: "1",
   };
+}
+
+/**
+ * Tells Claude Code which levels each of our models has, as "<id>=effort,xhigh_effort,max_effort;…".
+ * A model Claude Code does not know gets no effort menu at all unless it is told; with this, its own
+ * /effort control works for third-party models too, and shows only the levels the model has. Idea
+ * from Magpie's CLAUDE_CODE_MODEL_CAPABILITIES handling; the list is built from our own per-model levels.
+ */
+export function claudeCapabilities(models: ReadonlyArray<{ providerId: string; model: string; efforts: string[] }>): string {
+  const segs: string[] = [];
+  for (const m of models) {
+    const id = claudeModelId(m.providerId, m.model).toLowerCase();
+    if (/[;=,*]/.test(id)) continue;
+    const has = (l: string) => m.efforts.includes(l);
+    if (!["low", "medium", "high", "xhigh", "max"].some(has)) continue;
+    segs.push(`${id}=${["effort", ...(has("xhigh") ? ["xhigh_effort"] : []), ...(has("max") ? ["max_effort"] : [])].join(",")}`);
+  }
+  const text = segs.join(";");
+  // Claude Code reads a bounded value; past it, the rest are simply left as Claude Code takes them.
+  return text.length <= 8000 ? text : segs.slice(0, Math.floor(8000 / Math.max(1, text.length / segs.length))).join(";");
 }
 
 /**
@@ -171,4 +201,24 @@ export async function augmentedSessions(): Promise<number[]> {
   } catch {
     return [];
   }
+}
+
+let loginCache: { at: number; value: boolean } | undefined;
+
+/** Whether Claude Code has a Claude login of its own (`claude auth status`), cached for a minute. */
+export async function claudeLoggedIn(): Promise<boolean> {
+  if (loginCache && Date.now() - loginCache.at < 60_000) return loginCache.value;
+  const bin = await findClaude();
+  let value = false;
+  if (bin) {
+    try {
+      const { stdout } = await run(bin, ["auth", "status"], { timeout: 8000 });
+      const status = JSON.parse(stdout) as { loggedIn?: boolean; apiProvider?: string };
+      value = status.loggedIn === true && (status.apiProvider ?? "firstParty") === "firstParty";
+    } catch {
+      value = false;
+    }
+  }
+  loginCache = { at: Date.now(), value };
+  return value;
 }

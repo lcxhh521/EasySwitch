@@ -25,9 +25,17 @@ export interface Quirks {
   promptCacheKey: boolean;
   /** `$ref` next to sibling keywords in a tool schema is a 400 (Moonshot). */
   flattenSchemaRefs: boolean;
-  /** The upstream understands Chat's `reasoning_effort`. */
-  reasoningEffort: boolean;
+  /** How this upstream wants the thinking level said, if it takes one at all. */
+  reasoning: ReasoningStyle;
 }
+
+/**
+ * "effort": Chat's `reasoning_effort` (OpenAI and the gateways that copy it).
+ * "thinking": a `thinking: {type: enabled|disabled}` switch (DeepSeek, GLM).
+ * "enable_thinking": a boolean (Qwen on DashScope).
+ * "none": nothing is sent; the model thinks as it normally does.
+ */
+export type ReasoningStyle = "effort" | "thinking" | "enable_thinking" | "none";
 
 function hostOf(baseUrl: string): string {
   try { return new URL(baseUrl).hostname.toLowerCase(); } catch { return ""; }
@@ -49,23 +57,31 @@ export function quirksFor(baseUrl: string, model: string): Quirks {
     replayReasoning: deepseek || kimi || glm || minimax,
     promptCacheKey: host === "api.kimi.com",
     flattenSchemaRefs: kimiHost,
-    reasoningEffort: /(^|\.)openai\.com$|(^|\.)openrouter\.ai$|(^|\.)x\.ai$|(^|\.)groq\.com$|(^|\.)together\.xyz$|(^|\.)fireworks\.ai$/.test(host),
+    reasoning: /(^|\.)openai\.com$|(^|\.)openrouter\.ai$|(^|\.)x\.ai$|(^|\.)groq\.com$|(^|\.)together\.xyz$|(^|\.)fireworks\.ai$/.test(host) ? "effort"
+      : /(^|\.)deepseek\.com$|bigmodel\.cn$|(^|\.)z\.ai$/.test(host) ? "thinking"
+      : /dashscope(-intl)?\.aliyuncs\.com$/.test(host) ? "enable_thinking"
+      : "none",
   };
 }
 
-/** The levels agents speak, in order; Chat's `reasoning_effort` stops at "high". */
-export const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
 /**
- * Carries the agent's reasoning level to the upstream. Only where the upstream is known (or
- * told by the user) to take `reasoning_effort`; elsewhere a stray field would be a 400, so it is
- * left out and the model thinks as it normally does.
+ * Carries the thinking level the user chose to the upstream, in the way that upstream says it.
+ * Only where the style is known (or the user said so on the provider): elsewhere a stray field
+ * would be a 400, so it is left out and the model thinks as it normally does.
  */
-export function applyEffort(chat: ChatRequest, effort: unknown, accepts: boolean): void {
-  if (!accepts || typeof effort !== "string") return;
+export function applyEffort(chat: ChatRequest, effort: unknown, style: ReasoningStyle | boolean, has: readonly string[] = []): void {
+  const how: ReasoningStyle = style === true ? "effort" : style === false ? "none" : style;
+  if (how === "none" || typeof effort !== "string") return;
   const level = effort.toLowerCase();
-  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) return;
-  (chat as unknown as Json).reasoning_effort = ["xhigh", "max"].includes(level) ? "high" : level;
+  if (!/^[a-z][a-z0-9-]*$/.test(level)) return;
+  const off = level === "none" || level === "minimal";
+  const raw = chat as unknown as Json;
+  // Agents have levels of their own above "high" (xhigh, max, ultra…); Chat's scale ends at high, so they all mean "as much as it goes".
+  // A level the model is known to have goes through as it is; one it does not have becomes the closest the scale holds.
+  if (how === "effort") raw.reasoning_effort = has.includes(level) ? level : off ? "minimal" : ["low", "medium", "high"].includes(level) ? level : "high";
+  // These upstreams only have on and off.
+  else if (how === "thinking") raw.thinking = { type: off ? "disabled" : "enabled" };
+  else if (how === "enable_thinking") raw.enable_thinking = !off;
 }
 
 /** Claude Code appends context markers such as `glm-5.3[1m]`; Chat upstreams reject them. */

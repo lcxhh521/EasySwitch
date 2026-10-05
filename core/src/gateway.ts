@@ -1,11 +1,14 @@
 import { anthropicModelList, catalogModels } from "./catalog.ts";
 import { withKey } from "./keypool.ts";
-import { applyEffort, quirksFor, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
+import { applyEffort, quirksFor, reasoningMemory, shapeChat, upstreamModelId, type Quirks } from "./quirks.ts";
+import { agentOf } from "./gateway-chat.ts";
+import { modelEfforts } from "./model-efforts.ts";
+import { sendChat, sendResponses } from "./upstream-chat.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
 import type { Store } from "./store.ts";
-import { ResponsesStream, responsesToChat } from "./translate.ts";
+import { type ChatRequest, ResponsesStream, responsesToChat } from "./translate.ts";
 import type { GatewayLogEntry, Provider } from "./types.ts";
 import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
 
@@ -36,6 +39,19 @@ function errorBody(message: string, type = "easyswitch_error") {
 }
 
 /** OpenAI's list shape by default; Anthropic's ModelInfo list when Claude Code asks. */
+/**
+ * The thinking level for one call. What the user saved for the agent wins and is said in the
+ * upstream's own way; without one, an agent's own request is passed on only to upstreams that
+ * take Chat's `reasoning_effort`, so nothing changes for anyone who never touched the setting.
+ */
+export function applyThinking(chat: ChatRequest, store: Store, agent: string, requested: unknown, provider: Provider, quirks: Quirks): void {
+  const style = provider.plan ? "effort" : provider.reasoningEffort === undefined ? quirks.reasoning : provider.reasoningEffort ? "effort" : "none";
+  const saved = store.binding(agent)?.effort;
+  const has = modelEfforts(provider, chat.model);
+  if (saved) applyEffort(chat, saved, style, has);
+  else if (style === "effort") applyEffort(chat, requested, style, has);
+}
+
 export function listExposedModels(store: Store, anthropic = false): Json {
   const models = catalogModels(store.providers());
   if (anthropic) return anthropicModelList(models);
@@ -60,7 +76,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   const { provider, model } = resolved;
   const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
     deps.log({
-      at: new Date().toISOString(), model: exposed, providerId: provider.id, route: provider.route, harness: "codex",
+      at: new Date().toISOString(), model: exposed, providerId: provider.id, route: provider.route, harness: agentOf(req.headers.authorization, "codex"),
       status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...extra,
     });
 
@@ -70,13 +86,12 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   if (provider.route === "responses-native") {
     // The relay speaks Responses itself: forward the request untouched except
     // for the model name, and stream its bytes straight back.
+    const forwarded: Json = { ...body, model: upstreamModelId(model) };
+    // The thinking level saved for this agent is carried in the request's own `reasoning` field.
+    const saved = deps.store.binding(agentOf(req.headers.authorization, "codex"))?.effort;
+    if (saved && modelEfforts(provider, model).includes(saved)) forwarded.reasoning = { ...((body.reasoning as Json | undefined) ?? {}), effort: saved };
     const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-      fetch(endpointUrl(provider, "responses"), {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: req.headers.accept ?? "text/event-stream", ...upstreamHeaders(provider, apiKey) },
-        body: JSON.stringify({ ...body, model: upstreamModelId(model) }),
-        signal: abort.signal,
-      }).catch((error: Error) => error));
+      sendResponses(provider, apiKey, forwarded, String(req.headers.accept ?? "text/event-stream"), abort.signal));
     if (upstream instanceof Error) {
       sendJson(res, 502, errorBody(`upstream unreachable: ${upstream.message}`));
       finish(502, "unreachable");
@@ -91,18 +106,13 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
 
   const { chat, customTools, dropped, namespaced } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
   const quirks = quirksFor(provider.baseUrl, model);
-  applyEffort(chat, (body.reasoning as Json | undefined)?.effort, provider.reasoningEffort ?? quirks.reasoningEffort);
+  applyThinking(chat, deps.store, agentOf(req.headers.authorization, "codex"), (body.reasoning as Json | undefined)?.effort, provider, quirks);
   shapeChat(chat, {
     quirks,
     ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}),
   });
   const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-    fetch(endpointUrl(provider, "chat"), {
-      method: "POST",
-      headers: { "content-type": "application/json", ...upstreamHeaders(provider, apiKey) },
-      body: JSON.stringify(chat),
-      signal: abort.signal,
-    }).catch((error: Error) => error));
+    sendChat(provider, apiKey, chat, abort.signal));
   const droppedList = [...new Set(dropped)];
   const note = undefined;
   if (upstream instanceof Error) {

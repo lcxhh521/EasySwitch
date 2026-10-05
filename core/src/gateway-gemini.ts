@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { catalogModels } from "./catalog.ts";
 import { agentFromAuth } from "./gateway-chat.ts";
-import { resolveModel, type GatewayDeps } from "./gateway.ts";
+import { sendChat } from "./upstream-chat.ts";
+import { applyThinking, resolveModel, type GatewayDeps } from "./gateway.ts";
 import { chatToGemini, GeminiStream, geminiToChat } from "./gemini.ts";
 import { withKey } from "./keypool.ts";
 import { quirksFor, reasoningDelta, reasoningMemory, shapeChat } from "./quirks.ts";
@@ -69,16 +70,13 @@ export async function handleGemini(req: IncomingMessage, res: ServerResponse, ma
     deps.log({ at: new Date().toISOString(), model: exposed, providerId: provider.id, route: "chat-translate", harness, status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...extra });
 
   const { chat, dropped } = geminiToChat(body, model, { stream, streamUsage: provider.streamUsage });
-  shapeChat(chat, { quirks: quirksFor(provider.baseUrl, model) });
+  const quirks = quirksFor(provider.baseUrl, model);
+  applyThinking(chat, deps.store, harness, undefined, provider, quirks);
+  shapeChat(chat, { quirks });
   const abort = new AbortController();
   res.on("close", () => abort.abort());
   const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-    fetch(endpointUrl(provider, "chat"), {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: stream ? "text/event-stream" : "application/json", ...upstreamHeaders(provider, apiKey) },
-      body: JSON.stringify(chat),
-      signal: abort.signal,
-    }).catch((error: Error) => error));
+    sendChat(provider, apiKey, chat, abort.signal));
   if (upstream instanceof Error) {
     geminiError(res, 502, `upstream unreachable: ${upstream.message}`, "UNAVAILABLE");
     finish(502, "unreachable");

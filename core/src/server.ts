@@ -12,14 +12,19 @@ import { GEMINI_PATH, handleGemini, listGeminiModels } from "./gateway-gemini.ts
 import { handleMcp, mcpEndpoint, type McpDeps } from "./mcp.ts";
 import { handleResponses, listExposedModels, resolveModel } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
-import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
+import { augmentedSessions, claudeCapabilities, claudeLoggedIn, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
 import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
-import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
+import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
+import { accessToken, apiBase, beginSignIn, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
+import { setPlanToken } from "./keypool.ts";
+import { nativeModels } from "./claude-native.ts";
+import { discoverEfforts } from "./efforts.ts";
+import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { TaskBook, type Task } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
@@ -41,6 +46,8 @@ const WEB_DIR = fileURLToPath(new URL("../../web/", import.meta.url));
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
 
 export interface ServerDeps {
+  /** How a sign-in page is shown to the user (default: the system browser). Tests play the browser themselves. */
+  openUrl?: (url: string) => Promise<void>;
   store: Store;
   secrets: SecretStore;
   port: number;
@@ -139,14 +146,28 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const first = catalogModels(store.providers())[0];
     const model = input.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
     if (!model || !resolveModel(store, model)) throw new Error("还没有可用的模型：先在「模型来源」里添加一个");
-    const efforts = LAUNCHERS[id]?.efforts ?? [];
     const wanted = input.effort ?? b?.effort;
-    const effort = wanted && efforts.includes(wanted) ? wanted : undefined;
+    const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
     const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}) });
-    const done = runHeadless(id, { bin, port, model, task: input.task, tiers: tiersFor(id), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const done = runHeadless(id, { bin, port, model, task: input.task, stateDir: store.dir, tiers: tiersFor(id), claudeCaps: claudeCapabilities(catalogModels(store.providers())), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
     return { task, done };
+  }
+
+  /** The levels the installed program itself reports (asked once, remembered), else the launcher's fallback. */
+  async function levelsOf(id: string): Promise<string[] | undefined> {
+    await discoverEfforts(id, await agentBinary(id));
+    return effortsOf(id);
+  }
+
+  /** The levels an agent can offer for a model: the agent's own, that the model has too. */
+  async function levelsFor(id: string, model?: string): Promise<string[]> {
+    const own = await levelsOf(id);
+    const resolved = model ? resolveModel(store, model) : undefined;
+    const has = resolved ? modelEfforts(resolved.provider, resolved.model) : undefined;
+    // An agent with no levels of its own offers whatever its model has.
+    return own === undefined ? (has ?? []) : levelsForAgentAndModel(own, has);
   }
 
   /** The agent's saved extra models that still exist, by tier id. */
@@ -164,17 +185,52 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (!bin) return { status: 404, error: "没有检测到这个 agent 的命令" };
     const b = store.binding(id);
     const first = catalogModels(store.providers())[0];
-    const model = opts.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
-    if (!model || !resolveModel(store, model)) return { status: 409, error: "还没有可用的模型：先在「模型来源」里添加一个" };
+    // Claude Code keeps the user's own login when it has one: Claude's own models stay in the menu, and with no model chosen it starts on its usual default.
+    const keepLogin = id === "claude" && store.settings().claudeNative && await claudeLoggedIn();
+    const model = opts.model ?? (b ? `${b.providerId}/${b.model}` : keepLogin ? "" : first ? `${first.providerId}/${first.model}` : "");
+    if (keepLogin ? (model !== "" && !resolveModel(store, model)) : (!model || !resolveModel(store, model))) return { status: 409, error: "还没有可用的模型：先在「模型来源」里添加一个" };
     const wanted = opts.effort ?? b?.effort;
-    const effort = wanted && (launcher.efforts ?? []).includes(wanted) ? wanted : undefined;
+    const effort = wanted && (await levelsFor(id, model || undefined)).includes(wanted) ? wanted : undefined;
     const tiers = tiersFor(id);
     const sessionDir = newSessionDir();
     const token = sessionToken(id);
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers()) : undefined;
-    const spec = launcher.interactive({ bin, port, model, token, sessionDir, tiers, ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
+    const spec = launcher.interactive({ bin, port, model, token, sessionDir, stateDir: store.dir, tiers, claudeCaps: claudeCapabilities(catalogModels(store.providers())), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
     materialize(spec, sessionDir);
     return { spec, sessionDir, model, name: known.name };
+  }
+
+  // ---- ChatGPT plan ("Continue with ChatGPT"): accounts, sign-in in progress, the provider each account becomes
+  const siwcStore = store.siwcStorage();
+  setPlanToken(async provider => {
+    try {
+      return await accessToken({ storage: siwcStore, secrets }, provider.plan!.accountId);
+    } catch (error) {
+      // The gateway answers with a plain reason instead of calling OpenAI with nothing.
+      throw new Error(String((error as Error).message));
+    }
+  });
+  let planSignIn: { status: "waiting" | "done" | "error"; url: string; message?: string; cancel: () => void } | undefined;
+
+  /** Makes sure the account has a provider, and brings its models (and each model's own levels) up to date. */
+  async function syncPlanProvider(account: SiwcAccount): Promise<Provider> {
+    let provider = store.providers().find(p => p.plan?.accountId === account.id);
+    const models = account.planUsage ? await listPlanModels(await accessToken({ storage: siwcStore, secrets }, account.id)) : [];
+    const name = `ChatGPT 订阅 · ${account.label}`;
+    if (!provider) {
+      provider = {
+        id: slugify(name, store.providers().map(p => p.id)), name, baseUrl: apiBase(), models: [], route: "responses-native", routePinned: true,
+        streamUsage: false, billing: "subscription", plan: { kind: "chatgpt", accountId: account.id }, icon: "openai", createdAt: new Date().toISOString(),
+      };
+    }
+    provider.name = name;
+    if (models.length) {
+      provider.models = models.map(m => m.slug);
+      provider.defaultModel = provider.defaultModel && provider.models.includes(provider.defaultModel) ? provider.defaultModel : provider.models[0];
+      provider.modelEfforts = Object.fromEntries(models.filter(m => m.efforts).map(m => [m.slug, m.efforts!]));
+    }
+    store.upsertProvider(provider);
+    return provider;
   }
 
   const mcpDeps: McpDeps = {
@@ -281,6 +337,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         bindings: { codex: null, claude: null, ...Object.fromEntries(store.allBindings().map(b => [b.harness, b])) },
         codexPath: (await findCodex()) ?? null,
         claudePath: (await findClaude()) ?? null,
+        claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
+        modelEfforts: Object.fromEntries(catalogModels(store.providers()).map(m => [`${m.providerId}/${m.model}`, m.efforts])),
         sessions: await augmentedSessions(),
         sessionDetails: await sessionDetails(),
         accounts: store.accounts().map(publicAccount),
@@ -291,6 +349,61 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         log,
       });
       return;
+    }
+
+    // --- ChatGPT plan: Continue with ChatGPT --------------------------------
+    if (path === "/api/plan" && method === "GET") {
+      json(res, 200, {
+        accounts: siwcStore.accounts().map(a => ({ id: a.id, label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true })),
+        signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
+      });
+      return;
+    }
+    if (path === "/api/plan/signin" && method === "POST") {
+      planSignIn?.cancel();
+      if (body.cancelOnly === true) { planSignIn = undefined; json(res, 200, { ok: true }); return; }
+      try {
+        const si = await beginSignIn({ storage: siwcStore, secrets, ...(deps.openUrl ? { open: deps.openUrl } : {}) }, { ...(typeof body.label === "string" && body.label.trim() ? { label: body.label } : {}), ...(typeof body.accountId === "string" && body.accountId ? { existingId: body.accountId } : {}) });
+        const current: NonNullable<typeof planSignIn> = { status: "waiting", url: si.url, cancel: si.cancel };
+        planSignIn = current;
+        si.done.then(async account => {
+          try {
+            await syncPlanProvider(account);
+            current.status = "done";
+            if (!account.planUsage) current.message = "已登录，但你没有允许使用 ChatGPT 订阅额度；重新授权时请勾选允许。";
+          } catch (error) {
+            current.status = "error";
+            current.message = `登录成功，但读取模型失败：${String((error as Error).message)}`;
+          }
+        }).catch(error => {
+          current.status = "error";
+          current.message = String((error as Error).message);
+        });
+        json(res, 200, { url: si.url });
+      } catch (error) {
+        json(res, 409, { error: String((error as Error).message) });
+      }
+      return;
+    }
+    const planMatch = /^\/api\/plan\/([a-z0-9-]+)(?:\/(models))?$/.exec(path);
+    if (planMatch) {
+      const account = siwcStore.accounts().find(a => a.id === planMatch[1]);
+      if (!account) { json(res, 404, { error: "没有这个账号" }); return; }
+      if (planMatch[2] === "models" && method === "POST") {
+        try {
+          const provider = await syncPlanProvider(account);
+          json(res, 200, { models: provider.models });
+        } catch (error) {
+          json(res, 409, { error: String((error as Error).message) });
+        }
+        return;
+      }
+      if (method === "DELETE" && !planMatch[2]) {
+        const { revoked } = await signOut({ storage: siwcStore, secrets }, account.id);
+        for (const p of store.providers().filter(x => x.plan?.accountId === account.id)) store.removeProvider(p.id);
+        json(res, 200, { ok: true, revoked });
+        return;
+      }
     }
 
     // --- tasks: hand work to an agent, watch it, read what came back ---------
@@ -362,7 +475,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/settings") {
       if (method === "GET") { json(res, 200, store.settings()); return; }
       if (method === "PUT") {
-        json(res, 200, store.setSettings(typeof body.agentCalls === "boolean" ? { agentCalls: body.agentCalls } : {}));
+        json(res, 200, store.setSettings({
+          ...(typeof body.agentCalls === "boolean" ? { agentCalls: body.agentCalls } : {}),
+          ...(typeof body.claudeNative === "boolean" ? { claudeNative: body.claudeNative } : {}),
+        }));
         return;
       }
     }
@@ -405,6 +521,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- every agent we know of, with what is installed on this Mac ---------
     if (path === "/api/agents" && method === "GET") {
       if (!agentCache || Date.now() - agentCache.at > 30_000) agentCache = { at: Date.now(), list: await detectAgents() };
+      await Promise.all(agentCache.list.filter(a => a.installed && LAUNCHERS[a.id]).map(a => levelsOf(a.id)));
       json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null })) });
       return;
     }
@@ -648,6 +765,20 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
+    const levelsMatch = /^\/api\/providers\/([a-z0-9-]+)\/model-efforts$/.exec(path);
+    if (levelsMatch && method === "PUT") {
+      // The user's word on which thinking levels a model has (a relay that takes more than EasySwitch knows).
+      const provider = store.provider(levelsMatch[1] ?? "");
+      const model = String(body.model ?? "");
+      if (!provider || !model) { json(res, 404, { error: "没有这个来源或模型" }); return; }
+      const levels = Array.isArray(body.levels) ? (body.levels as unknown[]).map(String).filter(l => /^[a-z][a-z0-9-]*$/.test(l)) : [];
+      const modelEffortsSet = { ...(provider.modelEfforts ?? {}) };
+      if (Array.isArray(body.levels)) modelEffortsSet[model] = levels; else delete modelEffortsSet[model];
+      if (Object.keys(modelEffortsSet).length) provider.modelEfforts = modelEffortsSet; else delete provider.modelEfforts;
+      store.upsertProvider(provider);
+      json(res, 200, { model, levels: modelEfforts(provider, model) });
+      return;
+    }
     const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route))?$/.exec(path);
     if (providerMatch) {
       const provider = store.provider(providerMatch[1] ?? "");
@@ -759,7 +890,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const cur = store.binding(id);
       if (!cur) { json(res, 409, { error: "先给这个 agent 选一个模型" }); return; }
       const level = String(body.effort ?? "");
-      if (level && !(LAUNCHERS[id]?.efforts ?? []).includes(level)) { json(res, 400, { error: "这个 agent 没有这一档" }); return; }
+      if (level && !(await levelsFor(id, `${cur.providerId}/${cur.model}`)).includes(level)) { json(res, 400, { error: "这个模型没有这一档（或者这个 agent 说不出这一档）" }); return; }
       const { effort: _drop, ...rest } = cur;
       store.setBinding(level ? { ...rest, effort: level } : rest);
       json(res, 200, store.binding(id));
@@ -788,23 +919,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (launchMatch && (method === "POST" || method === "GET")) {
       const harness = launchMatch[1] as Harness;
       const label = harness === "codex" ? "ChatGPT" : "Claude Code";
-      const binding = store.binding(harness);
-      const binary = harness === "codex" ? await findCodex() : await findClaude();
-      if (!binding || !binary) {
-        json(res, 409, { error: !binding ? `还没有给 ${label} 绑定模型` : `找不到 ${label} 的命令` });
-        return;
-      }
-      const exposed = `${binding.providerId}/${binding.model}`;
-      const catalog = harness === "codex" ? await writeCodexCatalog(binary, store.dir, store.providers()) : undefined;
-      const token = sessionToken(harness);
-      const mcp = store.settings().agentCalls ? mcpEndpoint(port, token, 0) : undefined;
-      const command = harness === "codex"
-        ? codexCommandLine(binary, port, exposed, catalog, mcp)
-        : claudeCommandLine(binary, claudeEnv(port, exposed, token), mcp);
+      const made = await interactiveSpec(harness, {});
+      if ("error" in made) { json(res, made.status, { error: made.error }); return; }
+      const command = `${commandLine(made.spec)}; rm -rf ${JSON.stringify(made.sessionDir)}`;
+      const shown = made.model || "Claude 原生模型 + 你加的模型";
       if (method === "POST") {
-        await launchInTerminal(command, `EasySwitch 增强会话（${label}）：${exposed}（只在这个窗口生效，关掉窗口即回到原生）`);
+        await launchInTerminal(command, `EasySwitch 增强会话（${label}）：${shown}（只在这个窗口生效，关掉窗口即回到原生）`);
       }
-      json(res, 200, { command, model: exposed });
+      json(res, 200, { command, model: shown });
       return;
     }
 
@@ -866,7 +988,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
-        handleCountTokens(res, await readBody(req));
+        await handleCountTokens(req, res, await readBody(req), { store, secrets, log: pushLog });
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages" || path === "/messages")) {
@@ -875,7 +997,18 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
         // Claude Code's gateway model discovery sends Anthropic headers.
-        json(res, 200, listExposedModels(store, req.headers["anthropic-version"] !== undefined));
+        const forClaude = req.headers["anthropic-version"] !== undefined;
+        const list = listExposedModels(store, forClaude);
+        if (forClaude && store.settings().claudeNative) {
+          // Claude's own models first, then the ones EasySwitch adds, in one menu.
+          const native = await nativeModels(req.headers);
+          if (native.length) {
+            const data = [...native, ...((list.data as unknown[]) ?? [])] as Array<{ id: string }>;
+            json(res, 200, { data, has_more: false, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null });
+            return;
+          }
+        }
+        json(res, 200, list);
         return;
       }
       if (path.startsWith("/api/")) {

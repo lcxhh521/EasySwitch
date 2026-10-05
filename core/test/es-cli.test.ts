@@ -35,9 +35,13 @@ before(async () => {
     method: "POST", headers: { "content-type": "application/json", "x-easyswitch": "1" },
     body: JSON.stringify({ name: "mock-relay", baseUrl: relay.baseUrl, apiKey: "relay-key" }),
   }).then(r => r.json())) as { id: string }).id;
+  await noLogin();
 });
 
 after(() => { server.closeAllConnections(); server.close(); relay.server.closeAllConnections(); relay.server.close(); });
+
+// These runs use an empty HOME with no Claude login, so the keep-the-login mode (for a signed-in user) is off.
+function noLogin() { return fetch(`http://127.0.0.1:${port}/api/settings`, { method: "PUT", headers: { "content-type": "application/json", "x-easyswitch": "1" }, body: JSON.stringify({ claudeNative: false }) }); }
 
 const es = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
   const home = mkdtempSync(join(tmpdir(), "es-cli-home-"));

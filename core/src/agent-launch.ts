@@ -1,11 +1,12 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { sessionToken } from "./gateway-chat.ts";
 import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
 import { mcpEndpoint } from "./mcp.ts";
+import { knownEfforts } from "./efforts.ts";
 
 const run = promisify(execFile);
 
@@ -24,6 +25,8 @@ const run = promisify(execFile);
 export interface LaunchInput {
   /** The agent's executable. */
   bin: string;
+  /** EasySwitch's own data directory, for agents that keep a private home between runs. */
+  stateDir?: string;
   /** Gateway port on 127.0.0.1. */
   port: number;
   /** `<provider>/<model>` as the gateway names it. */
@@ -34,6 +37,10 @@ export interface LaunchInput {
   sessionDir: string;
   /** Present for the headless form. */
   task?: string;
+  /** Claude Code: what it is told about the levels of our models (see claudeCapabilities). */
+  claudeCaps?: string;
+  /** Claude Code: keep the user's own Claude login so Claude's own models stay available next to ours. */
+  keepLogin?: boolean;
   /** Extra models for this launch, by the launcher's tier ids (`<provider>/<model>`). */
   tiers?: Record<string, string>;
   /** Codex only: the merged model catalog to hand it (see catalog.ts). */
@@ -111,11 +118,11 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
       { id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" },
     ],
     interactive: i => {
-      const env = claudeEnv(i.port, i.model, i.token, i.tiers);
+      const env = claudeEnv(i.port, i.model || undefined, i.token, i.tiers, i.keepLogin, i.claudeCaps);
       return { command: i.bin, args: [...(i.effort ? ["--effort", i.effort] : []), ...claudeArgs(env, i.mcp)], env };
     },
     headless: i => {
-      const env = claudeEnv(i.port, i.model, i.token, i.tiers);
+      const env = claudeEnv(i.port, i.model, i.token, i.tiers, false, i.claudeCaps);
       return { command: i.bin, args: ["-p", i.task ?? "", ...(i.effort ? ["--effort", i.effort] : []), ...claudeArgs(env, i.mcp)], env, unset: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] };
     },
   },
@@ -127,11 +134,12 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
 
   // Hermes: a private HERMES_HOME holds a one-provider config, so ~/.hermes is never read or written.
+  // Its home is kept between runs (it installs its runtime into it, which takes a minute); only the config is rewritten each launch.
   hermes: {
     verified: true,
-    efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
-    interactive: i => ({ command: i.bin, args: i.effort ? ["chat", "--reasoning", i.effort] : [], env: { HERMES_HOME: join(i.sessionDir, "hermes-home") }, files: hermesFiles(i) }),
-    headless: i => ({ command: i.bin, args: ["chat", "-Q", ...(i.effort ? ["--reasoning", i.effort] : []), "-q", i.task ?? ""], env: { HERMES_HOME: join(i.sessionDir, "hermes-home") }, files: hermesFiles(i) }),
+    efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    interactive: i => ({ command: i.bin, args: i.effort ? ["chat", "--reasoning", i.effort] : [], env: { HERMES_HOME: hermesHome(i) }, files: hermesFiles(i) }),
+    headless: i => ({ command: i.bin, args: ["chat", "-Q", ...(i.effort ? ["--reasoning", i.effort] : []), "-q", i.task ?? ""], env: { HERMES_HOME: hermesHome(i) }, files: hermesFiles(i) }),
   },
 
   // Documented overrides, not yet run against the real programs.
@@ -171,9 +179,11 @@ function codexExtras(i: LaunchInput): string[] {
   ];
 }
 
+const hermesHome = (i: LaunchInput) => join(i.stateDir ?? i.sessionDir, "hermes-home");
+
 function hermesFiles(i: LaunchInput): Record<string, string> {
   return {
-    "hermes-home/config.yaml": [
+    [join(hermesHome(i), "config.yaml")]: [
       "model:",
       `  default: ${q(i.model)}`,
       "  provider: custom:easyswitch",
@@ -181,7 +191,8 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       "custom_providers:",
       "  - name: easyswitch",
       `    base_url: ${q(`${gateway(i)}/v1`)}`,
-      `    api_key: ${q(i.token)}`,
+      // The gateway reads only the agent id from this, so one fixed value keeps the file stable between runs.
+      `    api_key: ${q("es-session-hermes-private")}`,
       "    api_mode: chat_completions",
       "    discover_models: false",
       "    models:",
@@ -214,9 +225,21 @@ function opencodeConfig(i: LaunchInput): string {
   });
 }
 
-export function hasLauncher(agentId: string): { interactive: boolean; headless: boolean; verified: boolean; efforts: string[]; tiers: Array<{ id: string; label: string; hint: string }> } | undefined {
+/**
+ * The levels an agent has in its own words, or undefined when it has none of its own. Then any
+ * level its model has can be set, and the gateway applies it to the agent's requests, so it can
+ * even be changed while a session is running.
+ */
+export function effortsOf(agentId: string): string[] | undefined {
   const l = LAUNCHERS[agentId];
-  return l ? { interactive: Boolean(l.interactive), headless: Boolean(l.headless), verified: l.verified, efforts: l.efforts ?? [], tiers: l.tiers ?? [] } : undefined;
+  return l ? (knownEfforts(agentId)?.levels ?? l.efforts) : [];
+}
+
+export function hasLauncher(agentId: string): { interactive: boolean; headless: boolean; verified: boolean; efforts: string[]; anyEffort: boolean; tiers: Array<{ id: string; label: string; hint: string }> } | undefined {
+  const l = LAUNCHERS[agentId];
+  const own = effortsOf(agentId);
+  // `anyEffort`: the agent has no levels of its own, so the model decides which levels there are.
+  return l ? { interactive: Boolean(l.interactive), headless: Boolean(l.headless), verified: l.verified, efforts: own ?? [], anyEffort: own === undefined, tiers: l.tiers ?? [] } : undefined;
 }
 
 export function newSessionDir(): string {
@@ -226,7 +249,7 @@ export function newSessionDir(): string {
 /** Writes the spec's files under the session dir. */
 export function materialize(spec: LaunchSpec, sessionDir: string): void {
   for (const [rel, content] of Object.entries(spec.files ?? {})) {
-    const path = join(sessionDir, rel);
+    const path = isAbsolute(rel) ? rel : join(sessionDir, rel);
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, content, { mode: 0o600 });
   }

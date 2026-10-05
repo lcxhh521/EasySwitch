@@ -43,8 +43,8 @@ after(() => {
 });
 
 test("each launcher says what it can do, and which forms were run against the real program", () => {
-  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true, efforts: [] });
-  assert.deepEqual(hasLauncher("claude")?.efforts, ["low", "medium", "high", "xhigh", "max"], "each agent names its own levels");
+  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true, efforts: [], anyEffort: true, tiers: [] });
+  assert.deepEqual(hasLauncher("claude")?.efforts, ["low", "medium", "high", "xhigh", "max"], "agents with their own setting use their own words");
   assert.equal(hasLauncher("qwen-code")?.verified, false, "documented but not yet run here");
   assert.equal(hasLauncher("doubao"), undefined);
 });
@@ -111,7 +111,7 @@ test("the real Hermes, handed a task headlessly with a private HERMES_HOME, answ
   const hermes = process.env.HOME + "/.local/bin/hermes";
   if (!existsSync(hermes)) { t.skip("Hermes not installed"); return; }
   const before = relay.requests.length;
-  const result = await runHeadless("hermes", { bin: hermes, port, model: `${providerId}/mock-coder`, task: "Reply with exactly the word: pong" }, { timeoutMs: 120_000, attachMcp: false });
+  const result = await runHeadless("hermes", { bin: hermes, port, model: `${providerId}/mock-coder`, task: "Reply with exactly the word: pong", stateDir: join(tmpdir(), "easyswitch-test-state") }, { timeoutMs: 120_000, attachMcp: false });
   assert.ok(relay.requests.length > before, `the request went through the gateway: ${result.output.slice(0, 300)}`);
   assert.match(result.output, /Hello from the mock relay|pong/i);
 });
@@ -144,7 +144,10 @@ test("effort and extra models are saved on the agent, survive a model change, an
   const H = { "content-type": "application/json", "x-easyswitch": "1" };
   const api = (m: string, p: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${p}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
   await api("PUT", "/api/bindings/claude", { providerId, model: "mock-coder" });
-  assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "turbo" })).status, 400, "only the agent's own levels");
+  assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "high" })).status, 400, "a model with no levels has nothing to set");
+  assert.equal((await api("PUT", `/api/providers/${providerId}/model-efforts`, { model: "mock-coder", levels: ["low", "medium", "high"] })).status, 200, "the user says which levels it has");
+  assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "turbo" })).status, 400, "only levels the model and the agent both have");
+  assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "max" })).status, 400, "the agent has max, this model does not");
   assert.equal((await api("PUT", "/api/bindings/claude/effort", { effort: "high" })).status, 200);
   assert.equal((await api("PUT", "/api/bindings/claude/tiers/subagent", { providerId, model: "mock-coder" })).status, 200);
   assert.equal((await api("PUT", "/api/bindings/claude/tiers/nonsense", { providerId, model: "mock-coder" })).status, 404);

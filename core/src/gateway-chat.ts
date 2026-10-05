@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withKey } from "./keypool.ts";
 import { quirksFor, reasoningDelta, reasoningMemory, shapeChat } from "./quirks.ts";
+import { applyThinking } from "./gateway.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { GatewayLogEntry } from "./types.ts";
 import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
 import { resolveModel, type GatewayDeps } from "./gateway.ts";
+import { sendChat } from "./upstream-chat.ts";
 
 /**
  * Inbound OpenAI Chat Completions: what most coding agents (Qwen Code, opencode,
@@ -29,6 +31,12 @@ function openaiError(message: string, type = "easyswitch_error", code?: string):
 }
 
 /** The agent behind a request, from the per-launch gateway token `es-session-<agent>-<id>`; unknown tokens log as "chat". */
+/** The agent a call belongs to: from its per-launch token, else the protocol's usual client. */
+export function agentOf(header: string | string[] | undefined, fallback: string): string {
+  const id = agentFromAuth(header);
+  return id === "chat" ? fallback : id;
+}
+
 export function agentFromAuth(header: string | string[] | undefined): string {
   const token = String(Array.isArray(header) ? header[0] : header ?? "").replace(/^Bearer\s+/i, "");
   const id = /^es-session-([a-z0-9]+)-/.exec(token)?.[1];
@@ -78,19 +86,16 @@ export async function handleChatCompletions(req: IncomingMessage, res: ServerRes
 
   const stream = body.stream === true;
   const chat = { ...body, model } as unknown as ChatRequest;
-  shapeChat(chat, { quirks: quirksFor(provider.baseUrl, model) });
+  const quirks = quirksFor(provider.baseUrl, model);
+  applyThinking(chat, deps.store, harness, (body as Json).reasoning_effort, provider, quirks);
+  shapeChat(chat, { quirks });
   // Usage is what the ledger counts; ask for it when the client did not.
   if (stream && provider.streamUsage && !(chat as unknown as Json).stream_options) chat.stream_options = { include_usage: true };
 
   const abort = new AbortController();
   res.on("close", () => abort.abort());
   const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-    fetch(endpointUrl(provider, "chat"), {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: stream ? "text/event-stream" : "application/json", ...upstreamHeaders(provider, apiKey) },
-      body: JSON.stringify(chat),
-      signal: abort.signal,
-    }).catch((error: Error) => error));
+    sendChat(provider, apiKey, chat, abort.signal));
   if (upstream instanceof Error) {
     sendJson(res, 502, openaiError(`upstream unreachable: ${upstream.message}`, "api_error"));
     finish(502, "unreachable");

@@ -47,3 +47,9 @@ commit, license and how far the code was changed.
 - Never copy leaked or proprietary source (for example the Claude Code source-map leak) or code derived from it.
 - MIT / Apache-2.0 code keeps its notices; Apache-2.0 transplants also record what changed.
 - Proprietary payloads (for example the Claude Code binaries) are never vendored.
+| Per-model thinking levels; an agent offers the levels the model has that it can say; Codex catalog and Claude Code capability declaration per model | Magpie's per-model `Efforts`, `CLAUDE_CODE_MODEL_CAPABILITIES` handling and its `/v1/models` `supported_reasoning_levels`, read at @ `8b7c4ef` | MIT | Idea only; level sources, mapping and the capability string are our own (`core/src/model-efforts.ts`, `core/src/quirks.ts`, `core/src/launch.ts`, `core/src/catalog.ts`) |
+| Claude's own models next to ours in Claude Code: the user's login kept, requests for Claude models forwarded unchanged to Anthropic, the model list merged | Anthropic's "LLM gateway" documentation (a gateway must forward `anthropic-beta`); opencodex's native passthrough design | Public documentation; opencodex MIT | `core/src/claude-native.ts` is our own code; only the headers the client sent are forwarded, to one fixed host |
+| Agents' real thinking levels read from the installed program (`--help`, `codex debug models`) | Observed from the programs themselves | n/a | `core/src/efforts.ts` |
+| Same agent, several models (sub-agent, small tasks) | Magpie's per-agent tiers (Claude Code `CLAUDE_CODE_SUBAGENT_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`; Codex `default_subagent_model`; OpenCode `small_model`) | MIT | Idea only; written per launch, never into the agent's config |
+| `es` command | Own design | n/a | `bin/es.ts` |
+| Agents calling agents over MCP | Own design; MCP specification | n/a | `core/src/mcp.ts` |

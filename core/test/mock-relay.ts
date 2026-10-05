@@ -63,8 +63,9 @@ function validate(body: Json): string | undefined {
   return undefined;
 }
 
-export function startMockRelay(port = 0, opts: { apiKey?: string } = {}): Promise<{ server: Server; baseUrl: string; requests: Json[] }> {
+export function startMockRelay(port = 0, opts: { apiKey?: string } = {}): Promise<{ server: Server; baseUrl: string; requests: Json[]; headers: Array<Record<string, string | string[] | undefined>> }> {
   const requests: Json[] = [];
+  const headers: Array<Record<string, string | string[] | undefined>> = [];
   const server = createServer((req, res) => {
     let raw = "";
     req.on("data", c => (raw += c));
@@ -86,6 +87,7 @@ export function startMockRelay(port = 0, opts: { apiKey?: string } = {}): Promis
       }
       const body = JSON.parse(raw) as Json;
       requests.push(body);
+      headers.push({ ...req.headers });
       const invalid = validate(body);
       if (invalid) {
         res.writeHead(400, { "content-type": "application/json" });
@@ -121,7 +123,7 @@ export function startMockRelay(port = 0, opts: { apiKey?: string } = {}): Promis
     server.listen(port, "127.0.0.1", () => {
       const address = server.address();
       const actual = typeof address === "object" && address ? address.port : port;
-      resolve({ server, baseUrl: `http://127.0.0.1:${actual}/v1`, requests });
+      resolve({ server, baseUrl: `http://127.0.0.1:${actual}/v1`, requests, headers });
     });
   });
 }

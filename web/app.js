@@ -169,8 +169,15 @@ function openGuard(anchor) {
 /** Under an agent's row: its reasoning level and the other models it runs next to the main one. */
 function agentSettings(id) {
   const binding = state.bindings?.[id];
-  const can = (agentList ?? []).find(a => a.id === id)?.can;
-  if (!binding || !can || (!can.efforts?.length && !can.tiers?.length)) return "";
+  const can0 = (agentList ?? []).find(a => a.id === id)?.can;
+  if (!binding || !can0) return "";
+  // A level is offered only if the model has it and the agent can say it.
+  const modelHas = state.modelEfforts?.[`${binding.providerId}/${binding.model}`];
+  // An agent with levels of its own offers those the model has too; one without offers whatever the model has.
+  const can = { ...can0, efforts: can0.anyEffort ? (modelHas ?? []) : (can0.efforts ?? []).filter(l => !modelHas || modelHas.includes(l)) };
+  if (!can.efforts.length && !can.tiers?.length) {
+    return `<div class="row settings" style="padding-top:0"><span class="grow"></span><span class="hint">${esc(binding.model)} 没有可调的思考档位</span></div>`;
+  }
   const tierBtn = t => {
     const name = binding.tiers?.[t.id];
     const slash = name ? name.indexOf("/") : -1;
@@ -199,7 +206,9 @@ function agentRow(harness) {
     : `<span class="ic sm"></span><span class="label">原生<small>不经过 EasySwitch</small></span>`;
   const sub = !binary
     ? `没有找到 ${meta.name} 的命令`
-    : binding ? `平时打开：原生 · 增强会话：${esc(binding.providerId)}/${esc(binding.model)}` : "平时打开：原生 · 选一个模型就能开增强会话";
+    : binding ? `平时打开：原生 · 增强会话：${esc(binding.providerId)}/${esc(binding.model)}${harness === "claude" && state.claudeLogin ? " · /model 里 Claude 原生模型也都在" : ""}`
+    : harness === "claude" && state.claudeLogin ? "增强会话保留你自己的 Claude 登录：/model 里 Claude 原生模型和你加的模型一起出现"
+    : "平时打开：原生 · 选一个模型就能开增强会话";
   return `
     <div class="row" data-harness="${harness}">
       ${icon(meta.icon, "lg")}
@@ -208,7 +217,7 @@ function agentRow(harness) {
         <div class="sub">${sub}</div>
       </div>
       <button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button>
-      <button class="btn launch" data-launch="${harness}" ${binding && binary ? "" : "disabled"}>启动增强会话</button>
+      <button class="btn launch" data-launch="${harness}" ${(binding || (harness === "claude" && state.claudeLogin)) && binary ? "" : "disabled"}>启动增强会话</button>
     </div>${agentSettings(harness)}`;
 }
 
@@ -270,7 +279,7 @@ function agentCatalog() {
     <p class="hint">「接入中」的 agent 都支持按次启动时指向 EasySwitch，正在逐个接入；「只能打开」的是闭源或绑定登录的，没有可改的端点，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>`;
 }
 
-const EFFORT_LABEL = { "": "默认", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深" };
+const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
 const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
 const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已停止", ""], timeout: ["超时", "warn"] };
 
@@ -647,8 +656,38 @@ function renderOcxImport() {
     </div>`;
 }
 
+let planInfo = null; // /api/plan
+let planConfirmOut = null; // account id whose sign-out is waiting for a second click
+
+/** "Continue with ChatGPT": use the ChatGPT plan as a model source (OpenAI's sign-in for local open-source tools). */
+function planCard() {
+  const accounts = planInfo?.accounts ?? [];
+  const si = planInfo?.signIn;
+  const row = a => `
+    <div class="row">
+      ${icon("openai", "lg")}
+      <div class="grow"><div class="title">${esc(a.label)}${a.email && a.email !== a.label ? ` <span class="hint">${esc(a.email)}</span>` : ""}</div>
+        <div class="sub">${a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : "已接入：它的模型出现在下面的来源里，所有 agent 都能选"}</div></div>
+      ${a.needsSignIn || !a.planUsage ? `<span class="chip warn">${a.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : `<span class="chip ok"><span class="dot"></span>可用</span>`}
+      <button class="btn secondary" data-plan-signin-again="${esc(a.id)}">${a.needsSignIn || !a.planUsage ? "重新登录" : "重新授权"}</button>
+      ${a.planUsage && !a.needsSignIn ? `<button class="btn secondary" data-plan-models="${esc(a.id)}">刷新模型</button>` : ""}
+      <button class="btn secondary" data-plan-signout="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>
+    </div>`;
+  return `
+    <div class="section-head"><h2>用你的订阅</h2><span class="aside">登录只在这台电脑上，令牌存在钥匙串里</span></div>
+    <div class="card">
+      ${accounts.map(row).join("")}
+      ${si?.status === "waiting" ? `<div class="row"><div class="grow"><div class="title">已在浏览器里打开登录页</div><div class="sub">在浏览器里登录并允许使用订阅额度，然后回到这里。没有自动打开的话，<a href="${esc(si.url)}" target="_blank" rel="noopener">点这里打开</a>。</div></div><button class="btn secondary" data-plan-cancel>取消</button></div>` : ""}
+      ${si?.status === "error" ? `<div class="row"><div class="grow"><div class="title">没有登录成功</div><div class="sub">${esc(si.message ?? "")}</div></div></div>` : ""}
+      ${si?.status === "done" && si.message ? `<div class="row"><div class="grow"><div class="sub">${esc(si.message)}</div></div></div>` : ""}
+      <button class="add-row" data-plan-signin>${icon("openai", "sm")} Continue with ChatGPT</button>
+    </div>
+    <p class="hint">用的是 OpenAI 官方给本地工具提供的「用 ChatGPT 订阅」登录，额度和你的 ChatGPT 订阅共用；可以在 <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener">ChatGPT 设置 → 用量</a> 里给 EasySwitch 设每周上限。Claude 的订阅不在这里用。</p>`;
+}
+
 function renderProviders() {
   return `
+    ${planCard()}
     <div class="section-head"><h2>模型来源</h2><span class="aside">中转站、官方 API、本地模型都可以；加进来先自动测一遍</span></div>
     <div class="card">
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
@@ -935,6 +974,7 @@ async function refresh(force = false) {
   } catch {
     state = null;
   }
+  if (page === "providers") planInfo = await call("GET", "/api/plan").catch(() => planInfo);
   if (page === "agents" && !PANEL) chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
   if (page === "tasks") {
     taskList = await call("GET", "/api/tasks").catch(() => taskList);
@@ -1062,6 +1102,28 @@ document.addEventListener("click", async e => {
   if (taskStop) { await call("POST", `/api/tasks/${taskStop.dataset.taskStop}/stop`).catch(() => {}); await refresh(true); return; }
   if (t.closest("[data-task-clear]")) { await call("DELETE", "/api/tasks").catch(() => {}); await refresh(true); return; }
 
+  if (t.closest("[data-plan-signin]") || t.closest("[data-plan-signin-again]")) {
+    const again = t.closest("[data-plan-signin-again]")?.dataset.planSigninAgain;
+    try { await call("POST", "/api/plan/signin", again ? { accountId: again } : {}); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  if (t.closest("[data-plan-cancel]")) { await call("POST", "/api/plan/signin", { cancelOnly: true }).catch(() => {}); await refresh(true); return; }
+  const planModels = t.closest("[data-plan-models]");
+  if (planModels) {
+    try { const r = await call("POST", `/api/plan/${planModels.dataset.planModels}/models`); toast(`模型已更新：${r.models.length} 个`); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const planOut = t.closest("[data-plan-signout]");
+  if (planOut) {
+    const id = planOut.dataset.planSignout;
+    if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
+    planConfirmOut = null;
+    try { await call("DELETE", `/api/plan/${id}`); toast("已退出登录，并在 OpenAI 那边撤销了这次登录"); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
   const agentOpen = t.closest("[data-agent-open]");
   if (agentOpen) {
     try { await call("POST", `/api/agents/${agentOpen.dataset.agentOpen}/open`); toast("已打开"); } catch (error) { toast(error.message); }

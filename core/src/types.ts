@@ -29,9 +29,13 @@ export interface Provider {
   anthropicBaseUrl?: string;
   /** Whether the provider accepts `stream_options.include_usage`. */
   streamUsage: boolean;
-  /** Overrides the built-in guess about whether it takes Chat's `reasoning_effort` (true: send, false: never). */
+  /** Overrides the built-in guess about how this provider takes a thinking level (true: Chat's reasoning_effort, false: never send one). */
   reasoningEffort?: boolean;
+  /** Thinking levels the user says a model on this provider has, by model id. Overrides what EasySwitch knows. */
+  modelEfforts?: Record<string, string[]>;
   probe?: ProbeReport;
+  /** This provider is a ChatGPT plan reached through "Sign in with ChatGPT": the key is a renewed OAuth token, not a stored key. */
+  plan?: { kind: "chatgpt"; accountId: string };
   /** How the user pays: per token (default) or a flat subscription, where per-call cost is not meaningful. */
   billing?: "usage" | "subscription";
   /** The user's own prices (USD per 1M tokens) by model id; they win over the built-in table. */
@@ -128,6 +132,8 @@ export interface Account {
 export interface Settings {
   /** Augmented sessions get the EasySwitch MCP server, so any agent can hand work to the others. */
   agentCalls: boolean;
+  /** Claude Code sessions keep the user's own Claude login, so Claude's own models and ours share one menu. */
+  claudeNative: boolean;
 }
 
 /** How money is shown: USD as priced, or converted at the user's own rate. */

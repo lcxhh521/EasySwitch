@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
+import type { SiwcAccount, SiwcStorage } from "./siwc.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Provider, Settings } from "./types.ts";
 
 interface StateFile {
@@ -12,6 +13,9 @@ interface StateFile {
   accountSettings?: AccountSettings;
   display?: DisplaySettings;
   settings?: Settings;
+  /** Signed-in ChatGPT plan accounts (tokens are in the Keychain, never here). */
+  siwc?: SiwcAccount[];
+  siwcHostId?: string;
 }
 
 const EMPTY: StateFile = { version: 1, providers: [], bindings: [] };
@@ -112,8 +116,33 @@ export class Store {
     this.save();
   }
 
+  /** Where "Sign in with ChatGPT" keeps its account records. */
+  siwcStorage(): SiwcStorage {
+    return {
+      hostId: () => {
+        if (!this.state.siwcHostId) {
+          this.state.siwcHostId = `urn:uuid:${crypto.randomUUID()}`;
+          this.save();
+        }
+        return this.state.siwcHostId;
+      },
+      accounts: () => structuredClone(this.state.siwc ?? []),
+      save: account => {
+        const list = this.state.siwc ?? [];
+        const at = list.findIndex(a => a.id === account.id);
+        if (at >= 0) list[at] = structuredClone(account); else list.push(structuredClone(account));
+        this.state.siwc = list;
+        this.save();
+      },
+      remove: id => {
+        this.state.siwc = (this.state.siwc ?? []).filter(a => a.id !== id);
+        this.save();
+      },
+    };
+  }
+
   settings(): Settings {
-    return { agentCalls: true, ...(this.state.settings ?? {}) };
+    return { agentCalls: true, claudeNative: true, ...(this.state.settings ?? {}) };
   }
 
   setSettings(patch: Partial<Settings>): Settings {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { modelEfforts } from "./model-efforts.ts";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -21,12 +22,14 @@ export interface CatalogModel {
   providerId: string;
   providerName: string;
   model: string;
+  /** The thinking levels this model has (see model-efforts.ts); empty when it has none to set. */
+  efforts: string[];
 }
 
 export function catalogModels(providers: readonly Provider[]): CatalogModel[] {
   return providers.flatMap(p => {
     const models = p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : [];
-    return models.map(model => ({ providerId: p.id, providerName: p.name, model }));
+    return models.map(model => ({ providerId: p.id, providerName: p.name, model, efforts: modelEfforts(p, model) }));
   });
 }
 
@@ -133,11 +136,18 @@ export function pickTemplate(models: readonly Json[]): Json | undefined {
 }
 
 const DEFAULT_CONTEXT = 128_000;
-const REASONING_LEVELS = [
-  { effort: "low", description: "快，思考少" },
-  { effort: "medium", description: "均衡" },
-  { effort: "high", description: "多想一会儿" },
-];
+const LEVEL_TEXT: Record<string, string> = {
+  none: "不思考", minimal: "几乎不思考", low: "快，思考少", medium: "均衡", high: "多想一会儿", xhigh: "想得更深", max: "尽力想", ultra: "极限",
+};
+
+/** What Codex shows for a model's levels. A model with none still gets one entry, since Codex wants a default to point at. */
+function codexLevels(levels: readonly string[]): { levels: Array<{ effort: string; description: string }>; fallback: string } {
+  const list = levels.length ? levels : ["medium"];
+  return {
+    levels: list.map(effort => ({ effort, description: LEVEL_TEXT[effort] ?? effort })),
+    fallback: list.includes("medium") ? "medium" : list.includes("high") ? "high" : list[0]!,
+  };
+}
 
 export function codexCatalog(template: Json, models: readonly CatalogModel[]): Json {
   return {
@@ -158,8 +168,8 @@ export function codexCatalog(template: Json, models: readonly CatalogModel[]): J
       use_responses_lite: false,
       multi_agent_version: null,
       experimental_supported_tools: [],
-      supported_reasoning_levels: REASONING_LEVELS,
-      default_reasoning_level: "medium",
+      supported_reasoning_levels: codexLevels(m.efforts).levels,
+      default_reasoning_level: codexLevels(m.efforts).fallback,
       // What the gateway can actually carry: plain HTTP streaming, no hosted
       // search, no reasoning summaries; text in, text out.
       supports_websockets: false,

@@ -63,7 +63,14 @@ export function pick(provider: Provider): ProviderKey | undefined {
 }
 
 /** Reads the secret for the key a request will use (legacy single key when there is no pool). */
+/** Supplies the token for a provider that is a ChatGPT plan; the server sets it (see siwc.ts). */
+let planToken: ((provider: Provider) => Promise<string>) | undefined;
+export function setPlanToken(fn: ((provider: Provider) => Promise<string>) | undefined): void {
+  planToken = fn;
+}
+
 export async function pickKey(secrets: SecretStore, provider: Provider): Promise<{ keyId?: string; apiKey: string | undefined }> {
+  if (provider.plan && planToken) return { apiKey: await planToken(provider) };
   const key = pick(provider);
   if (!key) return { apiKey: await secrets.get(provider.id) };
   return { keyId: key.id, apiKey: await secrets.get(keySecretId(provider.id, key.id)) };

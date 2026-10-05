@@ -6,8 +6,11 @@ import type { GatewayLogEntry } from "./types.ts";
 import { fromClaudeModelId } from "./catalog.ts";
 import { createHash } from "node:crypto";
 import { withKey } from "./keypool.ts";
-import { applyEffort, quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
-import { resolveModel } from "./gateway.ts";
+import { quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
+import { applyThinking, resolveModel } from "./gateway.ts";
+import { sendChat } from "./upstream-chat.ts";
+import { forwardNative, isNativeClaude } from "./claude-native.ts";
+import { agentOf } from "./gateway-chat.ts";
 import { anthropicHeaders } from "./probe.ts";
 import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
 
@@ -21,9 +24,14 @@ function anthropicError(res: ServerResponse, status: number, type: string, messa
   res.end(JSON.stringify({ type: "error", error: { type, message } }));
 }
 
-export function handleCountTokens(res: ServerResponse, rawBody: string): void {
+export async function handleCountTokens(req: IncomingMessage, res: ServerResponse, rawBody: string, deps: GatewayDeps): Promise<void> {
   let body: Json = {};
   try { body = JSON.parse(rawBody) as Json; } catch { /* estimate from nothing */ }
+  const asked = String(body.model ?? "");
+  if (isNativeClaude(asked) && !resolveModel(deps.store, fromClaudeModelId(asked) ?? asked)) {
+    await forwardNative(req, res, req.url ?? "/v1/messages/count_tokens", rawBody, asked, () => {});
+    return;
+  }
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ input_tokens: estimateTokens(body) }));
 }
@@ -41,6 +49,10 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   const asked = String(body.model ?? "");
   const exposed = fromClaudeModelId(asked) ?? asked;
   const resolved = resolveModel(deps.store, exposed);
+  if (!resolved && isNativeClaude(asked)) {
+    await forwardNative(req, res, req.url ?? "/v1/messages", rawBody, asked, deps.log);
+    return;
+  }
   if (!resolved) {
     anthropicError(res, 404, "not_found_error", `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`);
     return;
@@ -49,7 +61,7 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   const route = provider.messagesRoute ?? "chat-translate";
   const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
     deps.log({
-      at: new Date().toISOString(), model: exposed, providerId: provider.id, route, harness: "claude",
+      at: new Date().toISOString(), model: exposed, providerId: provider.id, route, harness: agentOf(req.headers.authorization, "claude"),
       status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...extra,
     });
   const abort = new AbortController();
@@ -84,14 +96,9 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     ? createHash("sha256").update(String((body.metadata as Json).user_id)).digest("hex").slice(0, 32)
     : undefined;
   const quirks = quirksFor(provider.baseUrl, model);
-  applyEffort(chat, (body.output_config as Json | undefined)?.effort, provider.reasoningEffort ?? quirks.reasoningEffort);
+  applyThinking(chat, deps.store, agentOf(req.headers.authorization, "claude"), (body.output_config as Json | undefined)?.effort, provider, quirks);
   shapeChat(chat, { quirks, ...(sessionKey ? { cacheKey: sessionKey } : {}) });
-  const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(endpointUrl(provider, "chat"), {
-    method: "POST",
-    headers: { "content-type": "application/json", ...upstreamHeaders(provider, apiKey) },
-    body: JSON.stringify(payload),
-    signal: abort.signal,
-  }).catch((error: Error) => error);
+  const send = (payload: unknown, apiKey?: string): Promise<Response | Error> => sendChat(provider, apiKey, payload, abort.signal);
 
   let { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey => send(chat, apiKey));
   const droppedList = [...new Set(dropped)];
