@@ -83,7 +83,7 @@ test("adding a relay lists its models and keeps the key out of state", async () 
 test("the probe grades a chat-only relay and routes it through translation", async () => {
   const { json } = await api("POST", "/api/providers/mock-relay/probe", { model: "mock-coder" });
   const checks = Object.fromEntries(((json.probe as Json).checks as Json[]).map(c => [c.id, c.status]));
-  assert.deepEqual(checks, { models: "pass", chat: "pass", "chat-stream": "pass", tools: "pass", responses: "fail" });
+  assert.deepEqual(checks, { models: "pass", chat: "pass", "chat-stream": "pass", tools: "pass", responses: "fail", messages: "fail" });
   assert.equal(json.route, "chat-translate");
   assert.equal(json.streamUsage, true);
 });

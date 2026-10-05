@@ -1,11 +1,16 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
 /** Marker every EasySwitch-launched Codex carries, so "back to native" can find them. */
 export const SESSION_MARKER = "model_providers.easyswitch";
+
+/** The same for Claude Code sessions: it rides in the --settings JSON on argv. */
+export const CLAUDE_SESSION_MARKER = "EASYSWITCH_SESSION";
 
 const BUNDLED_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
 
@@ -32,6 +37,50 @@ export function codexArgs(port: number, exposedModel: string): string[] {
   ];
 }
 
+/**
+ * The real Claude Code binary. Not a shell alias or wrapper: a wrapper such as
+ * CC Switch's unsets ANTHROPIC_* variables, which is exactly what we pass.
+ */
+export async function findClaude(): Promise<string | undefined> {
+  const native = join(homedir(), ".local", "bin", "claude");
+  if (existsSync(native)) return native;
+  try {
+    const { stdout } = await run("/bin/zsh", ["-lc", "command -v claude"]);
+    const path = stdout.trim();
+    if (path.startsWith("/") && existsSync(path)) return path;
+  } catch {
+    // Not on PATH.
+  }
+  return undefined;
+}
+
+/** Environment for one augmented Claude Code session; every model tier maps to the bound model. */
+export function claudeEnv(port: number, exposedModel: string, sessionToken: string): Record<string, string> {
+  return {
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_AUTH_TOKEN: sessionToken,
+    ANTHROPIC_MODEL: exposedModel,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: exposedModel,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: exposedModel,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: exposedModel,
+    [CLAUDE_SESSION_MARKER]: "1",
+  };
+}
+
+/**
+ * `--settings` is a per-launch settings layer that outranks ~/.claude/settings.json,
+ * so an `env` block a provider switcher left there cannot redirect this session,
+ * and nothing is written to disk.
+ */
+export function claudeArgs(env: Record<string, string>): string[] {
+  return ["--settings", JSON.stringify({ env })];
+}
+
+export function claudeCommandLine(claudePath: string, env: Record<string, string>): string {
+  const assignments = Object.entries(env).map(([k, v]) => `${k}=${shellQuote(v)}`);
+  return ["env", ...assignments, shellQuote(claudePath), ...claudeArgs(env).map(shellQuote)].join(" ");
+}
+
 function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
@@ -53,10 +102,10 @@ export async function launchInTerminal(commandLine: string, banner: string): Pro
   ]);
 }
 
-/** Every running augmented Codex session, found by its command-line marker. */
+/** Every running augmented session (Codex or Claude Code), found by its command-line marker. */
 export async function augmentedSessions(): Promise<number[]> {
   try {
-    const { stdout } = await run("pgrep", ["-f", SESSION_MARKER]);
+    const { stdout } = await run("pgrep", ["-f", `${SESSION_MARKER}|${CLAUDE_SESSION_MARKER}`]);
     return stdout.split("\n").map(Number).filter(n => Number.isInteger(n) && n > 0 && n !== process.pid);
   } catch {
     return [];

@@ -1,14 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleResponses, listExposedModels } from "./gateway.ts";
-import { augmentedSessions, codexCommandLine, findCodex, launchInTerminal } from "./launch.ts";
+import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
+import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal } from "./launch.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { slugify, type Store } from "./store.ts";
-import type { GatewayLogEntry, Provider, ProviderRoute } from "./types.ts";
+import type { GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -75,7 +77,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, {
         version: VERSION, port, providers,
         binding: store.binding("codex") ?? null,
+        bindings: { codex: store.binding("codex") ?? null, claude: store.binding("claude") ?? null },
         codexPath: (await findCodex()) ?? null,
+        claudePath: (await findClaude()) ?? null,
         sessions: await augmentedSessions(),
         native: nativeFiles(),
         log,
@@ -87,13 +91,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const name = String(body.name ?? "").trim();
       const baseUrl = String(body.baseUrl ?? "").trim().replace(/\/+$/, "");
       const apiKey = String(body.apiKey ?? "").trim();
-      if (!name || !/^https?:\/\//.test(baseUrl)) {
+      const anthropicBaseUrl = String(body.anthropicBaseUrl ?? "").trim().replace(/\/+$/, "");
+      if (!name || !/^https?:\/\//.test(baseUrl) || (anthropicBaseUrl && !/^https?:\/\//.test(anthropicBaseUrl))) {
         json(res, 400, { error: "需要名称和以 http(s):// 开头的地址" });
         return;
       }
       const provider: Provider = {
         id: slugify(name, store.providers().map(p => p.id)),
         name, baseUrl, models: [], route: "chat-translate", routePinned: false, streamUsage: true,
+        ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
         createdAt: new Date().toISOString(),
       };
       if (apiKey) await secrets.set(provider.id, apiKey);
@@ -131,6 +137,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         provider.probe = report;
         provider.streamUsage = streamUsage;
         if (!provider.routePinned) provider.route = report.recommendedRoute;
+        if (report.recommendedMessagesRoute) provider.messagesRoute = report.recommendedMessagesRoute;
         store.upsertProvider(provider);
         json(res, 200, publicProvider(provider, Boolean(apiKey)));
         return;
@@ -153,29 +160,36 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
-    if (method === "PUT" && path === "/api/bindings/codex") {
+    const bindingMatch = /^\/api\/bindings\/(codex|claude)$/.exec(path);
+    if (method === "PUT" && bindingMatch) {
+      const harness = bindingMatch[1] as Harness;
       const provider = store.provider(String(body.providerId ?? ""));
       const model = String(body.model ?? "");
       if (!provider || !model) {
         json(res, 400, { error: "需要选择模型来源和模型" });
         return;
       }
-      store.setBinding({ harness: "codex", providerId: provider.id, model });
-      json(res, 200, store.binding("codex"));
+      store.setBinding({ harness, providerId: provider.id, model });
+      json(res, 200, store.binding(harness));
       return;
     }
 
-    if (path === "/api/launch/codex" && (method === "POST" || method === "GET")) {
-      const binding = store.binding("codex");
-      const codex = await findCodex();
-      if (!binding || !codex) {
-        json(res, 409, { error: !binding ? "还没有给 Codex 绑定模型" : "找不到 codex 命令" });
+    const launchMatch = /^\/api\/launch\/(codex|claude)$/.exec(path);
+    if (launchMatch && (method === "POST" || method === "GET")) {
+      const harness = launchMatch[1] as Harness;
+      const label = harness === "codex" ? "Codex" : "Claude Code";
+      const binding = store.binding(harness);
+      const binary = harness === "codex" ? await findCodex() : await findClaude();
+      if (!binding || !binary) {
+        json(res, 409, { error: !binding ? `还没有给 ${label} 绑定模型` : `找不到 ${label} 的命令` });
         return;
       }
       const exposed = `${binding.providerId}/${binding.model}`;
-      const command = codexCommandLine(codex, port, exposed);
+      const command = harness === "codex"
+        ? codexCommandLine(binary, port, exposed)
+        : claudeCommandLine(binary, claudeEnv(port, exposed, `es-session-${randomUUID()}`));
       if (method === "POST") {
-        await launchInTerminal(command, `EasySwitch 增强会话：${exposed}（只在这个窗口生效，关掉窗口即回到原生）`);
+        await launchInTerminal(command, `EasySwitch 增强会话（${label}）：${exposed}（只在这个窗口生效，关掉窗口即回到原生）`);
       }
       json(res, 200, { command, model: exposed });
       return;
@@ -214,6 +228,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         await handleResponses(req, res, await readBody(req), { store, secrets, log: pushLog });
+        return;
+      }
+      if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
+        handleCountTokens(res, await readBody(req));
+        return;
+      }
+      if (req.method === "POST" && (path === "/v1/messages" || path === "/messages")) {
+        await handleMessages(req, res, await readBody(req), { store, secrets, log: pushLog });
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {

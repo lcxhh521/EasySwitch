@@ -26,17 +26,30 @@
       <p class="msg" id="add-msg"></p>
     </section>
 
-    <section class="card">
+    <section class="card harness" data-harness="codex">
       <h2>Codex</h2>
-      <p class="hint">增强会话只在 EasySwitch 打开的那个终端窗口里生效：启动时临时指定模型来源，<b>不改 ~/.codex 里的任何文件</b>。关掉窗口就回到原生。</p>
+      <p class="hint">增强会话只在 EasySwitch 打开的那个终端窗口里生效：启动时用 <code>-c</code> 临时指定模型来源，<b>不改 ~/.codex 里的任何文件</b>。关掉窗口就回到原生。</p>
       <div class="row">
-        <label>模型来源 <select id="bind-provider"></select></label>
-        <label>模型 <select id="bind-model"></select></label>
-        <button id="bind-save" class="secondary">保存绑定</button>
-        <button id="launch">启动增强会话</button>
+        <label>模型来源 <select class="bind-provider"></select></label>
+        <label>模型 <select class="bind-model"></select></label>
+        <button class="bind-save secondary">保存绑定</button>
+        <button class="launch">启动增强会话</button>
       </div>
-      <pre class="cmd" id="cmd"></pre>
-      <p class="msg" id="bind-msg"></p>
+      <pre class="cmd"></pre>
+      <p class="msg bind-msg"></p>
+    </section>
+
+    <section class="card harness" data-harness="claude">
+      <h2>Claude Code</h2>
+      <p class="hint">同样只在那个终端窗口里生效：用环境变量加一次性的 <code>--settings</code> 指向 EasySwitch，<b>不改 ~/.claude 里的任何文件</b>；你平时直接打开的 Claude Code 照旧走官方。</p>
+      <div class="row">
+        <label>模型来源 <select class="bind-provider"></select></label>
+        <label>模型 <select class="bind-model"></select></label>
+        <button class="bind-save secondary">保存绑定</button>
+        <button class="launch">启动增强会话</button>
+      </div>
+      <pre class="cmd"></pre>
+      <p class="msg bind-msg"></p>
     </section>
 
     <section class="card">

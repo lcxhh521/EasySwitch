@@ -5,7 +5,8 @@ import WebKit
 
 let corePort = 18765
 let coreURL = URL(string: "http://127.0.0.1:\(corePort)")!
-let sessionMarker = "model_providers.easyswitch"
+// Codex sessions carry the provider override, Claude Code sessions the --settings env marker.
+let sessionPattern = "model_providers.easyswitch|EASYSWITCH_SESSION"
 
 func infoString(_ key: String) -> String? {
   Bundle.main.object(forInfoDictionaryKey: key) as? String
@@ -68,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if healthy {
       menu.addItem(item("打开控制台", #selector(openConsole), "o"))
       menu.addItem(item("启动 Codex 增强会话", #selector(launchCodex), "l"))
+      menu.addItem(item("启动 Claude Code 增强会话", #selector(launchClaude), "k"))
       menu.addItem(item("停止核心服务", #selector(stopCore), ""))
     } else {
       menu.addItem(item("启动核心服务", #selector(startCore), "s"))
@@ -144,8 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSApp.activate(ignoringOtherApps: true)
   }
 
-  @objc private func launchCodex() {
-    var request = URLRequest(url: coreURL.appendingPathComponent("api/launch/codex"))
+  @objc private func launchCodex() { launch("codex") }
+  @objc private func launchClaude() { launch("claude") }
+
+  private func launch(_ harness: String) {
+    var request = URLRequest(url: coreURL.appendingPathComponent("api/launch/\(harness)"))
     request.httpMethod = "POST"
     request.setValue("1", forHTTPHeaderField: "x-easyswitch")
     URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
@@ -159,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func augmentedSessionPids() -> [Int32] {
-    let (_, out) = shell("/usr/bin/pgrep", ["-f", sessionMarker])
+    let (_, out) = shell("/usr/bin/pgrep", ["-f", sessionPattern])
     return out.split(separator: "\n").compactMap { Int32($0) }.filter { $0 != getpid() }
   }
 

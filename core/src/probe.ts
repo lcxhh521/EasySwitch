@@ -1,4 +1,4 @@
-import type { ProbeCheck, ProbeReport, Provider, ProviderRoute } from "./types.ts";
+import type { MessagesRoute, ProbeCheck, ProbeReport, Provider, ProviderRoute } from "./types.ts";
 import { authHeaders, describeFailure, joinUrl, sseData, timedFetch } from "./upstream.ts";
 
 type Json = Record<string, unknown>;
@@ -130,17 +130,51 @@ async function checkResponses(provider: Provider, apiKey: string | undefined, mo
   }
 }
 
+/** Anthropic Messages headers: relays read either the bearer or x-api-key. */
+export function anthropicHeaders(apiKey: string | undefined): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    ...(apiKey ? { "x-api-key": apiKey, ...authHeaders(apiKey) } : {}),
+  };
+}
+
+/** Does the provider speak Anthropic Messages? Then Claude Code traffic passes through untouched. */
+async function checkMessages(provider: Provider, apiKey: string | undefined, model: string): Promise<ProbeCheck> {
+  const label = "原生 Messages 协议";
+  const base = provider.anthropicBaseUrl ?? provider.baseUrl;
+  try {
+    const { response, ms } = await timedFetch(joinUrl(base, "messages"), {
+      method: "POST",
+      headers: anthropicHeaders(apiKey),
+      body: JSON.stringify({ model, max_tokens: 32, messages: [{ role: "user", content: "Reply with exactly the word: pong" }] }),
+    });
+    if (!response.ok) return { id: "messages", label, status: "fail", latencyMs: ms, detail: `不支持（${await describeFailure(response)}），Claude Code 将走协议转换` };
+    const json = (await response.json()) as Json;
+    const ok = Array.isArray(json.content) && json.content.some(b => (b as Json).type === "text");
+    return { id: "messages", label, status: ok ? "pass" : "fail", latencyMs: ms, detail: ok ? "支持，Claude Code 请求将原样转发" : "返回格式不对，将走协议转换" };
+  } catch (error) {
+    return { id: "messages", label, status: "fail", detail: `不支持（${String((error as Error).message ?? error)}），将走协议转换` };
+  }
+}
+
 export async function probeProvider(provider: Provider, apiKey: string | undefined, model: string): Promise<{ report: ProbeReport; models: string[]; streamUsage: boolean }> {
   const { check: modelsCheck, models } = await listModels(provider, apiKey);
-  const [chat, stream, tools, responses] = await Promise.all([
+  const [chat, stream, tools, responses, messages] = await Promise.all([
     checkChat(provider, apiKey, model),
     checkStream(provider, apiKey, model),
     checkTools(provider, apiKey, model),
     checkResponses(provider, apiKey, model),
+    checkMessages(provider, apiKey, model),
   ]);
   const recommendedRoute: ProviderRoute = responses.status === "pass" ? "responses-native" : "chat-translate";
+  const recommendedMessagesRoute: MessagesRoute = messages.status === "pass" ? "anthropic-native" : "chat-translate";
   return {
-    report: { at: new Date().toISOString(), model, checks: [modelsCheck, chat, stream.check, tools, responses], recommendedRoute },
+    report: {
+      at: new Date().toISOString(), model,
+      checks: [modelsCheck, chat, stream.check, tools, responses, messages],
+      recommendedRoute, recommendedMessagesRoute,
+    },
     models,
     streamUsage: stream.streamUsage,
   };

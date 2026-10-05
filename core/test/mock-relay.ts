@@ -6,8 +6,8 @@
  * - Rejects roles and tool types plain Chat providers reject, so a sloppy
  *   translation fails loudly here instead of at a real relay.
  * - Scripted behaviour: probe prompts get canned answers; a coding-agent turn
- *   with an `exec_command` tool gets one shell call, then a final answer that
- *   quotes the tool output.
+ *   with a shell tool (Codex's `exec_command`, Claude Code's `Bash`) gets one
+ *   shell call, then a final answer that quotes the tool output.
  */
 import { createServer, type Server } from "node:http";
 
@@ -40,6 +40,10 @@ function decide(body: Json): Reply {
   if (/Count from 1 to 5/.test(user)) return { text: "1 2 3 4 5" };
   if (tools.includes("exec_command") && last?.role === "user") {
     return { toolCall: { name: "exec_command", arguments: JSON.stringify({ cmd: `echo ${SHELL_MARKER}` }) } };
+  }
+  if (tools.includes("Bash") && last?.role === "user") {
+    // Claude Code's shell tool.
+    return { toolCall: { name: "Bash", arguments: JSON.stringify({ command: `echo ${SHELL_MARKER}`, description: "Print the marker" }) } };
   }
   if (last?.role === "tool") return { text: `The command printed: ${String(last.content).includes(SHELL_MARKER) ? SHELL_MARKER : String(last.content).slice(0, 80)}` };
   return { text: "Hello from the mock relay." };
