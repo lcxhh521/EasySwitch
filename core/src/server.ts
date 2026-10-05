@@ -195,7 +195,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/import/opencodex") {
       const configPath = typeof body.configPath === "string" && body.configPath.trim() ? body.configPath.trim() : undefined;
       if (method === "GET") {
-        json(res, 200, { candidates: opencodexCandidates(configPath) });
+        json(res, 200, { candidates: opencodexCandidates(configPath).map(c => ({ ...c, icon: iconForBaseUrl(c.baseUrl) })) });
         return;
       }
       if (method === "POST") {

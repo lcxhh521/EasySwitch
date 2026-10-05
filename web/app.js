@@ -361,7 +361,7 @@ function renderOcxImport() {
       ${cands.length ? usable.map(c => `
         <label class="row" style="cursor:pointer">
           <input type="checkbox" data-ocx="${esc(c.sourceId)}" ${ocxImport.chosen.has(c.sourceId) ? "checked" : ""}>
-          ${icon(iconForBaseUrl(c.baseUrl), "sm")}
+          ${icon(c.icon ?? "newapi-color", "sm")}
           <div class="grow"><div class="title">${esc(c.name)}</div><div class="sub">${esc(c.baseUrl)} · ${c.keys} 把 Key · ${c.models.length} 个模型</div></div>
         </label>`).join("") : ""}
         ${cands.filter(c => c.skipReason).map(c => `<div class="hint">· ${esc(c.name)}：${esc(c.skipReason)}</div>`).join("")}
