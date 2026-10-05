@@ -57,8 +57,11 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   }
   const { provider, model } = resolved;
   const apiKey = await deps.secrets.get(provider.id);
-  const finish = (status: number, note?: string) =>
-    deps.log({ at: new Date().toISOString(), model: exposed, route: provider.route, harness: "codex", status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}) });
+  const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
+    deps.log({
+      at: new Date().toISOString(), model: exposed, providerId: provider.id, route: provider.route, harness: "codex",
+      status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...extra,
+    });
 
   const abort = new AbortController();
   res.on("close", () => abort.abort());
@@ -91,7 +94,8 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
     body: JSON.stringify(chat),
     signal: abort.signal,
   }).catch((error: Error) => error);
-  const note = dropped.length ? `dropped ${[...new Set(dropped)].join(", ")}` : undefined;
+  const droppedList = [...new Set(dropped)];
+  const note = undefined;
   if (upstream instanceof Error) {
     sendJson(res, 502, errorBody(`upstream unreachable: ${upstream.message}`));
     finish(502, "unreachable");
@@ -126,7 +130,11 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
       stream.chunk(json);
     }
     stream.finish();
-    finish(200, note);
+    const usage = stream.usageSummary;
+    finish(200, note, {
+      ...(droppedList.length ? { dropped: droppedList } : {}),
+      ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
+    });
   } catch (error) {
     stream.fail("stream_interrupted", String((error as Error).message ?? error));
     finish(200, "stream interrupted");

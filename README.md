@@ -18,8 +18,8 @@
 | 部分 | 内容 |
 |---|---|
 | 核心服务 `core/` | TypeScript，直接用 Node 22 运行，无运行时依赖。网关（`/v1/responses` 给 Codex，`/v1/messages` 给 Claude Code）、Responses ↔ Chat 与 Messages ↔ Chat 协议转换、一致性测试、模型来源管理（Key 存 macOS 钥匙串） |
-| 控制台 `web/` | 由核心服务提供的本地网页：添加来源、看测试结果、给 Codex 和 Claude Code 各自绑定模型、启动增强会话、查看原生配置指纹和请求记录 |
-| 菜单栏 `menubar/` | Swift 原生小程序：状态灯、启动/停止核心服务、打开控制台、启动 Codex / Claude Code 增强会话、全部退回原生 |
+| 控制台 `web/` | 由核心服务提供的本地网页，四个页面：**Agent**（每个 agent 一行，模型选择器第一项永远是「原生」）、**模型来源**（预设一键添加、一致性测试、线路）、**会话**（实时示意图 + 每次请求怎么走的人话解释）、**用量**（数字卡片 + 每日柱状图，按来源、按 agent）；页头常驻「原生配置未被改动」 |
+| 菜单栏 `menubar/` | Swift 原生小程序：左键弹出小面板（每个 agent 一行，选模型、开增强会话）；右键或核心服务没运行时是原生菜单（启动/停止核心服务、全部退回原生）——退回原生永远不依赖核心服务 |
 | 接口定义 `contracts/` | 跨语言的数据契约（JSON Schema） |
 
 ## 运行
@@ -57,7 +57,7 @@ npm test             # 单元测试 + 端到端测试
 
 ## 来源
 
-本仓库的代码均为原创，借鉴记录见 [PROVENANCE.md](PROVENANCE.md)。
+界面借鉴了 Magpie 和 opencodex 的设计；从 Magpie 移植的设计变量和 LobeHub 图标都按 MIT 许可保留了声明。完整的借鉴和移植记录见 [PROVENANCE.md](PROVENANCE.md)。
 
 ## 许可证
 

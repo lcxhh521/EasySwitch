@@ -253,6 +253,12 @@ export class ResponsesStream {
     return { id: this.responseId, object: "response", created_at: Math.floor(Date.now() / 1000), model: this.model, status, output: [] };
   }
 
+  /** Token usage the upstream reported, if any (for the ledger). */
+  get usageSummary(): { input: number; output: number; cached: number } | undefined {
+    const u = this.usage;
+    return u ? { input: u.input_tokens, output: u.output_tokens, cached: u.input_tokens_details.cached_tokens } : undefined;
+  }
+
   start(): void {
     this.emit("response.created", { response: this.shell("in_progress") });
     this.emit("response.in_progress", { response: this.shell("in_progress") });

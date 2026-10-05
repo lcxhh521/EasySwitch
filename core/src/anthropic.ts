@@ -204,6 +204,12 @@ export class AnthropicStream {
     this.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`);
   }
 
+  /** Token usage the upstream reported, if any (for the ledger). */
+  get usageSummary(): { input: number; output: number; cached: number } | undefined {
+    const u = this.usage;
+    return u ? { input: u.input_tokens, output: u.output_tokens, cached: u.cache_read_input_tokens } : undefined;
+  }
+
   start(): void {
     this.emit("message_start", {
       message: {

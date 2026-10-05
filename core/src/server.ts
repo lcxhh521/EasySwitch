@@ -5,7 +5,9 @@ import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { handleResponses, listExposedModels } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
-import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal } from "./launch.ts";
+import { augmentedSessions, claudeCommandLine, claudeEnv, codexCommandLine, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
+import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
+import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
@@ -23,6 +25,8 @@ export interface ServerDeps {
   store: Store;
   secrets: SecretStore;
   port: number;
+  /** Durable usage ledger; tests leave it out and usage comes from memory. */
+  ledger?: Ledger;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -48,16 +52,17 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function publicProvider(p: Provider, hasKey: boolean) {
-  return { ...p, hasKey };
+function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
+  return { ...p, hasKey, icon: iconForBaseUrl(p.baseUrl), usedBy };
 }
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
-  const { store, secrets, port } = deps;
+  const { store, secrets, port, ledger } = deps;
   const log: GatewayLogEntry[] = [];
   const pushLog = (entry: GatewayLogEntry) => {
     log.unshift(entry);
     log.length = Math.min(log.length, 100);
+    ledger?.append(entry);
     console.log(`[gateway] ${entry.status} ${entry.route} ${entry.model} ${entry.ms}ms${entry.note ? ` (${entry.note})` : ""}`);
   };
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -73,7 +78,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const body = method === "GET" ? {} : ((JSON.parse((await readBody(req)) || "{}")) as Json);
 
     if (method === "GET" && path === "/api/state") {
-      const providers = await Promise.all(store.providers().map(async p => publicProvider(p, Boolean(await secrets.get(p.id)))));
+      const bound = (["codex", "claude"] as const).map(h => store.binding(h)).filter(b => b !== undefined);
+      const providers = await Promise.all(store.providers().map(async p =>
+        publicProvider(p, Boolean(await secrets.get(p.id)), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
       json(res, 200, {
         version: VERSION, port, providers,
         binding: store.binding("codex") ?? null,
@@ -81,6 +88,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         codexPath: (await findCodex()) ?? null,
         claudePath: (await findClaude()) ?? null,
         sessions: await augmentedSessions(),
+        sessionDetails: await sessionDetails(),
         native: nativeFiles(),
         log,
       });
@@ -160,7 +168,43 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
+    if (method === "GET" && path === "/api/presets") {
+      json(res, 200, PRESETS);
+      return;
+    }
+
+    if (method === "GET" && path === "/api/usage") {
+      const range = (new URL(req.url ?? "", "http://x").searchParams.get("range") ?? "7d") as UsageRange;
+      if (!["today", "7d", "30d", "all"].includes(range)) {
+        json(res, 400, { error: "未知的时间范围" });
+        return;
+      }
+      const since = rangeStart(range);
+      const entries = ledger ? ledger.read(since) : [...log].reverse().filter(e => !since || new Date(e.at) >= since);
+      json(res, 200, summarize(entries, range));
+      return;
+    }
+
+    const stopMatch = /^\/api\/sessions\/(\d+)\/stop$/.exec(path);
+    if (method === "POST" && stopMatch) {
+      const pid = Number(stopMatch[1]);
+      // Only ever signal a process that carries an EasySwitch session marker.
+      if (!(await augmentedSessions()).includes(pid)) {
+        json(res, 404, { error: "不是 EasySwitch 启动的会话" });
+        return;
+      }
+      process.kill(pid, "SIGTERM");
+      json(res, 200, { ok: true });
+      return;
+    }
+
     const bindingMatch = /^\/api\/bindings\/(codex|claude)$/.exec(path);
+    if (method === "DELETE" && bindingMatch) {
+      // Back to native for this harness: no augmented model at all.
+      store.clearBinding(bindingMatch[1] as Harness);
+      json(res, 200, { ok: true });
+      return;
+    }
     if (method === "PUT" && bindingMatch) {
       const harness = bindingMatch[1] as Harness;
       const provider = store.provider(String(body.providerId ?? ""));
@@ -200,7 +244,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
   async function serveStatic(res: ServerResponse, path: string): Promise<void> {
     const file = path === "/" ? "index.html" : path.slice(1);
-    if (!/^[a-z0-9._-]+$/i.test(file)) {
+    if (!/^(icons\/)?[a-z0-9._-]+$/i.test(file) || file.includes("..")) {
       json(res, 404, { error: "not found" });
       return;
     }

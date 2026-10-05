@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { SessionInfo } from "./types.ts";
 
 const run = promisify(execFile);
 
@@ -100,6 +101,35 @@ export async function launchInTerminal(commandLine: string, banner: string): Pro
     "-e", `tell application "Terminal" to do script ${appleScriptString(script)}`,
     "-e", 'tell application "Terminal" to activate',
   ]);
+}
+
+/** Running augmented sessions with what they run: harness, model and start time, from `ps`. */
+export async function sessionDetails(): Promise<SessionInfo[]> {
+  const pids = new Set(await augmentedSessions());
+  if (!pids.size) return [];
+  try {
+    const { stdout } = await run("ps", ["-o", "pid=,lstart=,command=", "-p", [...pids].join(",")]);
+    const out: SessionInfo[] = [];
+    for (const line of stdout.split("\n")) {
+      // `lstart` is five fields: "Mon Oct  5 16:40:15 2026".
+      const match = /^\s*(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/.exec(line);
+      if (!match) continue;
+      const [, pid, started, command] = match as unknown as [string, string, string, string];
+      const harness = command.includes(SESSION_MARKER) ? "codex" : "claude";
+      const model = harness === "codex"
+        ? /\s-m\s+(\S+)/.exec(command)?.[1]
+        : /"ANTHROPIC_MODEL":"([^"]+)"/.exec(command)?.[1];
+      const startedAt = new Date(started);
+      out.push({
+        pid: Number(pid), harness,
+        ...(model ? { model } : {}),
+        ...(Number.isNaN(startedAt.getTime()) ? {} : { startedAt: startedAt.toISOString() }),
+      });
+    }
+    return out;
+  } catch {
+    return [...pids].map(pid => ({ pid, harness: "codex" as const }));
+  }
 }
 
 /** Every running augmented session (Codex or Claude Code), found by its command-line marker. */

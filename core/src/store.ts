@@ -66,6 +66,11 @@ export class Store {
     return found ? structuredClone(found) : undefined;
   }
 
+  clearBinding(harness: HarnessBinding["harness"]): void {
+    this.state.bindings = this.state.bindings.filter(b => b.harness !== harness);
+    this.save();
+  }
+
   setBinding(binding: HarnessBinding): void {
     this.state.bindings = this.state.bindings.filter(b => b.harness !== binding.harness);
     this.state.bindings.push(binding);

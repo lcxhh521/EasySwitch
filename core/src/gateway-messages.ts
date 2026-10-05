@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { AnthropicStream, chatToMessage, estimateTokens, messagesToChat } from "./anthropic.ts";
 import type { GatewayDeps } from "./gateway.ts";
+import type { GatewayLogEntry } from "./types.ts";
 import { resolveModel } from "./gateway.ts";
 import { anthropicHeaders } from "./probe.ts";
 import { authHeaders, describeFailure, joinUrl, sseData } from "./upstream.ts";
@@ -41,8 +42,11 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   const { provider, model } = resolved;
   const route = provider.messagesRoute ?? "chat-translate";
   const apiKey = await deps.secrets.get(provider.id);
-  const finish = (status: number, note?: string) =>
-    deps.log({ at: new Date().toISOString(), model: exposed, route, harness: "claude", status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}) });
+  const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
+    deps.log({
+      at: new Date().toISOString(), model: exposed, providerId: provider.id, route, harness: "claude",
+      status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...extra,
+    });
   const abort = new AbortController();
   res.on("close", () => abort.abort());
 
@@ -78,14 +82,15 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   }).catch((error: Error) => error);
 
   let upstream = await send(chat);
-  let note = dropped.length ? `dropped ${[...new Set(dropped)].join(", ")}` : undefined;
+  const droppedList = [...new Set(dropped)];
+  let note: string | undefined;
   if (!(upstream instanceof Error) && upstream.status === 400 && chat.max_tokens !== undefined) {
     // Claude Code asks for 32k output tokens; many chat models cap lower and
     // reject the request outright. Retry once and let the provider decide.
     await upstream.body?.cancel();
     const { max_tokens: _dropped, ...rest } = chat;
     upstream = await send(rest);
-    note = [note, "retried without max_tokens"].filter(Boolean).join("; ");
+    note = "max_tokens 超出模型上限，已去掉后重试";
   }
   if (upstream instanceof Error) {
     anthropicError(res, 502, "api_error", `upstream unreachable: ${upstream.message}`);
@@ -103,9 +108,14 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
 
   if (!chat.stream) {
     const json = (await upstream.json()) as Json;
+    const message = chatToMessage(json, model);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(chatToMessage(json, model)));
-    finish(200, note);
+    res.end(JSON.stringify(message));
+    const u = message.usage as { input_tokens: number; output_tokens: number; cache_read_input_tokens: number };
+    finish(200, note, {
+      ...(droppedList.length ? { dropped: droppedList } : {}),
+      inputTokens: u.input_tokens, outputTokens: u.output_tokens, cachedTokens: u.cache_read_input_tokens,
+    });
     return;
   }
 
@@ -126,7 +136,11 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
       stream.chunk(json);
     }
     stream.finishStream();
-    finish(200, note);
+    const usage = stream.usageSummary;
+    finish(200, note, {
+      ...(droppedList.length ? { dropped: droppedList } : {}),
+      ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
+    });
   } catch (error) {
     stream.fail(String((error as Error).message ?? error));
     finish(200, "stream interrupted");

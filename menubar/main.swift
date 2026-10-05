@@ -26,14 +26,20 @@ func shell(_ launchPath: String, _ args: [String]) -> (status: Int32, output: St
   return (task.terminationStatus, String(decoding: data, as: UTF8.self))
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler {
   private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   private var coreProcess: Process?
   private var healthy = false
   private var window: NSWindow?
   private var timer: Timer?
+  /// Right click (or a stopped core) shows this native menu; it never needs the core.
+  private var menu = NSMenu()
+  private var popover: NSPopover?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    statusItem.button?.target = self
+    statusItem.button?.action = #selector(statusClicked(_:))
+    statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
     refreshHealth()
     timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshHealth() }
   }
@@ -79,7 +85,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     menu.addItem(item("检查原生配置", #selector(checkNative), ""))
     menu.addItem(.separator())
     menu.addItem(item("退出 EasySwitch", #selector(quit), "q"))
-    statusItem.menu = menu
+    self.menu = menu
+  }
+
+  // MARK: Status item: panel on left click, native menu on right click or when the core is down
+
+  @objc private func statusClicked(_ sender: NSStatusBarButton) {
+    let right = NSApp.currentEvent?.type == .rightMouseUp
+    if right || !healthy {
+      popover?.performClose(nil)
+      statusItem.menu = menu
+      statusItem.button?.performClick(nil)
+      statusItem.menu = nil
+      return
+    }
+    if let popover, popover.isShown {
+      popover.performClose(nil)
+      return
+    }
+    let panel = popover ?? makePopover()
+    popover = panel
+    (panel.contentViewController?.view as? WKWebView)?.load(URLRequest(url: URL(string: "http://127.0.0.1:\(corePort)/?panel=1")!))
+    panel.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    NSApp.activate(ignoringOtherApps: true)
+  }
+
+  private func makePopover() -> NSPopover {
+    let config = WKWebViewConfiguration()
+    config.userContentController.add(self, name: "easyswitch")
+    let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 460, height: 300), configuration: config)
+    web.setValue(false, forKey: "drawsBackground")
+    let controller = NSViewController()
+    controller.view = web
+    let panel = NSPopover()
+    panel.contentViewController = controller
+    panel.contentSize = NSSize(width: 460, height: 300)
+    panel.behavior = .transient
+    return panel
+  }
+
+  /// Messages from the panel page; the actions themselves stay native.
+  func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+    guard let action = message.body as? String else { return }
+    popover?.performClose(nil)
+    switch action {
+    case "openConsole": openConsole()
+    case "backToNative": backToNative()
+    case "quit": quit()
+    default: break
+    }
   }
 
   private func item(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {

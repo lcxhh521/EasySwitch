@@ -62,10 +62,38 @@ export interface HarnessBinding {
 
 export interface GatewayLogEntry {
   at: string;
+  /** The exposed model id, `<provider>/<model>`. */
   model: string;
+  providerId?: string;
   route: ProviderRoute | MessagesRoute;
   harness?: Harness;
   status: number;
   ms: number;
+  /** Token usage when the upstream reported it; absent on passthrough routes. */
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  /** What the translation could not carry (`tool:web_search`, ...). */
+  dropped?: string[];
+  /** Short failure or recovery description. */
   note?: string;
+}
+
+/** A running augmented session, read from the process table. */
+export interface SessionInfo {
+  pid: number;
+  harness: Harness;
+  model?: string;
+  startedAt?: string;
+}
+
+/** A provider the user can add with one click. */
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  icon: string;
+  baseUrl: string;
+  anthropicBaseUrl?: string;
+  defaultModel?: string;
+  keyUrl?: string;
 }

@@ -3,66 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>EasySwitch 控制台</title>
+  <title>EasySwitch</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="top">
     <div class="brand"><span class="logo">⇄</span> EasySwitch <span class="ver" id="ver"></span></div>
-    <div class="chips" id="chips"></div>
+    <nav class="seg" id="nav">
+      <button data-page="agents">Agent</button>
+      <button data-page="providers">模型来源</button>
+      <button data-page="sessions">会话</button>
+      <button data-page="usage">用量</button>
+    </nav>
+    <div class="top-right">
+      <button class="chip" id="guard-chip" title="EasySwitch 不改各个 agent 自己的配置文件，点开看实时指纹"></button>
+      <button class="icon-btn" id="refresh" title="刷新" aria-label="刷新">↻</button>
+    </div>
   </header>
-
-  <main>
-    <section class="card">
-      <h2>模型来源</h2>
-      <p class="hint">从任何地方找来的模型都可以放进来：中转站、官方 API、本地模型。Key 存在 macOS 钥匙串里。</p>
-      <div id="providers"></div>
-      <form id="add-form" class="add">
-        <input name="name" placeholder="名称，例如：我的中转站" required>
-        <input name="baseUrl" placeholder="地址，例如：https://relay.example.com/v1" required>
-        <input name="apiKey" type="password" placeholder="API Key" autocomplete="off">
-        <button type="submit">添加</button>
-      </form>
-      <p class="msg" id="add-msg"></p>
-    </section>
-
-    <section class="card harness" data-harness="codex">
-      <h2>Codex</h2>
-      <p class="hint">增强会话只在 EasySwitch 打开的那个终端窗口里生效：启动时用 <code>-c</code> 临时指定模型来源，<b>不改 ~/.codex 里的任何文件</b>。关掉窗口就回到原生。</p>
-      <div class="row">
-        <label>模型来源 <select class="bind-provider"></select></label>
-        <label>模型 <select class="bind-model"></select></label>
-        <button class="bind-save secondary">保存绑定</button>
-        <button class="launch">启动增强会话</button>
-      </div>
-      <pre class="cmd"></pre>
-      <p class="msg bind-msg"></p>
-    </section>
-
-    <section class="card harness" data-harness="claude">
-      <h2>Claude Code</h2>
-      <p class="hint">同样只在那个终端窗口里生效：用环境变量加一次性的 <code>--settings</code> 指向 EasySwitch，<b>不改 ~/.claude 里的任何文件</b>；你平时直接打开的 Claude Code 照旧走官方。</p>
-      <div class="row">
-        <label>模型来源 <select class="bind-provider"></select></label>
-        <label>模型 <select class="bind-model"></select></label>
-        <button class="bind-save secondary">保存绑定</button>
-        <button class="launch">启动增强会话</button>
-      </div>
-      <pre class="cmd"></pre>
-      <p class="msg bind-msg"></p>
-    </section>
-
-    <section class="card">
-      <h2>原生配置</h2>
-      <p class="hint">EasySwitch 承诺不碰这些文件。下面是它们的实时指纹，以及里面有没有出现 EasySwitch 的痕迹。</p>
-      <table class="tbl" id="native"></table>
-    </section>
-
-    <section class="card">
-      <h2>最近请求</h2>
-      <table class="tbl" id="log"></table>
-    </section>
-  </main>
+  <main id="page"></main>
   <script src="app.js"></script>
 </body>
 </html>
