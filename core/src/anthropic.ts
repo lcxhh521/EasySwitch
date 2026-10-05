@@ -6,6 +6,8 @@
  */
 import type { ChatContentPart, ChatMessage, ChatRequest } from "./translate.ts";
 
+import { reasoningDelta } from "./quirks.ts";
+
 type Json = Record<string, unknown>;
 
 export interface MessagesTranslation {
@@ -194,6 +196,8 @@ export class AnthropicStream {
   private finish: unknown;
   private sawTool = false;
   private done = false;
+  private reasoning = "";
+  private readonly callIds: string[] = [];
 
   constructor(model: string, write: (chunk: string) => void) {
     this.model = model;
@@ -208,6 +212,11 @@ export class AnthropicStream {
   get usageSummary(): { input: number; output: number; cached: number } | undefined {
     const u = this.usage;
     return u ? { input: u.input_tokens, output: u.output_tokens, cached: u.cache_read_input_tokens } : undefined;
+  }
+
+  /** What a thinking model said before its tool calls, to be sent back with them next turn. */
+  get turn(): { reasoning: string; callIds: readonly string[] } {
+    return { reasoning: this.reasoning, callIds: this.callIds };
   }
 
   start(): void {
@@ -232,6 +241,7 @@ export class AnthropicStream {
     if (choice?.finish_reason) this.finish = choice.finish_reason;
     const delta = choice?.delta as Json | undefined;
     if (!delta) return;
+    this.reasoning += reasoningDelta(delta);
     if (typeof delta.content === "string" && delta.content) {
       if (!this.text) {
         this.text = { index: this.nextIndex++, kind: "text" };
@@ -252,9 +262,11 @@ export class AnthropicStream {
         block = { index: this.nextIndex++, kind: "tool_use" };
         this.tools.set(slot, block);
         this.sawTool = true;
+        const toolId = String(call.id ?? `toolu_${messageId()}`);
+        this.callIds.push(toolId);
         this.emit("content_block_start", {
           index: block.index,
-          content_block: { type: "tool_use", id: String(call.id ?? `toolu_${messageId()}`), name: String(fn.name ?? ""), input: {} },
+          content_block: { type: "tool_use", id: toolId, name: String(fn.name ?? ""), input: {} },
         });
       }
       if (typeof fn.arguments === "string" && fn.arguments) {

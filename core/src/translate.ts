@@ -6,6 +6,8 @@
  * silently reinterpreted.
  */
 
+import { reasoningDelta } from "./quirks.ts";
+
 type Json = Record<string, unknown>;
 
 export interface ChatToolCall {
@@ -171,7 +173,8 @@ export function responsesToChat(body: Json, upstreamModel: string, opts: { strea
   if (tools.length) {
     chat.tools = tools;
     if (body.tool_choice !== undefined) chat.tool_choice = body.tool_choice;
-    if (typeof body.parallel_tool_calls === "boolean") chat.parallel_tool_calls = body.parallel_tool_calls;
+    // Codex always says true, which Kimi and NIM-style upstreams reject; true is the default anyway.
+    if (body.parallel_tool_calls === false) chat.parallel_tool_calls = false;
   }
   if (typeof body.max_output_tokens === "number") chat.max_tokens = body.max_output_tokens;
   if (typeof body.temperature === "number") chat.temperature = body.temperature;
@@ -235,6 +238,8 @@ export class ResponsesStream {
   private readonly tools = new Map<number, ToolState>();
   private usage?: Usage;
   private done = false;
+  private reasoning = "";
+  private readonly callIds: string[] = [];
   private readonly model: string;
   private readonly customTools: ReadonlySet<string>;
   private readonly write: (chunk: string) => void;
@@ -257,6 +262,11 @@ export class ResponsesStream {
   get usageSummary(): { input: number; output: number; cached: number } | undefined {
     const u = this.usage;
     return u ? { input: u.input_tokens, output: u.output_tokens, cached: u.input_tokens_details.cached_tokens } : undefined;
+  }
+
+  /** What a thinking model said before its tool calls, to be sent back with them next turn. */
+  get turn(): { reasoning: string; callIds: readonly string[] } {
+    return { reasoning: this.reasoning, callIds: this.callIds };
   }
 
   start(): void {
@@ -297,6 +307,7 @@ export class ResponsesStream {
     const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
     const delta = (choices[0] as Json | undefined)?.delta as Json | undefined;
     if (!delta) return;
+    this.reasoning += reasoningDelta(delta);
 
     if (typeof delta.content === "string" && delta.content) {
       const t = this.openText();
@@ -321,6 +332,7 @@ export class ResponsesStream {
           custom: this.customTools.has(name),
         };
         this.tools.set(index, state);
+        this.callIds.push(state.callId);
         this.emit("response.output_item.added", {
           output_index: state.outputIndex,
           item: state.custom

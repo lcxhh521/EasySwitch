@@ -1,5 +1,6 @@
 import { anthropicModelList, catalogModels } from "./catalog.ts";
 import { withKey } from "./keypool.ts";
+import { chatCompletionsUrl, quirksFor, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
@@ -73,7 +74,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
       fetch(joinUrl(provider.baseUrl, "responses"), {
         method: "POST",
         headers: { "content-type": "application/json", accept: req.headers.accept ?? "text/event-stream", ...authHeaders(apiKey) },
-        body: JSON.stringify({ ...body, model }),
+        body: JSON.stringify({ ...body, model: upstreamModelId(model) }),
         signal: abort.signal,
       }).catch((error: Error) => error));
     if (upstream instanceof Error) {
@@ -89,8 +90,12 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   }
 
   const { chat, customTools, dropped } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
+  shapeChat(chat, {
+    quirks: quirksFor(provider.baseUrl, model),
+    ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}),
+  });
   const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-    fetch(joinUrl(provider.baseUrl, "chat/completions"), {
+    fetch(chatCompletionsUrl(provider.baseUrl), {
       method: "POST",
       headers: { "content-type": "application/json", ...authHeaders(apiKey) },
       body: JSON.stringify(chat),
@@ -132,6 +137,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
       stream.chunk(json);
     }
     stream.finish();
+    reasoningMemory.remember(stream.turn.callIds, stream.turn.reasoning);
     const usage = stream.usageSummary;
     finish(200, note, {
       ...(droppedList.length ? { dropped: droppedList } : {}),

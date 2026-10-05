@@ -4,7 +4,9 @@ import { AnthropicStream, chatToMessage, estimateTokens, messagesToChat } from "
 import type { GatewayDeps } from "./gateway.ts";
 import type { GatewayLogEntry } from "./types.ts";
 import { fromClaudeModelId } from "./catalog.ts";
+import { createHash } from "node:crypto";
 import { withKey } from "./keypool.ts";
+import { chatCompletionsUrl, quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
 import { resolveModel } from "./gateway.ts";
 import { anthropicHeaders } from "./probe.ts";
 import { authHeaders, describeFailure, joinUrl, sseData } from "./upstream.ts";
@@ -54,7 +56,7 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   res.on("close", () => abort.abort());
 
   if (route === "anthropic-native") {
-    const forwarded: Json = { ...body, model };
+    const forwarded: Json = { ...body, model: upstreamModelId(model) };
     for (const field of CLAUDE_ONLY_FIELDS) delete forwarded[field];
     const thinking = forwarded.thinking as Json | undefined;
     if (thinking && thinking.type !== "enabled") delete forwarded.thinking;
@@ -78,7 +80,11 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
   }
 
   const { chat, dropped } = messagesToChat(body, model, { streamUsage: provider.streamUsage });
-  const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(joinUrl(provider.baseUrl, "chat/completions"), {
+  const sessionKey = typeof (body.metadata as Json | undefined)?.user_id === "string"
+    ? createHash("sha256").update(String((body.metadata as Json).user_id)).digest("hex").slice(0, 32)
+    : undefined;
+  shapeChat(chat, { quirks: quirksFor(provider.baseUrl, model), ...(sessionKey ? { cacheKey: sessionKey } : {}) });
+  const send = async (payload: unknown, apiKey?: string): Promise<Response | Error> => fetch(chatCompletionsUrl(provider.baseUrl), {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders(apiKey) },
     body: JSON.stringify(payload),
@@ -112,6 +118,11 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
 
   if (!chat.stream) {
     const json = (await upstream.json()) as Json;
+    const upstreamMessage = ((json.choices as Json[] | undefined)?.[0]?.message ?? {}) as Json;
+    reasoningMemory.remember(
+      (Array.isArray(upstreamMessage.tool_calls) ? upstreamMessage.tool_calls as Json[] : []).map(c => String(c.id)),
+      reasoningDelta(upstreamMessage),
+    );
     const message = chatToMessage(json, model);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(message));
@@ -141,6 +152,7 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
       stream.chunk(json);
     }
     stream.finishStream();
+    reasoningMemory.remember(stream.turn.callIds, stream.turn.reasoning);
     const usage = stream.usageSummary;
     finish(200, note, {
       ...(droppedList.length ? { dropped: droppedList } : {}),
