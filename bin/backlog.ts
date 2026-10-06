@@ -43,17 +43,17 @@ function show(items: Item[]): string {
 const mode = process.argv[2] ?? "";
 const { items, problems, archived } = load();
 
+// The hooks are for a person (or an agent) working on this repository. A session that EasySwitch itself
+// started (its gateway address or a per-launch session token in the environment) must never be held back
+// by them: a headless run inside this directory would otherwise never finish.
+const EASYSWITCH_SESSION = /127\.0\.0\.1/.test(process.env.ANTHROPIC_BASE_URL ?? "") || /^es-session-/.test(process.env.ANTHROPIC_AUTH_TOKEN ?? "");
+if ((mode === "--hook-prompt" || mode === "--hook-stop") && EASYSWITCH_SESSION) process.exit(0);
+
 if (mode === "--hook-prompt") {
   // Printed into the agent's context on every user message.
   console.log(`[待办规则] 这条消息里如果有新的需求、变更或决定，先写进 BACKLOG.md（一条一行，带用户原话和日期），再动手做。当前：${tally(items, archived)}。`);
   process.exit(0);
 }
-
-// The hooks are for a person (or an agent) working on this repository. A session that EasySwitch itself
-// started (its gateway address or a per-launch session token in the environment) must never be held back
-// by them: a headless run inside this directory would otherwise never finish.
-const EASYSWITCH_SESSION = /127\.0\.0\.1/.test(process.env.ANTHROPIC_BASE_URL ?? "") || /^es-session-/.test(process.env.ANTHROPIC_AUTH_TOKEN ?? "");
-if (mode === "--hook-stop" && EASYSWITCH_SESSION) process.exit(0);
 
 if (mode === "--hook-stop") {
   let active = false;
