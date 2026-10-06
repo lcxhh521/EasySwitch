@@ -48,6 +48,7 @@
 - [ ] B58 · 把 Antigravity 的客户端密钥从写死改成运行时读取，并从仓库里移除（公开前必做，B33 的一部分）— 来源：B56 的「后续再迭代」（10-06）
 - [ ] B57 · 给用户一条命令，在本机一次性验证新写的 13 个启动器里已装的那几个（只读：看参数是否被程序接受，不跑任务）— 来源：「其余你说的几个事情是都要做的」（10-06），对应 B2 的真机实测 · 备注：不读任何用户凭据
 - [x] B59 · WorkBuddy 和 CodeBuddy 分开成两个 agent，不混成一个 — 来源：「workbuddy和codebuddy要分开，不能混成一个」（10-06）· 验证：目录里是两行（CodeBuddy Code 命令行、WorkBuddy 桌面应用），各有名字、图标、检测方式和逐项能力状态；/api/agents 实测：WorkBuddy 已检测到（本机装了），CodeBuddy 命令行未装；capabilities.test.ts 通过
+- [~] B60 · 每个 agent 启动后要能在它自己的模型菜单里选模型，不是都在 EasySwitch 界面里选死：把所有可用的模型写进每个 agent 的私有配置（EasySwitch 里选的只是默认），并把「能在它自己的界面里选模型」做成能力矩阵的一列，逐个 agent 定状态 — 来源：「我记得我们说过你要能在每个harness里面选模型的，而不是都在我们easyswitch界面选好」（10-06）· 备注：Codex 和 Claude Code 早就有（目录 / /model 并排）；今天写的 13 个新启动器和已有的 Hermes、OpenCode、dsh 只写了一个主模型，是漏的 · 进展：已做——启动器拿到全部可用模型（已关闭的订阅除外），Hermes、OpenCode、dsh 和 12 个新启动器都把它们全写进 agent 自己的私有配置，EasySwitch 里选的只是默认；能力矩阵新增一列，Codex 和 Claude Code 为已实测；真实 dsh 带两个模型跑通。未做/未知——Gemini CLI、Qwen Code、Copilot CLI 只能用环境变量指定一个模型，还没查它们的 /model 能不能列出；Aider 只能手动输入模型名；这 12 个新启动器的菜单是否真的列出来，要在真实程序上确认（B57 的命令里要加这一项）
 
 ## 产品方向（2026-10-06 讨论，用户拍板）
 

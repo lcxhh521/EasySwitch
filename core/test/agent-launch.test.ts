@@ -72,7 +72,7 @@ test("a dsh patch is written under the private session directory, not under ~/.d
 test("the real DeepSeek Harness, handed a task headlessly, answers through the gateway", async t => {
   if (!existsSync(DSH)) { t.skip("DeepSeek Harness not installed"); return; }
   const before = relay.requests.length;
-  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000 });
+  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, models: [`${providerId}/mock-coder`, `${providerId}/mock-mini`], task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000 });
   assert.equal(result.timedOut, false);
   assert.match(result.output, /Hello from the mock relay|pong/i);
   assert.ok(relay.requests.length > before, "the request went through the gateway to the provider");

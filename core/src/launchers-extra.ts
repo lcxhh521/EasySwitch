@@ -20,6 +20,9 @@ const levels = (all: string[]) => all;
 
 const dir = (i: LaunchInput, name: string) => join(i.sessionDir, name);
 
+/** The models to write into an agent's own list: the default first, then everything it may be offered, then the tier models. */
+export const allModels = (i: LaunchInput): string[] => [...new Set([i.model, ...(i.models ?? []), ...Object.values(i.tiers ?? {})])].filter(Boolean);
+
 /** Both forms share everything but the task. */
 function forms(build: (i: LaunchInput, headless: boolean) => LaunchSpec, opts: { interactive?: boolean; headless?: boolean } = {}): Pick<AgentLauncher, "interactive" | "headless"> {
   return {
@@ -34,23 +37,18 @@ const task = (i: LaunchInput, headless: boolean, ...before: string[]) => (headle
 // ---------------------------------------------------------------- kimi-cli
 
 function kimiToml(i: LaunchInput): string {
-  const alias = `es/${i.model}`;
   return [
-    `default_model = ${q(alias)}`,
+    `default_model = ${q(`es/${i.model}`)}`,
     "",
     "[providers.es]",
     'type = "openai"',
     `base_url = ${q(`${gateway(i)}/v1`)}`,
     `api_key = ${q(i.token)}`,
     "",
-    `[models.${q(alias)}]`,
-    'provider = "es"',
-    `model = ${q(i.model)}`,
-    "max_context_size = 128000",
-    'capabilities = ["thinking", "tool_use"]',
-    'support_efforts = ["low", "medium", "high"]',
-    `default_effort = ${q(i.effort ?? "high")}`,
-    "",
+    ...allModels(i).flatMap(m => [
+      `[models.${q(`es/${m}`)}]`, 'provider = "es"', `model = ${q(m)}`, "max_context_size = 128000",
+      'capabilities = ["thinking", "tool_use"]', 'support_efforts = ["low", "medium", "high"]', `default_effort = ${q(i.effort ?? "high")}`, "",
+    ]),
   ].join("\n");
 }
 
@@ -59,7 +57,7 @@ function kimiToml(i: LaunchInput): string {
 function piFiles(i: LaunchInput): Record<string, string> {
   return {
     [join(dir(i, "pi-agent"), "models.json")]: JSON.stringify({
-      providers: { easyswitch: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, api: "openai-completions", apiKey: i.token, models: [{ id: i.model, name: bare(i.model), reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 32000 }] } },
+      providers: { easyswitch: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, api: "openai-completions", apiKey: i.token, models: allModels(i).map(m => ({ id: m, name: bare(m), reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 32000 })) } },
     }),
     [join(dir(i, "pi-agent"), "settings.json")]: JSON.stringify({ defaultProvider: "easyswitch", defaultModel: i.model, ...(i.effort ? { defaultThinkingLevel: i.effort } : {}) }),
   };
@@ -67,7 +65,7 @@ function piFiles(i: LaunchInput): Record<string, string> {
 
 function ompFiles(i: LaunchInput): Record<string, string> {
   const roles = [`    default: ${q(`easyswitch/${i.model}`)}`, ...(i.tiers?.subagent ? [`    task: ${q(`easyswitch/${i.tiers.subagent}`)}`] : []), ...(i.tiers?.small ? [`    smol: ${q(`easyswitch/${i.tiers.small}`)}`] : [])];
-  const models = [...new Set([i.model, ...Object.values(i.tiers ?? {})])];
+  const models = allModels(i);
   return {
     [join(dir(i, "omp-agent"), "models.yml")]: [
       "providers:",
@@ -89,7 +87,7 @@ function droidFiles(i: LaunchInput): Record<string, string> {
   const id = `custom:easyswitch/${i.model}`;
   const files: Record<string, string> = {
     [join(dir(i, "factory-home"), ".factory", "settings.json")]: JSON.stringify({
-      customModels: [{ model: i.model, id, displayName: bare(i.model), baseUrl: `${gateway(i)}/v1`, apiKey: i.token, provider: "generic-chat-completion-api", maxContextLimit: 200000, maxOutputTokens: 32000, noImageSupport: false }],
+      customModels: allModels(i).map(m => ({ model: m, id: `custom:easyswitch/${m}`, displayName: bare(m), baseUrl: `${gateway(i)}/v1`, apiKey: i.token, provider: "generic-chat-completion-api", maxContextLimit: 200000, maxOutputTokens: 32000, noImageSupport: false })),
       sessionDefaultSettings: { model: id, ...(i.effort ? { reasoningEffort: i.effort } : {}) },
     }),
   };
@@ -108,7 +106,7 @@ function clineFiles(i: LaunchInput): Record<string, string> {
     }),
     [join(data, "settings", "models.json")]: JSON.stringify({
       version: 1,
-      providers: { "openai-compatible": { provider: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, defaultModelId: i.model }, models: { [i.model]: { id: i.model, name: bare(i.model), capabilities: ["streaming", "tools", "reasoning"], contextWindow: 200000, maxTokens: 32000 } } } },
+      providers: { "openai-compatible": { provider: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, defaultModelId: i.model }, models: Object.fromEntries(allModels(i).map(m => [m, { id: m, name: bare(m), capabilities: ["streaming", "tools", "reasoning"], contextWindow: 200000, maxTokens: 32000 }])) } },
     }),
   };
   if (i.mcp) files[join(data, "settings", "cline_mcp_settings.json")] = JSON.stringify({ mcpServers: { easyswitch: { url: i.mcp.url, type: "streamableHttp", headers: i.mcp.headers } } });
@@ -123,7 +121,7 @@ function gooseFiles(i: LaunchInput): Record<string, string> {
     [join(config, "custom_providers", "easyswitch.json")]: JSON.stringify({
       name: "easyswitch", engine: "openai", display_name: "EasySwitch", api_key_env: "", base_url: `${gateway(i)}/v1`,
       headers: { Authorization: `Bearer ${i.token}` }, requires_auth: false, skip_canonical_filtering: true, dynamic_models: false,
-      models: [{ name: i.model, reasoning: true, context_limit: 200000 }],
+      models: allModels(i).map(m => ({ name: m, reasoning: true, context_limit: 200000 })),
     }),
   };
   if (i.mcp) {
@@ -138,7 +136,7 @@ function gooseFiles(i: LaunchInput): Record<string, string> {
 // ---------------------------------------------------------------- crush
 
 function crushFiles(i: LaunchInput): Record<string, string> {
-  const models = [...new Set([i.model, ...Object.values(i.tiers ?? {})])];
+  const models = allModels(i);
   return {
     [join(dir(i, "crush-config"), "crush.json")]: JSON.stringify({
       providers: { easyswitch: { type: "openai", name: "EasySwitch", base_url: `${gateway(i)}/v1`, api_key: i.token, models: models.map(m => ({ id: m, name: bare(m), context_window: 200000, default_max_tokens: 16384, can_reason: true })) } },
@@ -151,21 +149,15 @@ function crushFiles(i: LaunchInput): Record<string, string> {
 // ---------------------------------------------------------------- grok
 
 function grokToml(i: LaunchInput): string {
-  const alias = `easyswitch/${i.model}`;
   return [
     "[models]",
-    `default = ${q(alias)}`,
+    `default = ${q(`easyswitch/${i.model}`)}`,
     ...(i.effort ? [`default_reasoning_effort = ${q(i.effort)}`] : []),
     "",
-    `[model.${q(alias)}]`,
-    `model = ${q(i.model)}`,
-    `name = ${q(bare(i.model))}`,
-    `base_url = ${q(`${gateway(i)}/v1`)}`,
-    `api_key = ${q(i.token)}`,
-    'api_backend = "chat_completions"',
-    "context_window = 200000",
-    'reasoning_efforts = ["low", "medium", "high"]',
-    "",
+    ...allModels(i).flatMap(m => [
+      `[model.${q(`easyswitch/${m}`)}]`, `model = ${q(m)}`, `name = ${q(bare(m))}`, `base_url = ${q(`${gateway(i)}/v1`)}`, `api_key = ${q(i.token)}`,
+      'api_backend = "chat_completions"', "context_window = 200000", 'reasoning_efforts = ["low", "medium", "high"]', "",
+    ]),
     "[features]",
     "campaigns = false",
     ...(i.mcp ? ["", "[mcp_servers.easyswitch]", `url = ${q(i.mcp.url)}`, "", "[mcp_servers.easyswitch.headers]", ...Object.entries(i.mcp.headers).map(([k, v]) => `${q(k)} = ${q(v)}`)] : []),
@@ -189,11 +181,10 @@ function mcodeYaml(i: LaunchInput): string {
     `      baseURL: ${q(gateway(i))}`,
     "      authMode: api-key",
     "    models:",
-    `      ${q(i.model)}:`,
-    `        name: ${q(bare(i.model))}`,
-    "        limit: { context: 200000, output: 16384 }",
-    "        reasoning: true",
-    `        thinking: { effortOptions: [low, medium, high], defaultEffort: ${i.effort ?? "high"} }`,
+    ...allModels(i).flatMap(m => [
+      `      ${q(m)}:`, `        name: ${q(bare(m))}`, "        limit: { context: 200000, output: 16384 }", "        reasoning: true",
+      `        thinking: { effortOptions: [low, medium, high], defaultEffort: ${i.effort ?? "high"} }`,
+    ]),
     "",
   ].join("\n");
 }
@@ -204,7 +195,7 @@ function qoderSettings(i: LaunchInput): string {
   const alias = `easyswitch/${i.model}`;
   return JSON.stringify({
     providers: { easyswitch: { displayName: "EasySwitch", protocol: "openai", baseUrl: `${gateway(i)}/v1`, apiKey: i.token, model: i.model,
-      models: [{ model: i.model, displayName: bare(i.model), contextWindow: 200000, maxOutputTokens: 16384, capabilities: { tools: true, vision: false, thinking: { modes: ["enabled"], supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"], requiresBudgetForEnabled: false } } }] } },
+      models: allModels(i).map(m => ({ model: m, displayName: bare(m), contextWindow: 200000, maxOutputTokens: 16384, capabilities: { tools: true, vision: false, thinking: { modes: ["enabled"], supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"], requiresBudgetForEnabled: false } } })) } },
     model: { name: alias, ...(i.effort ? { preferences: { [alias]: { reasoning: { effort: i.effort } } } } : {}) },
     ...(i.mcp ? { mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers } } } : {}),
   });
@@ -214,7 +205,7 @@ function qoderSettings(i: LaunchInput): string {
 
 function openclawConfig(i: LaunchInput): string {
   return JSON.stringify({
-    models: { mode: "merge", providers: { easyswitch: { baseUrl: `${gateway(i)}/v1`, apiKey: "${EASYSWITCH_OPENCLAW_KEY}", api: "openai-completions", models: [...new Set([i.model, ...Object.values(i.tiers ?? {})])].map(m => ({ id: m, name: bare(m), contextWindow: 200000, input: ["text", "image"] })) } } },
+    models: { mode: "merge", providers: { easyswitch: { baseUrl: `${gateway(i)}/v1`, apiKey: "${EASYSWITCH_OPENCLAW_KEY}", api: "openai-completions", models: allModels(i).map(m => ({ id: m, name: bare(m), contextWindow: 200000, input: ["text", "image"] })) } } },
     agents: { defaults: { model: { primary: `easyswitch/${i.model}` }, ...(i.tiers?.subagent ? { subagents: { model: `easyswitch/${i.tiers.subagent}` } } : {}) } },
     ...(i.mcp ? { mcp: { servers: { easyswitch: { url: i.mcp.url, headers: i.mcp.headers, transport: "streamable-http" } } } } : {}),
   });
@@ -223,25 +214,19 @@ function openclawConfig(i: LaunchInput): string {
 // ---------------------------------------------------------------- atomcode
 
 function atomcodeToml(i: LaunchInput): string {
-  const alias = `es/${i.model}`;
   return [
-    `default_provider = ${q(alias)}`,
-    `default_model = ${q(alias)}`,
+    `default_provider = ${q(`es/${i.model}`)}`,
+    `default_model = ${q(`es/${i.model}`)}`,
     "",
     '[provider_accounts."es"]',
     'provider = "openai-compatible"',
     `base_url = ${q(`${gateway(i)}/v1`)}`,
     `api_key = ${q(i.token)}`,
     "",
-    `[models.${q(alias)}]`,
-    'account = "es"',
-    `model = ${q(i.model)}`,
-    "context_window = 128000",
-    "max_tokens = 8192",
-    "supports_vision = false",
-    'reasoning_effort_levels = ["low", "medium", "high"]',
-    ...(i.effort ? [`reasoning_effort = ${q(i.effort)}`] : []),
-    "",
+    ...allModels(i).flatMap(m => [
+      `[models.${q(`es/${m}`)}]`, 'account = "es"', `model = ${q(m)}`, "context_window = 128000", "max_tokens = 8192", "supports_vision = false",
+      'reasoning_effort_levels = ["low", "medium", "high"]', ...(i.effort ? [`reasoning_effort = ${q(i.effort)}`] : []), "",
+    ]),
   ].join("\n");
 }
 

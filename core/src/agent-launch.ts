@@ -7,7 +7,7 @@ import { sessionToken } from "./gateway-chat.ts";
 import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
 import { mcpEndpoint } from "./mcp.ts";
 import { knownEfforts } from "./efforts.ts";
-import { EXTRA_LAUNCHERS } from "./launchers-extra.ts";
+import { allModels, EXTRA_LAUNCHERS } from "./launchers-extra.ts";
 
 const run = promisify(execFile);
 
@@ -42,6 +42,8 @@ export interface LaunchInput {
   claudeCaps?: string;
   /** Claude Code: keep the user's own Claude login so Claude's own models stay available next to ours. */
   keepLogin?: boolean;
+  /** Every model the agent may be offered in its own menu (`<provider>/<model>`), so it can switch without coming back to EasySwitch. `model` is only the default. */
+  models?: string[];
   /** Extra models for this launch, by the launcher's tier ids (`<provider>/<model>`). */
   tiers?: Record<string, string>;
   /** Codex only: the merged model catalog to hand it (see catalog.ts). */
@@ -74,6 +76,8 @@ export interface AgentLauncher {
   caveat?: string;
   /** The same, for how the MCP server is attached. */
   mcpCaveat?: string;
+  /** What is known about choosing models inside the agent when the launcher only names one (shown in the capability table). */
+  pickerNote?: string;
 }
 
 const gateway = (i: LaunchInput) => `http://127.0.0.1:${i.port}`;
@@ -95,9 +99,7 @@ function dshPatch(i: LaunchInput): string {
     "        headers:",
     `          Authorization: ${q(`Bearer ${i.token}`)}`,
     "        models:",
-    `          - id: ${q(i.model)}`,
-    `            name: ${q(i.model.slice(i.model.indexOf("/") + 1))}`,
-    "            input: [text]",
+    ...allModels(i).flatMap(m => [`          - id: ${q(m)}`, `            name: ${q(m.slice(m.indexOf("/") + 1))}`, "            input: [text]"]),
     "- id: agent-default-model",
     "  config:",
     "    provider: easyswitch",
@@ -155,6 +157,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   // Documented overrides, not yet run against the real programs.
   "gemini-cli": {
     verified: false,
+    pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自定义地址下能不能列出别的模型",
     caveat: "环境变量来自它的文档；无界面的 `-p` 默认拿不到工具权限（要 --yolo，我们没开）",
     mcpCaveat: "MCP 通过「系统设置文件」环境变量挂上，变量名和格式是凭记忆写的，要核实",
     interactive: i => ({ command: i.bin, args: [], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
@@ -162,6 +165,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
   "qwen-code": {
     verified: false,
+    pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自定义地址下能不能列出别的模型",
     caveat: "没有任何本地资料可对，命令行参数全凭记忆；无界面的 `-p` 默认拿不到工具权限",
     mcpCaveat: "MCP 的系统设置文件环境变量名是猜的（从 Gemini CLI 改名而来），要核实",
     interactive: i => ({ command: i.bin, args: ["--auth-type", "openai"], env: { ...openaiEnv(i), ...geminiSystemSettings(i, true) }, files: geminiSettingsFiles(i) }),
@@ -180,6 +184,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
   aider: {
     verified: false,
+    pickerNote: "启动时只能指定一个主模型；Aider 有 /model 命令可以输入别的模型名手动换（文档里有），但它的菜单里不会替你列出来",
     efforts: ["low", "medium", "high"],
     tiers: [{ id: "small", label: "小任务", hint: "提交说明、对话摘要这类用 Aider 的「弱模型」" }],
     caveat: "参数来自它的文档；自定义模型名下 `--reasoning-effort` 可能被忽略（它不认识这个模型）",
@@ -188,6 +193,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
   "copilot-cli": {
     verified: false,
+    pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自带模型（BYOK）下能不能列出别的模型",
     caveat: "BYOK 环境变量凭记忆；无界面的 `-p` 默认拿不到工具权限（要 --allow-all-tools，我们没开）",
     mcpCaveat: "`--additional-mcp-config` 是凭记忆写的，要核实",
     interactive: i => ({ command: i.bin, args: copilotMcp(i), env: copilotEnv(i) }),
@@ -227,7 +233,7 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       "    api_mode: chat_completions",
       "    discover_models: false",
       "    models:",
-      ...[...new Set([i.model, ...Object.values(i.tiers ?? {})])].map(m => `      ${q(m)}: {}`),
+      ...allModels(i).map(m => `      ${q(m)}: {}`),
       // Hermes runs these side jobs on models of their own; each is pointed at the same private provider.
       ...(aux.length ? ["auxiliary:"] : []),
       ...aux.flatMap(([k, m]) => [`  ${k}:`, "    provider: custom:easyswitch", `    model: ${q(m)}`]),
@@ -254,7 +260,7 @@ function opencodeConfig(i: LaunchInput): string {
         npm: "@ai-sdk/openai-compatible",
         name: "EasySwitch",
         options: { baseURL: `${gateway(i)}/v1`, apiKey: i.token },
-        models: Object.fromEntries([...new Set([i.model, ...Object.values(i.tiers ?? {})])].map(m => [m, { name: m.slice(m.indexOf("/") + 1), variants: Object.fromEntries([...new Set(["low", "medium", "high", ...(i.effort ? [i.effort] : [])])].map(l => [l, { reasoningEffort: l }])) }])),
+        models: Object.fromEntries(allModels(i).map(m => [m, { name: m.slice(m.indexOf("/") + 1), variants: Object.fromEntries([...new Set(["low", "medium", "high", ...(i.effort ? [i.effort] : [])])].map(l => [l, { reasoningEffort: l }])) }])),
       },
     },
     ...(i.tiers?.small ? { small_model: `easyswitch/${i.tiers.small}` } : {}),

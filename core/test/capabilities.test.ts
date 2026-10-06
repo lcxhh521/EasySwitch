@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AGENTS } from "../src/agents.ts";
 import { LAUNCHERS, type AgentLauncher } from "../src/agent-launch.ts";
-import { capabilityMatrix, coverage, FEATURES, launcherCarriesMcp, launcherHasOwnEffort, type CapState } from "../src/capabilities.ts";
+import { capabilityMatrix, coverage, FEATURES, launcherCarriesMcp, launcherHasOwnEffort, launcherListsModels, type CapState } from "../src/capabilities.ts";
 
 const STATES: CapState[] = ["verified", "documented", "manual", "impossible", "todo", "na"];
 const matrix = capabilityMatrix();
@@ -190,4 +190,26 @@ test("the backlog hooks never hold back a session that EasySwitch started itself
   assert.equal(run({ ANTHROPIC_AUTH_TOKEN: "es-session-claude-abc" }).status, 0, "per-launch token");
   const prompt = spawnSync("node", ["bin/backlog.ts", "--hook-prompt"], { env: { ...process.env, ANTHROPIC_BASE_URL: "http://127.0.0.1:18765" }, encoding: "utf8" });
   assert.equal(prompt.stdout, "", "no reminder is injected into an EasySwitch session either");
+});
+
+test("every launcher that has a model list in its own configuration gets all the models, with the chosen one as the default", () => {
+  const models = ["prov/alpha-1", "prov/beta-2", "other/gamma-3"];
+  const listers = Object.entries({ ...LAUNCHERS }).filter(([, l]) => launcherListsModels(l)).map(([id]) => id).sort();
+  assert.deepEqual(listers, ["crush", "cline", "droid", "dsh", "goose", "grok-build", "hermes", "kimi-cli", "minimax-code", "omp", "openclaw", "opencode", "pi", "qoder-cli", "atomcode"].sort(), "update this when another launcher learns to list models");
+  for (const id of listers) {
+    const l = LAUNCHERS[id]!;
+    const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
+    try {
+      const spec = (l.headless ?? l.interactive!)(input(dir, { model: models[1]!, models, stateDir: dir }));
+      materialize(spec, dir);
+      const text = JSON.stringify(spec.args) + JSON.stringify(spec.env) + walk(dir).map(f => readFileSync(f, "utf8")).join("\n");
+      for (const m of models) assert.ok(text.includes(m.slice(m.indexOf("/") + 1)), `${id}: ${m} is not in the agent's own list`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+  // Codex and Claude Code have theirs through the model catalog and /model, checked against the real programs.
+  assert.equal(matrix.codex!.picker.state, "verified");
+  assert.equal(matrix.claude!.picker.state, "verified");
+  assert.equal(matrix.aider!.picker.state, "todo");
+  assert.match(matrix.aider!.picker.note!, /\/model/);
+  assert.equal(matrix["trae-agent"]!.picker.state, "impossible");
 });

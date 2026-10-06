@@ -198,7 +198,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const wanted = input.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
     const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) });
-    const done = runHeadless(id, { bin, port, model, task: input.task, stateDir: store.dir, tiers: tiersFor(id), claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const done = runHeadless(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
     return { task, done };
@@ -210,6 +210,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     return effortsOf(id);
   }
 
+  /** Every model an agent may be offered in its own menu, the chosen one first. Subscriptions that are switched off are not in the catalog. */
+  const modelsFor = (main: string): string[] => [...new Set([main, ...store.catalog().map(m => `${m.providerId}/${m.model}`)])].filter(Boolean).slice(0, 80);
   /** The levels an agent can offer for a model: the agent's own, that the model has too. */
   async function levelsFor(id: string, model?: string): Promise<string[]> {
     const own = await levelsOf(id);
@@ -249,7 +251,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const sessionDir = newSessionDir();
     const token = sessionToken(id);
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
-    const spec = launcher.interactive({ bin, port, model, token, sessionDir, stateDir: store.dir, tiers, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
+    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
     materialize(spec, sessionDir);
     return { spec, sessionDir, model, name: known.name };
   }

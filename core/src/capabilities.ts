@@ -26,6 +26,7 @@ export const FEATURES = [
   { id: "mcp", label: "能调用其他 agent", hint: "启动时挂上 EasySwitch 的 MCP，它就能把活派给别的 agent" },
   { id: "effort", label: "调想得多深", hint: "按 agent 设置思考档位" },
   { id: "tiers", label: "子 agent / 小任务用别的模型", hint: "同一个 agent 里不同用途用不同模型" },
+  { id: "picker", label: "在它自己的界面里选模型", hint: "启动后在 agent 自己的模型菜单里换到别的来源的模型，不用回到 EasySwitch" },
   { id: "source", label: "它的订阅当模型来源", hint: "把它背后的订阅额度给其他 agent 用" },
 ] as const;
 
@@ -65,6 +66,17 @@ export function launcherHasOwnEffort(l: AgentLauncher | undefined): boolean {
   return forms.some(form => specText(form(probeInput({ effort: "high" }))) !== specText(form(probeInput({}))));
 }
 
+/** Does this launcher put every model it is given into the agent's own list (and not only the default)? */
+export function launcherListsModels(l: AgentLauncher | undefined): boolean {
+  if (!l) return false;
+  const forms = [l.interactive, l.headless].filter(Boolean) as Array<(i: LaunchInput) => LaunchSpec>;
+  const models = ["probe/alpha-1", "probe/beta-2", "probe/gamma-3"];
+  return forms.some(form => {
+    const text = specText(form(probeInput({ model: models[0]!, models })));
+    return text.includes("beta-2") && text.includes("gamma-3");
+  });
+}
+
 /** Tried against the real program, with a test that stays in the suite. */
 const MCP_VERIFIED = new Set(["codex", "claude"]);
 
@@ -76,9 +88,11 @@ const NO_ENDPOINT = "请求走它自己的服务器，没有本地可改的端�
  */
 const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   codex: {
+    picker: { state: "verified", note: "模型目录里原生模型和外接模型放在一起（用真实 Codex 验证过）" },
     source: { state: "documented", note: "「Continue with ChatGPT」：用 Codex 的登录身份，额度和 ChatGPT 订阅共用（用本地假服务验证过，没用真账号测）" },
   },
   claude: {
+    picker: { state: "verified", note: "/model 里原生 Claude 模型和外接模型并排（保留你自己的登录）" },
     source: { state: "impossible", note: "按你的决定：Claude 订阅不借给别的 harness（风险太大）；Claude Code 里原生模型和外接模型并排显示" },
   },
   "copilot-cli": {
@@ -139,9 +153,11 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     mcp: { state: "impossible", note: "原版 Aider 没有 MCP 客户端" },
   },
   "trae-agent": {
+    picker: { state: "impossible", note: "它没有模型菜单，每次只能用命令行参数指定一个模型" },
     mcp: { state: "todo", note: "它只认 stdio 形式的 MCP；要加一个把 HTTP 转成 stdio 的小桥才能挂" },
   },
   "claude-desktop": {
+    picker: { state: "todo", note: "第三方网关模式下它会读网关的模型列表，还没做" },
     launch: { state: "todo", note: "做得了：Claude 桌面端有官方的「第三方推理（网关）」配置，且能用 CLAUDE_USER_DATA_DIR 换一个独立数据目录。做法是另开一个独立的 Claude 窗口，指向 EasySwitch，不碰你平时那个 Claude，也不拦截任何流量。代价：这个窗口里只有外接模型，没有 claude.ai 账号功能；原生 Claude 在平时的窗口里用" },
     task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
     mcp: { state: "todo", note: "还没查桌面端的 MCP 配置在第三方模式下怎么给" },
@@ -181,9 +197,13 @@ function derive(agent: AgentInfo): AgentCaps {
     : { state: "documented", note: "没有自己的档位参数，由网关改写它发出的请求（上游认才有效）" });
   const tiers: Cap = d.tiers ?? ((l?.tiers?.length ?? 0) > 0 ? { state: "documented", note: l!.tiers!.map(t => t.label).join("、") }
     : { state: "todo", note: hasLauncher ? "还没调研它有没有对应设置" : "要先有启动方式" });
+  const picker: Cap = d.picker ?? (launch.state === "impossible" ? { state: "impossible", note: "不经过 EasySwitch，用什么模型由它自己决定" }
+    : !hasLauncher ? { state: "todo", note: "要先有启动方式" }
+    : launcherListsModels(l) ? { state: l!.verified ? "verified" : "documented", note: "所有可用的模型都写进了它的私有配置，EasySwitch 里选的只是默认" + (l!.verified ? "" : "；还没在真实程序上确认它的菜单真的列出来") }
+    : { state: "todo", note: l!.pickerNote ?? "它的配置一次只能指定一个模型，还没查它启动后能不能列出或切换到别的模型" });
   const source: Cap = d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
 
-  return { launch, task, mcp, effort, tiers, source };
+  return { launch, task, mcp, effort, tiers, picker, source };
 }
 
 export function capabilityMatrix(agents: readonly AgentInfo[] = AGENTS): Record<string, AgentCaps> {
