@@ -32,11 +32,15 @@ export interface Conversation {
 }
 export interface Usage { input: number; output: number; cached?: number; cacheWrite?: number; reasoning?: number }
 export type Stop = "stop" | "tool" | "length" | "filter";
+export const OUTPUT_LIMITS = { frameBytes: 2 * 1024 * 1024, responseBytes: 32 * 1024 * 1024, items: 4096, toolHeaderBytes: 64 * 1024 } as const;
+export type OutputKind = "text" | "reasoning" | "call";
 export type OutputEvent =
   | { type: "text"; text: string; index?: number }
-  | { type: "reasoning"; text?: string; signature?: string; encrypted?: string; index?: number }
+  | { type: "reasoning"; text?: string; signature?: string; encrypted?: string; redacted?: boolean; index?: number }
   | { type: "call"; index: number; id: string; name: string; arguments: string }
   | { type: "arguments"; index: number; text: string }
+  /** Explicit source block completion; metadata/signatures precede this event. */
+  | { type: "block_end"; kind: OutputKind; index: number }
   | { type: "usage"; usage: Usage }
   | { type: "stop"; reason: Stop };
 

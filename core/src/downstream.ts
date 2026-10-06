@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ApiProtocol } from "./types.ts";
-import { packState, ProtocolError, type Json, type OutputEvent, type Stop, type Tool, type Usage } from "./protocol.ts";
+import { OUTPUT_LIMITS, packState, ProtocolError, type OutputKind, type Json, type OutputEvent, type Stop, type Tool, type Usage } from "./protocol.ts";
 
-interface Item { kind: "text" | "reasoning" | "call"; id: string; text: string; index: number; callId?: string; name?: string; signature?: string; encrypted?: string }
+interface Item { kind: "text" | "reasoning" | "call"; id: string; text: string; index: number; callId?: string; name?: string; signature?: string; encrypted?: string; redacted?: boolean; wireStarted?: boolean; ended?: boolean }
 const chatStop = (s: Stop) => ({ stop: "stop", tool: "tool_calls", length: "length", filter: "content_filter" })[s];
 const messageStop = (s: Stop) => ({ stop: "end_turn", tool: "tool_use", length: "max_tokens", filter: "refusal" })[s];
 
@@ -14,7 +14,7 @@ export class Downstream {
   stop: Stop = "stop";
   private slots = new Map<string, Item>();
   private sequence = 0;
-  private openMessage?: number;
+  private outputBytes = 0;
   private started = false;
   private created = Math.floor(Date.now() / 1000);
   private protocol: ApiProtocol;
@@ -53,7 +53,7 @@ export class Downstream {
   private spec(i: Item) { return this.tools.find(t => t.name === i.name); }
   private incomplete(): boolean { return this.stop === "length" || this.stop === "filter"; }
   private validArguments(i: Item): boolean {
-    try { JSON.parse(i.text || "{}"); return true; } catch { return false; }
+    try { const value = JSON.parse(i.text || "{}"); return value !== null && typeof value === "object" && !Array.isArray(value); } catch { return false; }
   }
   private customInput(i: Item): string {
     // A truncated custom wrapper cannot safely become an executable custom-tool input.
@@ -79,29 +79,53 @@ export class Downstream {
   private response(status: string): Json {
     return { id: this.id, object: "response", created_at: this.created, status, model: this.model, output: status === "in_progress" ? [] : this.items.map(i => this.responseItem(i, true)), error: null, incomplete_details: status === "incomplete" ? { reason: this.stop === "length" ? "max_output_tokens" : "content_filter" } : null, usage: status === "in_progress" ? null : this.wireUsage() };
   }
-  private closeMessage() {
-    if (this.openMessage === undefined) return;
-    this.emit("content_block_stop", { index: this.openMessage }); this.openMessage = undefined;
+  private beginMessage(i: Item) {
+    if (i.wireStarted) return;
+    i.wireStarted = true;
+    const block = i.kind === "text" ? { type: "text", text: "" }
+      : i.kind === "call" ? { type: "tool_use", id: i.callId, name: i.name, input: {} }
+      : i.redacted ? { type: "redacted_thinking", data: this.state(i) ?? "" }
+      : { type: "thinking", thinking: "" };
+    this.emit("content_block_start", { index: i.index, content_block: block });
+  }
+  private endItem(i: Item) {
+    if (i.ended) return;
+    i.ended = true;
+    if (this.protocol === "messages") {
+      this.beginMessage(i);
+      if (i.kind === "reasoning" && !i.redacted) this.emit("content_block_delta", { index: i.index, delta: { type: "signature_delta", signature: this.state(i) ?? "" } });
+      this.emit("content_block_stop", { index: i.index });
+    } else if (this.protocol === "gemini") {
+      // generateContent's ordinary functionCall.args must be a complete object. Emit at the
+      // tool boundary, not the end of the turn; never manufacture partial executable args.
+      if (i.kind === "call") {
+        if (this.validArguments(i)) { this.gemini([{ functionCall: { id: i.callId, name: i.name, args: JSON.parse(i.text || "{}") } }]); }
+      } else if (i.kind === "reasoning" && this.state(i)) this.gemini([{ thought: true, text: "", thoughtSignature: this.state(i) }]);
+    }
   }
   accept(e: OutputEvent) {
     if (e.type === "usage") { this.usage = e.usage; return; }
     if (e.type === "stop") { this.stop = e.reason; return; }
-    if (e.type === "reasoning" && !e.text && !e.signature && !e.encrypted) return;
+    if (e.type === "block_end") { const item = this.slots.get(e.kind + ":" + e.index); if (item) this.endItem(item); return; }
+    if (e.type === "reasoning" && e.text === undefined && !e.signature && !e.encrypted) return;
     this.start();
-    const kind = e.type === "call" || e.type === "arguments" ? "call" : e.type;
+    const kind: OutputKind = e.type === "call" || e.type === "arguments" ? "call" : e.type;
     const key = kind + ":" + (e.index ?? 0);
+    const delta = e.type === "call" ? e.arguments : e.type === "arguments" ? e.text : e.text ?? "";
+    this.outputBytes += Buffer.byteLength(delta) + (e.type === "reasoning" ? Buffer.byteLength(e.signature ?? "") + Buffer.byteLength(e.encrypted ?? "") : 0);
+    if (this.outputBytes > OUTPUT_LIMITS.responseBytes) throw new ProtocolError("上游内容超过安全大小限制。", 502);
     let i = this.slots.get(key);
     if (!i) {
       if (e.type === "arguments") throw new ProtocolError("上游工具参数缺少对应调用。", 502);
-      i = { kind, id: kind.slice(0, 3) + "_" + randomUUID(), index: this.items.length, text: "", ...(e.type === "call" ? { callId: e.id, name: e.name } : {}) };
+      if (this.items.length >= OUTPUT_LIMITS.items) throw new ProtocolError("上游内容块过多。", 502);
+      i = { kind, id: kind.slice(0, 3) + "_" + randomUUID(), index: this.items.length, text: "", ...(e.type === "call" ? { callId: e.id, name: e.name } : {}), ...(e.type === "reasoning" ? { redacted: e.redacted ?? (e.text === undefined && !!e.encrypted) } : {}) };
       this.items.push(i); this.slots.set(key, i);
       if (this.protocol === "responses") {
         this.emit("response.output_item.added", { output_index: i.index, item: this.responseItem(i, false) });
         if (kind === "text") this.emit("response.content_part.added", { item_id: i.id, output_index: i.index, content_index: 0, part: { type: "output_text", text: "", annotations: [], logprobs: [] } });
         if (kind === "reasoning") this.emit("response.reasoning_summary_part.added", { item_id: i.id, output_index: i.index, summary_index: 0, part: { type: "summary_text", text: "" } });
       }
-    }
-    const delta = e.type === "call" ? e.arguments : e.type === "arguments" ? e.text : e.text ?? "";
+    } else if (i.ended && (delta || e.type === "reasoning" && (e.signature || e.encrypted))) throw new ProtocolError("上游在内容块结束后继续输出。", 502);
     i.text += delta;
     if (e.type === "reasoning") { if (e.signature) i.signature = (i.signature ?? "") + e.signature; if (e.encrypted) i.encrypted = e.encrypted; }
     if (this.protocol === "chat") {
@@ -113,30 +137,22 @@ export class Downstream {
       if (kind === "text") this.emit("response.output_text.delta", { ...base, content_index: 0, logprobs: [] });
       else if (kind === "reasoning") this.emit("response.reasoning_summary_text.delta", { ...base, summary_index: 0 });
       else if (!this.spec(i)?.custom) this.emit("response.function_call_arguments.delta", base);
-    } else if (this.protocol === "messages" && kind === "text" && i.index === 0 && delta) {
-      // Only the leading text block can stream before signed/interleaved blocks are complete.
-      if (this.openMessage !== i.index) {
-        this.closeMessage(); this.openMessage = i.index;
-        this.emit("content_block_start", { index: i.index, content_block: { type: "text", text: "" } });
-      }
-      this.emit("content_block_delta", { index: i.index, delta: { type: "text_delta", text: delta } });
-    } else if (this.protocol === "gemini" && delta && kind === "text" && i.index === 0) {
-      // Later blocks can contain signatures or incomplete tool JSON. Keep them together and
-      // ordered until complete, rather than moving tools/signatures behind subsequent text.
-      this.gemini([{ text: delta }]);
-    }
+    } else if (this.protocol === "messages") {
+      this.beginMessage(i);
+      if (delta) this.emit("content_block_delta", { index: i.index, delta: kind === "text" ? { type: "text_delta", text: delta } : kind === "call" ? { type: "input_json_delta", partial_json: delta } : { type: "thinking_delta", thinking: delta } });
+    } else if (this.protocol === "gemini" && delta && kind !== "call") this.gemini([{ text: delta, ...(kind === "reasoning" ? { thought: true } : {}) }]);
   }
   private messageBlocks(): Json[] {
     return this.items.flatMap((i): Json[] => {
       if (i.kind === "text") return [{ type: "text", text: i.text }];
       if (i.kind === "call") return this.incomplete() && !this.validArguments(i) ? [] : [{ type: "tool_use", id: i.callId, name: i.name, input: JSON.parse(i.text || "{}") }];
       const state = this.state(i);
-      return i.text ? [{ type: "thinking", thinking: i.text, signature: state ?? "" }] : state ? [{ type: "redacted_thinking", data: state }] : [];
+      return i.redacted ? state ? [{ type: "redacted_thinking", data: state }] : [] : [{ type: "thinking", thinking: i.text, signature: state ?? "" }];
     });
   }
   result(): Json {
     // Validate tool arguments before any success terminal event is emitted.
-    for (const i of this.items) if (i.kind === "call" && !this.incomplete()) JSON.parse(i.text || "{}");
+    for (const i of this.items) if (i.kind === "call" && !this.incomplete() && !this.validArguments(i)) throw new ProtocolError("上游工具参数不是合法 JSON 对象。", 502);
     if (this.protocol === "responses") return this.response(this.stop === "length" || this.stop === "filter" ? "incomplete" : "completed");
     if (this.protocol === "messages") return { id: this.id, type: "message", role: "assistant", model: this.model, content: this.messageBlocks(), stop_reason: messageStop(this.stop), stop_sequence: null, usage: this.wireUsage() };
     if (this.protocol === "chat") {
@@ -178,32 +194,15 @@ export class Downstream {
       }
       this.emit("response." + result.status, { response: result });
     } else if (this.protocol === "messages") {
-      this.closeMessage();
-      for (const i of this.items) {
-        if (i.kind === "text" && i.index === 0 && i.text) continue;
-        if (i.kind === "call" && this.incomplete() && !this.validArguments(i)) continue;
-        const state = this.state(i);
-        const b = i.kind === "text" ? { type: "text", text: i.text } : i.kind === "call" ? { type: "tool_use", id: i.callId, name: i.name, input: {} } : i.text ? { type: "thinking", thinking: "" } : state ? { type: "redacted_thinking", data: state } : undefined;
-        if (!b) continue;
-        this.emit("content_block_start", { index: i.index, content_block: b });
-        if (i.kind === "call") this.emit("content_block_delta", { index: i.index, delta: { type: "input_json_delta", partial_json: i.text || "{}" } });
-        else if (i.kind === "reasoning" && i.text) {
-          this.emit("content_block_delta", { index: i.index, delta: { type: "thinking_delta", thinking: i.text } });
-          this.emit("content_block_delta", { index: i.index, delta: { type: "signature_delta", signature: state ?? "" } });
-        }
-        this.emit("content_block_stop", { index: i.index });
-      }
+      for (const i of this.items) this.endItem(i);
       this.emit("message_delta", { delta: { stop_reason: messageStop(this.stop), stop_sequence: null }, usage: this.wireUsage() });
       this.emit("message_stop", {});
     } else {
-      const parts = this.items.flatMap((i): Json[] => {
-        if (i.kind === "text" && i.index === 0 && i.text) return [];
-        if (i.kind === "call") return this.incomplete() && !this.validArguments(i) ? [] : [{ functionCall: { id: i.callId, name: i.name, args: JSON.parse(i.text || "{}") } }];
-        return [{ text: i.text, ...(i.kind === "reasoning" ? { thought: true, ...(this.state(i) ? { thoughtSignature: this.state(i) } : {}) } : {}) }];
-      });
-      this.gemini(parts, this.stop === "length" ? "MAX_TOKENS" : this.stop === "filter" ? "SAFETY" : "STOP");
+      for (const i of this.items) this.endItem(i);
+      this.gemini([], this.stop === "length" ? "MAX_TOKENS" : this.stop === "filter" ? "SAFETY" : "STOP");
     }
   }
+
   fail(message: string) {
     if (this.protocol === "responses") this.emit("response.failed", { response: { id: this.id, object: "response", status: "failed", error: { code: "upstream_error", message } } });
     else if (this.protocol === "messages") this.emit("error", { error: { type: "api_error", message } });

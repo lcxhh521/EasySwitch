@@ -221,11 +221,18 @@ test("Gemini converted SSE preserves the same signed block order as a whole resp
   const chunks: string[] = [];
   const out = new Downstream("gemini", "m", "source", "messages", [], c => chunks.push(c));
   out.accept({ type: "reasoning", index: 0, text: "think", signature: "sig" });
+  out.accept({ type: "block_end", kind: "reasoning", index: 0 });
   out.accept({ type: "call", index: 1, id: "c1", name: "shell", arguments: '{"cmd":"ls"}' });
+  out.accept({ type: "block_end", kind: "call", index: 1 });
   out.accept({ type: "text", index: 2, text: "after tool" });
   out.accept({ type: "stop", reason: "tool" });
   out.finish();
-  const parts = chunks.flatMap(chunk => JSON.parse(chunk.slice(6)).candidates[0].content.parts);
+  const parts: Json[] = [];
+  for (const part of chunks.flatMap(chunk => JSON.parse(chunk.slice(6)).candidates[0].content.parts)) {
+    const previous = parts.at(-1);
+    if (part.thought && part.text === "" && part.thoughtSignature && previous?.thought) previous.thoughtSignature = part.thoughtSignature;
+    else parts.push(part);
+  }
   assert.deepEqual(parts, out.result().candidates[0].content.parts);
   assert.deepEqual(parts.map((p: Json) => p.thought ? "thought" : p.functionCall ? "call" : "text"), ["thought", "call", "text"]);
 });

@@ -1,6 +1,47 @@
 import type { ApiProtocol } from "./types.ts";
-import { ProtocolError, type Json, type OutputEvent, type Stop, type Usage } from "./protocol.ts";
-import { sseData } from "./upstream.ts";
+import { OUTPUT_LIMITS, ProtocolError, type OutputKind, type Json, type OutputEvent, type Stop, type Usage } from "./protocol.ts";
+
+/** Bound both unterminated SSE frames and total retained output before parsing untrusted JSON. */
+async function* outputData(body: ReadableStream<Uint8Array>, streaming: boolean): AsyncGenerator<string> {
+  const decoder = new TextDecoder(); let buffer = ""; let bytes = 0; let bufferedBytes = 0; let scanFrom = 0;
+  const dataOf = (block: string) => block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).replace(/^ /, "")).join("\n");
+  for await (const chunk of body) {
+    bytes += chunk.byteLength; bufferedBytes += chunk.byteLength;
+    if (bytes > OUTPUT_LIMITS.responseBytes) throw new ProtocolError("上游响应超过安全大小限制。", 502);
+    buffer += decoder.decode(chunk, { stream: true });
+    if (!streaming) continue;
+    const boundary = /\r?\n\r?\n/g; boundary.lastIndex = scanFrom;
+    let match: RegExpExecArray | null; let consumed = 0;
+    while ((match = boundary.exec(buffer))) {
+      const block = buffer.slice(consumed, match.index); const blockBytes = Buffer.byteLength(block);
+      if (blockBytes > OUTPUT_LIMITS.frameBytes) throw new ProtocolError("上游事件超过安全大小限制。", 502);
+      consumed = boundary.lastIndex; bufferedBytes -= blockBytes + match[0].length;
+      const data = dataOf(block); if (data) yield data;
+    }
+    if (consumed) buffer = buffer.slice(consumed);
+    scanFrom = Math.max(0, buffer.length - 3);
+    if (bufferedBytes > OUTPUT_LIMITS.frameBytes) throw new ProtocolError("上游事件超过安全大小限制。", 502);
+  }
+  buffer += decoder.decode();
+  if (buffer) { const data = streaming ? dataOf(buffer) : buffer; if (data) yield data; }
+}
+
+/** Linear JSON boundary tracking, without repeatedly parsing a growing tool argument string. */
+class ArgumentBoundary {
+  private depth = 0; private quoted = false; private escaped = false; private started = false;
+  complete = false;
+  add(value: string): void {
+    for (const ch of value) {
+      if (this.complete) { if (!/\s/.test(ch)) throw new ProtocolError("工具参数在结束后继续输出。", 502); continue; }
+      if (!this.started) { if (/\s/.test(ch)) continue; if (ch !== "{") return; this.started = true; this.depth = 1; continue; }
+      if (this.quoted) { if (this.escaped) this.escaped = false; else if (ch === "\\") this.escaped = true; else if (ch === '"') this.quoted = false; }
+      else if (ch === '"') this.quoted = true;
+      else if (ch === "{" || ch === "[") this.depth++;
+      else if (ch === "}" || ch === "]") { if (--this.depth === 0) this.complete = true; }
+    }
+  }
+}
+
 
 const stopOf = (reason: string): Stop => /tool|function/i.test(reason) ? "tool" : /length|max.*token/i.test(reason) ? "length" : /filter|safety|recitation|block|refusal/i.test(reason) ? "filter" : "stop";
 export function usageOf(protocol: ApiProtocol, u: Json): Usage {
@@ -15,20 +56,41 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
   if (!response.body) throw new ProtocolError("上游返回空响应。", 502);
   const streaming = response.headers.get("content-type")?.includes("text/event-stream");
   if (!streaming) {
-    const json = await response.json() as Json;
+    let raw = ""; for await (const data of outputData(response.body, false)) raw += data;
+    const json = JSON.parse(raw) as Json;
     if (json.error) throw new ProtocolError("上游返回生成错误。", 502);
-    yield* wholeOutput(json, protocol);
+    yield* endedOutput(wholeOutput(json, protocol));
     return;
   }
   let stopped = false;
   let reason: Stop = "stop";
   let messageUsage: Json = {};
-  const calls = new Map<number, { id: string; name: string; arguments: string }>();
+  const calls = new Map<number, { id: string; name: string; arguments: string; emitted?: boolean; ended?: boolean; outputIndex?: number; boundary?: ArgumentBoundary }>();
+  const messageKinds = new Map<number, OutputKind>();
+  let chatNext = 0; let chatContent: { kind: "text" | "reasoning"; index: number } | undefined;
+  function* chatPart(kind: "text" | "reasoning", part: Json): Generator<OutputEvent> {
+    if (chatContent?.kind !== kind) {
+      if (chatContent) yield { type: "block_end", ...chatContent };
+      chatContent = { kind, index: chatNext++ };
+    }
+    yield { type: kind, index: chatContent.index, ...part } as OutputEvent;
+  }
   const seenText = new Set<number>();
   const seenThought = new Set<number>();
   const completedItems = new Set<number>();
   let geminiIndex = -1; let geminiKind = "";
   const signedText = new Map<number, { text: string; thoughtSignature?: string }>();
+  function* endGemini(): Generator<OutputEvent> {
+    if (geminiIndex < 0) return;
+    const index = geminiIndex;
+    yield { type: "block_end", kind: geminiKind as OutputKind, index };
+    const saved = signedText.get(index);
+    if (saved?.thoughtSignature) {
+      yield { type: "reasoning", index, encrypted: JSON.stringify(saved), redacted: true };
+      yield { type: "block_end", kind: "reasoning", index };
+    }
+    signedText.delete(index);
+  }
   function* completeItem(i: Json, index: number): Generator<OutputEvent> {
     if (completedItems.has(index)) return;
     if (i.type === "reasoning") {
@@ -47,8 +109,9 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
       }
     } else throw new ProtocolError("跨协议暂不支持上游输出：" + i.type, 502);
     completedItems.add(index);
+    yield { type: "block_end", kind: i.type === "function_call" ? "call" : i.type === "reasoning" ? "reasoning" : "text", index };
   }
-  for await (const data of sseData(response.body)) {
+  for await (const data of outputData(response.body, true)) {
     if (data === "[DONE]") break;
     const j = JSON.parse(data) as Json;
     if (j.error || j.type === "error" || j.type === "response.failed") throw new ProtocolError("上游在生成过程中返回错误。", 502);
@@ -57,19 +120,38 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
       const c = j.choices?.[0]; if (!c) continue;
       const d = c.delta ?? {};
       if (d.refusal) throw new ProtocolError("上游拒绝生成回复。", 502);
-      if (d.content) yield { type: "text", text: d.content };
-      if (d.reasoning_content || d.reasoning || d.reasoning_signature || d.provider_state) yield { type: "reasoning", text: d.reasoning_content ?? d.reasoning, signature: d.reasoning_signature, encrypted: d.provider_state };
+      if (d.reasoning_content || d.reasoning || d.reasoning_signature || d.provider_state) yield* chatPart("reasoning", { text: d.reasoning_content ?? d.reasoning, signature: d.reasoning_signature, encrypted: d.provider_state });
+      if (d.content) yield* chatPart("text", { text: d.content });
       for (const t of d.tool_calls ?? []) {
+        if (chatContent) { yield { type: "block_end", ...chatContent }; chatContent = undefined; }
         const index = t.index ?? 0;
-        const call = calls.get(index) ?? { id: "", name: "", arguments: "" };
-        call.id += t.id ?? ""; call.name += t.function?.name ?? ""; call.arguments += t.function?.arguments ?? "";
-        calls.set(index, call);
+        let call = calls.get(index);
+        if (!call) {
+          if (calls.size >= OUTPUT_LIMITS.items) throw new ProtocolError("上游工具调用过多。", 502);
+          call = { id: "", name: "", arguments: "", outputIndex: chatNext++, boundary: new ArgumentBoundary() }; calls.set(index, call);
+        }
+        if (call.emitted && (t.id || t.function?.name)) throw new ProtocolError("上游在参数开始后修改工具名称或 id。", 502);
+        call.id += t.id ?? ""; call.name += t.function?.name ?? "";
+        if (Buffer.byteLength(call.id) + Buffer.byteLength(call.name) > OUTPUT_LIMITS.toolHeaderBytes) throw new ProtocolError("上游工具标识超过安全大小限制。", 502);
+        const fragment = t.function?.arguments ?? "";
+        call.arguments += fragment; call.boundary!.add(fragment);
+        if (call.emitted && fragment && !call.ended) yield { type: "arguments", index: call.outputIndex!, text: fragment };
+        if (call.emitted && call.boundary!.complete && !call.ended) { call.ended = true; yield { type: "block_end", kind: "call", index: call.outputIndex! }; }
+      }
+      // Chat has no tool-header terminator: the first argument byte commits the header.
+      // If parallel headers are fragmented, release them in source order once unambiguous.
+      for (const call of calls.values()) {
+        if (call.emitted) continue;
+        if (!call.arguments || !call.id || !call.name) break;
+        call.emitted = true; yield { type: "call", index: call.outputIndex!, id: call.id, name: call.name, arguments: call.arguments };
+        if (call.boundary!.complete) { call.ended = true; yield { type: "block_end", kind: "call", index: call.outputIndex! }; }
       }
       if (c.finish_reason && !stopped) {
-        // Some Chat sources fragment tool IDs and names as well as arguments.
-        for (const [index, call] of calls) {
+        if (chatContent) { yield { type: "block_end", ...chatContent }; chatContent = undefined; }
+        for (const call of calls.values()) {
           if (!call.id || !call.name) throw new ProtocolError("上游工具调用缺少 id 或名称。", 502);
-          yield { type: "call", index, ...call };
+          if (!call.emitted) yield { type: "call", index: call.outputIndex!, id: call.id, name: call.name, arguments: call.arguments };
+          if (!call.ended) yield { type: "block_end", kind: "call", index: call.outputIndex! };
         }
         reason = stopOf(c.finish_reason); stopped = true;
       }
@@ -77,10 +159,11 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
       if (j.type === "message_start") messageUsage = j.message?.usage ?? {};
       if (j.type === "content_block_start") {
         const b = j.content_block;
+        messageKinds.set(j.index, b.type === "tool_use" ? "call" : b.type === "text" ? "text" : "reasoning");
         if (b.type === "tool_use") yield { type: "call", index: j.index, id: b.id, name: b.name, arguments: Object.keys(b.input ?? {}).length ? JSON.stringify(b.input) : "" };
-        else if (b.type === "text" && b.text) yield { type: "text", index: j.index, text: b.text };
+        else if (b.type === "text") yield { type: "text", index: j.index, text: b.text };
         else if (b.type === "thinking") yield { type: "reasoning", index: j.index, text: b.thinking, signature: b.signature };
-        else if (b.type === "redacted_thinking") yield { type: "reasoning", index: j.index, encrypted: b.data };
+        else if (b.type === "redacted_thinking") yield { type: "reasoning", index: j.index, encrypted: b.data, redacted: true };
         else if (!["text", "thinking"].includes(b.type)) throw new ProtocolError("跨协议暂不支持上游内容：" + b.type, 502);
       }
       if (j.type === "content_block_delta") {
@@ -91,6 +174,7 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
         else if (d.type === "signature_delta") yield { type: "reasoning", index: j.index, signature: d.signature };
         else throw new ProtocolError("跨协议暂不支持上游内容增量：" + d.type, 502);
       }
+      if (j.type === "content_block_stop") { const kind = messageKinds.get(j.index); if (kind) yield { type: "block_end", kind, index: j.index }; }
       if (j.type === "message_delta") {
         messageUsage = { ...messageUsage, ...j.usage };
         reason = stopOf(j.delta?.stop_reason ?? "end_turn");
@@ -120,12 +204,13 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
       if (!c && j.promptFeedback?.blockReason) { stopped = true; reason = "filter"; }
       for (const p of c?.content?.parts ?? []) {
         const kind = p.functionCall ? "call" : p.thought ? "reasoning" : "text";
-        if (kind !== geminiKind || kind === "call") { geminiIndex++; geminiKind = kind; }
+        if (kind !== geminiKind || kind === "call") { yield* endGemini(); geminiIndex++; geminiKind = kind; }
         const index = geminiIndex;
         if (p.functionCall) {
           const call = { id: p.functionCall.id ?? "call_" + index, name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args ?? {}) };
           calls.set(index, call); yield { type: "call", index, ...call };
-          if (p.thoughtSignature) yield { type: "reasoning", index, encrypted: JSON.stringify({ callId: call.id, thoughtSignature: p.thoughtSignature }) };
+          yield { type: "block_end", kind: "call", index };
+          if (p.thoughtSignature) { yield { type: "reasoning", index, encrypted: JSON.stringify({ callId: call.id, thoughtSignature: p.thoughtSignature }), redacted: true }; yield { type: "block_end", kind: "reasoning", index }; }
         } else if (p.thought) yield { type: "reasoning", index, text: p.text, signature: p.thoughtSignature };
         else if (typeof p.text === "string") {
           yield { type: "text", index, text: p.text };
@@ -136,11 +221,11 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
         }
         else throw new ProtocolError("跨协议暂不支持 Gemini 输出：" + Object.keys(p)[0], 502);
       }
-      if (c?.finishReason) { stopped = true; reason = c.finishReason === "STOP" && calls.size ? "tool" : stopOf(c.finishReason); }
+      if (c?.finishReason) { yield* endGemini(); geminiIndex = -1; geminiKind = ""; stopped = true; reason = c.finishReason === "STOP" && calls.size ? "tool" : stopOf(c.finishReason); }
     }
   }
   if (!stopped) throw new ProtocolError("上游响应流在结束事件前中断。", 502);
-  for (const [index, saved] of signedText) if (saved.thoughtSignature) yield { type: "reasoning", index, encrypted: JSON.stringify(saved) };
+  if (protocol === "gemini") yield* endGemini();
   yield { type: "stop", reason };
 }
 
@@ -151,8 +236,8 @@ function* wholeOutput(j: Json, protocol: ApiProtocol): Generator<OutputEvent> {
     const c = j.choices?.[0]; if (!c) throw new ProtocolError("上游缺少回复。", 502);
     const m = c.message;
     if (m.refusal) throw new ProtocolError("上游拒绝生成回复。", 502);
-    if (m.content) yield { type: "text", text: m.content };
     if (m.reasoning_content || m.reasoning || m.reasoning_signature || m.provider_state) yield { type: "reasoning", text: m.reasoning_content ?? m.reasoning, signature: m.reasoning_signature, encrypted: m.provider_state };
+    if (m.content) yield { type: "text", text: m.content };
     for (const [index, t] of (m.tool_calls ?? []).entries()) yield { type: "call", index, id: t.id, name: t.function.name, arguments: t.function.arguments };
     reason = stopOf(c.finish_reason ?? "stop"); usage = j.usage;
   } else if (protocol === "messages") {
@@ -191,4 +276,21 @@ function* wholeOutput(j: Json, protocol: ApiProtocol): Generator<OutputEvent> {
   }
   if (usage) yield { type: "usage", usage: usageOf(protocol, usage) };
   yield { type: "stop", reason };
+}
+
+/** Whole replies use the same per-block lifecycle as streamed replies. */
+function* endedOutput(events: Iterable<OutputEvent>): Generator<OutputEvent> {
+  let previous: { kind: OutputKind; index: number } | undefined;
+  for (const e of events) {
+    if (e.type === "usage" || e.type === "stop") {
+      if (previous) { yield { type: "block_end", ...previous }; previous = undefined; }
+      yield e; continue;
+    }
+    if (e.type === "block_end") { yield e; continue; }
+    const kind = e.type === "arguments" ? "call" : e.type;
+    const index = e.index ?? 0;
+    if (previous && (previous.kind !== kind || previous.index !== index)) yield { type: "block_end", ...previous };
+    previous = { kind, index }; yield e;
+  }
+  if (previous) yield { type: "block_end", ...previous };
 }
