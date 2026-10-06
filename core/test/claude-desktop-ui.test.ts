@@ -59,7 +59,7 @@ test("desktop UI labels mock-only coverage, escapes server text, and disables un
   app.run("claudeDesktopInfo = {installed:true,launchBlocked:false,sessions:[{id:'x',state:'cleanup-blocked',cleaned:false,error:'<script>bad</script>'}]}");
   html = app.run("claudeDesktopCard()") as string;
   assert.match(html, /退出或清理待处理/);
-  assert.match(html, /&lt;script&gt;bad&lt;\/script&gt;/);
+  assert.match(html, /这次操作没有完成/); assert.doesNotMatch(html, /script&gt;bad|<script>bad/);
   assert.ok(!html.includes("<script>"));
   assert.match(html, /停止并清理/);
 });
@@ -106,7 +106,7 @@ test("desktop start requires current consent, suppresses duplicate clicks and sh
   app.run("rejectStart(new Error('mock launch failed'))"); await first;
   assert.equal(app.run("claudeDesktopBusy"), false);
   assert.equal(app.run("claudeDesktopConfirm"), false);
-  assert.match(app.run("claudeDesktopCard()"), /mock launch failed/);
+  assert.match(app.run("claudeDesktopCard()"), /这次操作没有完成/); assert.doesNotMatch(app.run("claudeDesktopCard()"), /mock launch failed/);
   await app.click("[data-claude-desktop-start]");
   assert.equal(app.run("requests.length"), 1, "failed start needs a fresh explicit click through the notice");
 });

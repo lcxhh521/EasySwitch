@@ -103,23 +103,28 @@ test("adding a Vertex project mints a token to prove the key works, keeps the ke
   server = createEasySwitchServer({ store, secrets, port });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
 
+  const writesBeforeRefusal = secretWrites;
   acceptKey = false;
-  const refused = await api("POST", "/api/vertex", { project: "proj-demo", location: "us-central1", serviceAccount: JSON.stringify(SA) });
-  assert.equal(refused.status, 409);
-  assert.match(((await refused.json()) as Json).error, /没有接受这个服务账号/);
-  assert.equal(store.providers().length, 0, "nothing is kept when the key does not work");
-  assert.equal((await api("POST", "/api/vertex", { project: "Bad Project", serviceAccount: JSON.stringify(SA) })).status, 400);
-  assert.equal((await api("POST", "/api/vertex", { project: "proj-demo", location: "mars", serviceAccount: JSON.stringify(SA) })).status, 400);
-  const callsBeforeInvalid = tokenRequests;
-  const writesBeforeInvalid = secretWrites;
-  for (const invalid of [{ project: "proj-demo-", location: "global" }, { project: "proj-demo", location: "us-central123" }]) {
-    assert.equal((await api("POST", "/api/vertex", { ...invalid, serviceAccount: JSON.stringify(SA) })).status, 400);
-  }
-  assert.equal(tokenRequests, callsBeforeInvalid, "strict routing validation must precede any token exchange");
-  assert.equal(secretWrites, writesBeforeInvalid, "invalid routing cannot leave an orphaned service-account secret");
-  assert.equal(store.providers().length, 0);
+  try {
+    const refused = await api("POST", "/api/vertex", { project: "proj-demo", location: "us-central1", serviceAccount: JSON.stringify(SA) });
+    assert.equal(refused.status, 409);
+    const refusal = await refused.json() as Json;
+    assert.equal(refusal.uiError.code, "source_auth_required");
+    assert.equal(refusal.error, refusal.uiError.message, "the legacy error field also uses safe user-facing wording");
+    assert.equal(secretWrites, writesBeforeRefusal, "a rejected key is never persisted");
+    assert.equal(store.providers().length, 0, "nothing is kept when the key does not work");
+    assert.equal((await api("POST", "/api/vertex", { project: "Bad Project", serviceAccount: JSON.stringify(SA) })).status, 400);
+    assert.equal((await api("POST", "/api/vertex", { project: "proj-demo", location: "mars", serviceAccount: JSON.stringify(SA) })).status, 400);
+    const callsBeforeInvalid = tokenRequests;
+    const writesBeforeInvalid = secretWrites;
+    for (const invalid of [{ project: "proj-demo-", location: "global" }, { project: "proj-demo", location: "us-central123" }]) {
+      assert.equal((await api("POST", "/api/vertex", { ...invalid, serviceAccount: JSON.stringify(SA) })).status, 400);
+    }
+    assert.equal(tokenRequests, callsBeforeInvalid, "strict routing validation must precede any token exchange");
+    assert.equal(secretWrites, writesBeforeInvalid, "invalid routing cannot leave an orphaned service-account secret");
+    assert.equal(store.providers().length, 0);
+  } finally { acceptKey = true; }
 
-  acceptKey = true;
   const made = await api("POST", "/api/vertex", { project: "proj-demo", location: "us-central1", serviceAccount: JSON.stringify(SA) });
   assert.equal(made.status, 200, await made.clone().text());
   const info = (await made.json()) as Json;

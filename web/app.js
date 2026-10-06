@@ -88,14 +88,25 @@ let popover = null;
 
 // ---------------------------------------------------------------- helpers
 
-async function call(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: { "content-type": "application/json", "x-easyswitch": "1" },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+function errorPresentation(error, context = "local") {
+  return globalThis.EasySwitchErrors?.humanError(error, { context }) ?? { code: "unknown_error", title: "这次操作没有完成", reason: "请检查连接和设置后重试", action: {label:"查看控制台",target:"agents"}, message:"这次操作没有完成。请检查连接和设置后重试；到控制台查看相关设置。", details:{code:"unknown_error"} };
+}
+function userErrorMessage(error, context) { return error?.userError?.message ?? errorPresentation(error, context).message; }
+function showError(error, context) {
+  const view = error?.userError ?? errorPresentation(error, context);
+  toast(view.message, view);
+}
+async function call(method, path, body, options = {}) {
+  const context = /budget/.test(path) ? "budget" : /providers|plan|signin|vertex|kiro|kimi|cursor|antigravity/.test(path) ? "source" : /launch|command/.test(path) ? "launch" : /gateway\/sessions/.test(path) ? "session" : "local";
+  let res;
+  try { res = await fetch(path, { method, redirect: "error", ...(options.signal ? {signal:options.signal} : {}), headers: { "content-type": "application/json", "x-easyswitch": "1" }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
+  catch (failure) { const view=errorPresentation(failure,context);throw Object.assign(new Error(view.message),{code:view.code,userError:view}); }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error?.message ?? json.error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    // Rebuild from the registered code, never trust arbitrary server prose/details as display HTML.
+    const view = errorPresentation({ ...json, ...(json.uiError?.code ? {code:json.uiError.code} : {}), status:res.status }, context);
+    throw Object.assign(new Error(view.message), { code:view.code, status:res.status, userError:view });
+  }
   return json;
 }
 
@@ -152,12 +163,18 @@ function hostOf(url) {
   try { return new URL(url).host; } catch { return url; }
 }
 
-function toast(text) {
+function toast(text, problem) {
   const el = document.createElement("div");
   el.className = "toast";
   el.textContent = text;
+  if (problem) {
+    const action = document.createElement("button"); action.className="btn secondary";action.textContent=problem.action.label;
+    action.addEventListener("click", async()=>{if(problem.action.target!=="current"){page=problem.action.target;history.replaceState(null,"",`#${page}`);await refresh(true);}el.remove();});el.append(action);
+    const detail=document.createElement("details"),summary=document.createElement("summary"),code=document.createElement("pre");summary.textContent="详情";code.textContent=JSON.stringify(problem.details,null,2);detail.append(summary,code);el.append(detail);
+    const close=document.createElement("button");close.textContent="关闭";close.addEventListener("click",()=>el.remove());el.append(close);
+  }
   document.body.append(el);
-  setTimeout(() => el.remove(), 2600);
+  if (!problem) setTimeout(() => el.remove(), 2600);
 }
 
 /** Name and icon of any agent: the two built-in rows, or an entry of the wider catalog. */
@@ -196,7 +213,7 @@ function renderHeader() {
   chip.className = `chip ${state ? (clean ? "ok" : "bad") : "bad"}`;
   chip.innerHTML = state
     ? `<span class="dot"></span>${clean ? "原生配置未被改动" : "原生配置出现了 EasySwitch 痕迹"}`
-    : `<span class="dot"></span>连不上核心服务`;
+    : page === "doctor" && typeof doctorReport !== "undefined" && doctorReport ? `<span class="dot"></span>只读自检` : `<span class="dot"></span>连不上核心服务`;
 }
 
 function openGuard(anchor) {
@@ -353,7 +370,7 @@ function claudeDesktopCard() {
       ${c?.launchBlocked !== false ? `<p class="hint" role="status" style="padding:0 18px">${esc(c?.note ?? "读取安全状态前不能启动")}</p>` : ""}
       ${claudeDesktopConfirm ? `<div class="detail" style="display:block"><p class="hint">确认以实验性方式启动？启动器不改原生配置，但真实应用是否完全遵守独立目录仍待验证。应用可能下载并运行自带的 agent helper；发消息会使用你选择的来源及其额度。这个独立窗口只配置外接模型，不借用 Claude 登录。</p><div class="controls"><button class="btn" data-claude-desktop-start ${disabled ? "disabled" : ""}>确认，启动独立窗口</button><button class="btn secondary" data-claude-desktop-cancel>取消</button></div></div>` : ""}
       ${claudeDesktopError ? `<p class="hint" role="alert" style="padding:0 18px;color:var(--bad)">${esc(claudeDesktopError)}</p>` : ""}
-      ${sessions.map(s => `<div class="row"><div class="grow"><div class="title">${esc(labels[s.state] ?? s.state)}${s.pid ? ` · PID ${esc(s.pid)}` : ""}</div><div class="sub">${s.cleaned ? "私有目录已清理" : "私有目录保留中"}${s.error ? ` · ${esc(s.error)}` : ""}</div></div>${s.cleaned ? "" : `<button class="btn secondary" data-claude-desktop-stop="${esc(s.id)}" ${claudeDesktopBusy ? "disabled" : ""}>停止并清理</button>`}</div>`).join("")}
+      ${sessions.map(s => `<div class="row"><div class="grow"><div class="title">${esc(labels[s.state] ?? s.state)}${s.pid ? ` · PID ${esc(s.pid)}` : ""}</div><div class="sub">${s.cleaned ? "私有目录已清理" : "私有目录保留中"}${s.error ? ` · ${esc(userErrorMessage(s.error,"launch"))}` : ""}</div></div>${s.cleaned ? "" : `<button class="btn secondary" data-claude-desktop-stop="${esc(s.id)}" ${claudeDesktopBusy ? "disabled" : ""}>停止并清理</button>`}</div>`).join("")}
     </div>`;
 }
 
@@ -768,7 +785,7 @@ function openPicker(anchor, target) {
         toast(`${agentMeta(harness).name} 的增强会话将使用 ${o.model}`);
       }
     } catch (error) {
-      toast(error.message);
+      showError(error);
     }
     await refresh(true);
   };
@@ -904,7 +921,7 @@ function providerRow(p) {
   const used = (p.usedBy ?? []).map(h => icon(agentMeta(h).icon, "sm")).join("");
   const open = openProvider === p.id;
   const checks = (p.probe?.checks ?? []).map(c => `
-    <div class="check ${["pass", "fail", "skip"].includes(c.status) ? c.status : ""}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${esc(c.latencyMs)}ms` : ""}</div>`).join("");
+    <div class="check ${["pass", "fail", "skip"].includes(c.status) ? c.status : ""}"><b>${esc(c.label)}</b>${esc(c.status === "fail" ? userErrorMessage({message:c.detail,status:Number(/HTTP (\d{3})/.exec(c.detail ?? "")?.[1])},"source") : c.detail)}${c.latencyMs != null ? ` · ${esc(c.latencyMs)}ms` : ""}</div>`).join("");
   const options = models.map(m => `<option ${m === p.defaultModel ? "selected" : ""}>${esc(m)}</option>`).join("");
   const fixed = p.plan || p.mimoFree || p.vertex || p.kiro || p.antigravity || p.cursor || p.kimi || p.cliTextBridge;
   const draft = protocolDrafts.get(p.id);
@@ -1026,7 +1043,7 @@ function planCard() {
     <div class="card">
       ${accounts.map(row).join("")}
       ${si?.status === "waiting" ? `<div class="row"><div class="grow"><div class="title">${si.userCode ? `在浏览器打开的页面里输入这个码：<span class="mono" style="font-size:20px;letter-spacing:2px">${esc(si.userCode)}</span>` : "已在浏览器里打开登录页"}</div><div class="sub">登录并确认后会自动完成，不用回到这里点什么。没有自动打开的话，<a href="${esc(si.url)}" target="_blank" rel="noopener">点这里打开</a>。</div></div><button class="btn secondary" data-plan-cancel>取消</button></div>` : ""}
-      ${si?.status === "error" ? `<div class="row"><div class="grow"><div class="title">没有登录成功</div><div class="sub">${esc(si.message ?? "")}</div></div></div>` : ""}
+      ${si?.status === "error" ? `<div class="row"><div class="grow"><div class="title">没有登录成功</div><div class="sub">${esc(userErrorMessage(si.message ?? "", "source"))}</div></div></div>` : ""}
       ${si?.status === "done" && si.message ? `<div class="row"><div class="grow"><div class="sub">${esc(si.message)}</div></div></div>` : ""}
       <button class="add-row" data-plan-signin>${icon("openai", "sm")} Continue with ChatGPT</button>
       <button class="add-row" data-plan-signin data-plan-mode="copilot">${icon("github-copilot-color", "sm")} 用 GitHub Copilot 订阅</button>
@@ -1122,7 +1139,7 @@ async function submitAdd(form) {
     }
   } catch (error) {
     msg.className = "msg bad";
-    msg.textContent = error.message;
+    msg.textContent = userErrorMessage(error);
     return;
   }
   await refresh(true);
@@ -1143,7 +1160,7 @@ function explain(e) {
   else if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
   else parts.push(`这个来源原生支持 ${harness.protocol} 协议，请求原样转发`);
   if (e.dropped?.length) parts.push(`去掉了${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（目标协议不支持这些内容或参数）`);
-  if (e.note) parts.push(e.note);
+  if (e.note) parts.push(e.status >= 400 ? userErrorMessage({status:e.status,message:e.note},"source") : e.note);
   if (e.inputTokens != null || e.outputTokens != null) {
     parts.push(`输入 ${thousands(e.inputTokens)} / 输出 ${thousands(e.outputTokens)} tokens${e.cachedTokens ? `，其中 ${thousands(e.cachedTokens)} 命中缓存` : ""}`);
   }
@@ -1343,11 +1360,12 @@ async function loadUsage() {
 function render() {
   renderHeader();
   const main = $("#page");
+  if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=renderDoctor();return;}
   if (!state) {
     main.innerHTML = `<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
     return;
   }
-  const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage };
+  const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
   main.innerHTML = (views[page] ?? renderAgents)();
   if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
   if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
@@ -1357,7 +1375,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1376,13 +1394,14 @@ document.addEventListener("change", async e => {
   try {
     await call("PUT", `/api/bindings/${sel.dataset.effortSelect}/effort`, { effort: sel.value });
     toast(sel.value ? `推理档位设为 ${sel.value}，下次启动生效` : "推理档位恢复为它自己的默认");
-  } catch (error) { toast(error.message); }
+  } catch (error) { showError(error); }
   await refresh(true);
 });
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
 
 async function refresh(force = false) {
+  if (page === "doctor" && typeof loadDoctor === "function") {if(!doctorBusy && (force || !doctorReport))await loadDoctor();render();return;}
   try {
     state = await call("GET", "/api/state");
   } catch {
@@ -1403,6 +1422,7 @@ async function refresh(force = false) {
     agentList = await loadAgents();
     if (agentList) force = true;
   }
+  if (page === "doctor" && typeof loadDoctor === "function" && !doctorBusy && (force || !doctorReport)) await loadDoctor();
   if (page === "usage" && (force || !usage)) await loadUsage();
   if (force || !busy()) render();
   else renderHeader();
@@ -1417,6 +1437,7 @@ document.addEventListener("click", async e => {
   const nav = t.closest("#nav button, [data-go]");
   if (nav) {
     claudeDesktopConfirm = false;
+    if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
     page = nav.dataset.page ?? nav.dataset.go;
     if (!PANEL) history.replaceState(null, "", `#${page}`);
     closePopover();
@@ -1436,7 +1457,7 @@ document.addEventListener("click", async e => {
     try {
       const { model } = await call("POST", `/api/launch/${launch.dataset.launch}`);
       toast(`已在终端里打开 ${HARNESS[launch.dataset.launch].name} 增强会话（${model}）`);
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     setTimeout(() => refresh(true), 1500);
     return;
   }
@@ -1450,31 +1471,31 @@ document.addEventListener("click", async e => {
 
   const accLaunch = t.closest("[data-acc-launch]");
   if (accLaunch) {
-    try { const r = await call("POST", "/api/accounts/launch", { harness: accLaunch.dataset.h, accountId: accLaunch.dataset.accLaunch }); toast(`已在终端里打开「${r.account.label}」`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", "/api/accounts/launch", { harness: accLaunch.dataset.h, accountId: accLaunch.dataset.accLaunch }); toast(`已在终端里打开「${r.account.label}」`); } catch (error) { showError(error); }
     setTimeout(() => refresh(true), 800);
     return;
   }
   const accAuto = t.closest("[data-acc-auto]");
   if (accAuto) {
-    try { const r = await call("POST", "/api/accounts/launch", { harness: accAuto.dataset.accAuto }); toast(`自动选了「${r.account.label}」${r.note ? `（${r.note}）` : ""}`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", "/api/accounts/launch", { harness: accAuto.dataset.accAuto }); toast(`自动选了「${r.account.label}」${r.note ? `（${r.note}）` : ""}`); } catch (error) { showError(error); }
     setTimeout(() => refresh(true), 800);
     return;
   }
   const accRest = t.closest("[data-acc-rest]");
   if (accRest) {
-    try { await call("PATCH", `/api/accounts/${accRest.dataset.accRest}`, { rest: accRest.dataset.on === "1" }); } catch (error) { toast(error.message); }
+    try { await call("PATCH", `/api/accounts/${accRest.dataset.accRest}`, { rest: accRest.dataset.on === "1" }); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   const accToggle = t.closest("[data-acc-toggle]");
   if (accToggle) {
-    try { await call("PATCH", `/api/accounts/${accToggle.dataset.accToggle}`, { enabled: accToggle.dataset.enabled === "1" }); } catch (error) { toast(error.message); }
+    try { await call("PATCH", `/api/accounts/${accToggle.dataset.accToggle}`, { enabled: accToggle.dataset.enabled === "1" }); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   const accDel = t.closest("[data-acc-del]");
   if (accDel) {
-    try { const r = await call("DELETE", `/api/accounts/${accDel.dataset.accDel}`); toast("已移除；登录目录仍保留在 " + r.keptDirectory); } catch (error) { toast(error.message); }
+    try { const r = await call("DELETE", `/api/accounts/${accDel.dataset.accDel}`); toast("已移除；登录目录仍保留在 " + r.keptDirectory); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1484,7 +1505,7 @@ document.addEventListener("click", async e => {
     if (mode === "ask") { autoConfirm = true; render(); return; }
     if (mode === "cancel") { autoConfirm = false; render(); return; }
     autoConfirm = false;
-    try { await call("PUT", "/api/accounts/settings", { autoPick: mode === "on" }); } catch (error) { toast(error.message); }
+    try { await call("PUT", "/api/accounts/settings", { autoPick: mode === "on" }); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1502,7 +1523,7 @@ document.addEventListener("click", async e => {
       const r = await call("POST", `/api/chatgpt/${mode}`, { restart: true });
       toast(mode === "enhance" ? "ChatGPT 已用 EasySwitch 启动：打开模型菜单就能看到外接模型" : "ChatGPT 已恢复普通启动");
       void r;
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1525,14 +1546,14 @@ document.addEventListener("click", async e => {
         await call("POST", "/api/claude-desktop/sessions", { experimental: true, model: claudeDesktopModel });
         toast("独立进程已启动，真实窗口和模型连接仍需确认");
       }
-    } catch (error) { claudeDesktopError = error.message; }
+    } catch (error) { claudeDesktopError = userErrorMessage(error); }
     finally { claudeDesktopBusy = false; }
     await refresh(true); return;
   }
 
   const agentLaunch = t.closest("[data-agent-launch]");
   if (agentLaunch) {
-    try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { showError(error); }
     return;
   }
   const pickAgent = t.closest("[data-task-agent]");
@@ -1547,20 +1568,20 @@ document.addEventListener("click", async e => {
   }
   if (t.closest("[data-rule-cancel]")) { ruleForm = null; render(); return; }
   const ruleMove = t.closest("[data-rule-move]");
-  if (ruleMove) { await call("POST", `/api/rules/${ruleMove.dataset.rule}/move`, { direction: ruleMove.dataset.ruleMove }).catch(error => toast(error.message)); await refresh(true); return; }
+  if (ruleMove) { await call("POST", `/api/rules/${ruleMove.dataset.rule}/move`, { direction: ruleMove.dataset.ruleMove }).catch(error => showError(error)); await refresh(true); return; }
   const ruleToggle = t.closest("[data-rule-toggle]");
   if (ruleToggle) {
     const r = (state.rules ?? []).find(x => x.id === ruleToggle.dataset.ruleToggle);
-    if (r) await call("PUT", `/api/rules/${r.id}`, { name: r.name, enabled: !r.enabled, when: r.when, then: r.then }).catch(error => toast(error.message));
+    if (r) await call("PUT", `/api/rules/${r.id}`, { name: r.name, enabled: !r.enabled, when: r.when, then: r.then }).catch(error => showError(error));
     await refresh(true);
     return;
   }
   const ruleDel = t.closest("[data-rule-del]");
-  if (ruleDel) { await call("DELETE", `/api/rules/${ruleDel.dataset.ruleDel}`).catch(error => toast(error.message)); await refresh(true); return; }
+  if (ruleDel) { await call("DELETE", `/api/rules/${ruleDel.dataset.ruleDel}`).catch(error => showError(error)); await refresh(true); return; }
   if (t.closest("[data-rule-test]")) {
     const task = document.querySelector("[data-rule-test-input]")?.value ?? "";
     ruleTest.task = task;
-    try { ruleTest.result = await call("POST", "/api/rules/test", { task }); } catch (error) { ruleTest.result = { error: error.message }; }
+    try { ruleTest.result = await call("POST", "/api/rules/test", { task }); } catch (error) { ruleTest.result = { error: userErrorMessage(error) }; }
     render();
     return;
   }
@@ -1575,14 +1596,14 @@ document.addEventListener("click", async e => {
     // A Codex-identity account just signs in again the same way; one made with OpenAI's own route signs in again with its own client.
     const again = againBtn && againBtn.dataset.planKind !== "codex" ? againBtn.dataset.planSigninAgain : undefined;
     const mode = againBtn?.dataset.planKind === "copilot" ? "copilot" : t.closest("[data-plan-mode]")?.dataset.planMode;
-    try { await call("POST", "/api/plan/signin", again ? { accountId: again, mode: "open" } : mode ? { mode } : {}); } catch (error) { toast(error.message); }
+    try { await call("POST", "/api/plan/signin", again ? { accountId: again, mode: "open" } : mode ? { mode } : {}); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   if (t.closest("[data-plan-cancel]")) { await call("POST", "/api/plan/signin", { cancelOnly: true }).catch(() => {}); await refresh(true); return; }
   const planModels = t.closest("[data-plan-models]");
   if (planModels) {
-    try { const r = await call("POST", `/api/plan/${planModels.dataset.planModels}/models`); toast(`模型已更新：${r.models.length} 个`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", `/api/plan/${planModels.dataset.planModels}/models`); toast(`模型已更新：${r.models.length} 个`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1594,7 +1615,7 @@ document.addEventListener("click", async e => {
     if (guideBusy) return;
     if (guideOpen === id) { guideOpen = null; guideData = null; render(); return; }
     guideBusy = true;
-    try { guideData = await call("POST", `/api/agents/${id}/setup`, {}); guideOpen = id; guideReveal = false; } catch (error) { toast(error.message); } finally { guideBusy = false; }
+    try { guideData = await call("POST", `/api/agents/${id}/setup`, {}); guideOpen = id; guideReveal = false; } catch (error) { showError(error); } finally { guideBusy = false; }
     render();
     return;
   }
@@ -1606,13 +1627,13 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.closest("[data-kimi-signin]")) {
-    try { await call("POST", "/api/kimi/signin", {}); toast("已在浏览器里打开 Kimi 登录页，确认页面上的码"); } catch (error) { toast(error.message); }
+    try { await call("POST", "/api/kimi/signin", {}); toast("已在浏览器里打开 Kimi 登录页，确认页面上的码"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   const kmRefresh = t.closest("[data-kimi-refresh]");
   if (kmRefresh) {
-    try { const r = await call("POST", `/api/kimi/${kmRefresh.dataset.kimiRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", `/api/kimi/${kmRefresh.dataset.kimiRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1621,18 +1642,18 @@ document.addEventListener("click", async e => {
     const id = kmOut.dataset.kimiRemove;
     if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
     planConfirmOut = null;
-    try { await call("DELETE", `/api/kimi/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/kimi/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   if (t.closest("[data-cursor-signin]")) {
-    try { await call("POST", "/api/cursor/signin", {}); toast("已在浏览器里打开 Cursor 登录页"); } catch (error) { toast(error.message); }
+    try { await call("POST", "/api/cursor/signin", {}); toast("已在浏览器里打开 Cursor 登录页"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   const cuRefresh = t.closest("[data-cursor-refresh]");
   if (cuRefresh) {
-    try { const r = await call("POST", `/api/cursor/${cuRefresh.dataset.cursorRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", `/api/cursor/${cuRefresh.dataset.cursorRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1641,18 +1662,18 @@ document.addEventListener("click", async e => {
     const id = cuOut.dataset.cursorRemove;
     if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
     planConfirmOut = null;
-    try { await call("DELETE", `/api/cursor/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/cursor/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   if (t.closest("[data-antigravity-signin]")) {
-    try { await call("POST", "/api/antigravity/signin", {}); toast("已在浏览器里打开 Google 登录页"); } catch (error) { toast(error.message); }
+    try { await call("POST", "/api/antigravity/signin", {}); toast("已在浏览器里打开 Google 登录页"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   const agRefresh = t.closest("[data-antigravity-refresh]");
   if (agRefresh) {
-    try { const r = await call("POST", `/api/antigravity/${agRefresh.dataset.antigravityRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", `/api/antigravity/${agRefresh.dataset.antigravityRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1661,12 +1682,12 @@ document.addEventListener("click", async e => {
     const id = agOut.dataset.antigravityRemove;
     if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
     planConfirmOut = null;
-    try { await call("DELETE", `/api/antigravity/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/antigravity/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   if (t.closest("[data-kiro-import]")) {
-    try { const r = await call("POST", "/api/kiro/import", {}); toast(`已读到 Kiro 的登录，有 ${r.models} 个模型；开关是关的，打开后才能用`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", "/api/kiro/import", {}); toast(`已读到 Kiro 的登录，有 ${r.models} 个模型；开关是关的，打开后才能用`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1675,14 +1696,14 @@ document.addEventListener("click", async e => {
     const id = kiroOut.dataset.kiroRemove;
     if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
     planConfirmOut = null;
-    try { await call("DELETE", `/api/kiro/${id}`); toast("已移除这个来源；Kiro CLI 自己的登录没有动"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/kiro/${id}`); toast("已移除这个来源；Kiro CLI 自己的登录没有动"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   const planSwitch = t.closest("[data-plan-switch]");
   if (planSwitch) {
     const turnOn = planSwitch.dataset.on !== "1";
-    try { await call("PUT", `/api/plan/${planSwitch.dataset.planSwitch}/switch`, { on: turnOn }); toast(turnOn ? "已打开：它的模型现在可以选了" : "已关闭：哪里都不会再用它"); } catch (error) { toast(error.message); }
+    try { await call("PUT", `/api/plan/${planSwitch.dataset.planSwitch}/switch`, { on: turnOn }); toast(turnOn ? "已打开：它的模型现在可以选了" : "已关闭：哪里都不会再用它"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1691,7 +1712,7 @@ document.addEventListener("click", async e => {
     const id = planOut.dataset.planSignout;
     if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
     planConfirmOut = null;
-    try { await call("DELETE", `/api/plan/${id}`); toast("已退出登录，并在 OpenAI 那边撤销了这次登录"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/plan/${id}`); toast("已退出登录，并在 OpenAI 那边撤销了这次登录"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1699,13 +1720,13 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-profile-cancel]")) { profileNaming = false; render(); return; }
   if (t.closest("[data-profile-apply]")) {
     const id = document.querySelector("[data-profile-pick]")?.value;
-    try { const r = await call("POST", `/api/profiles/${id}/apply`); toast(`已切换到「${r.name}」：下次启动的会话就用这套设置`); } catch (error) { toast(error.message); }
+    try { const r = await call("POST", `/api/profiles/${id}/apply`); toast(`已切换到「${r.name}」：下次启动的会话就用这套设置`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
   if (t.closest("[data-profile-del]")) {
     const id = document.querySelector("[data-profile-pick]")?.value;
-    try { await call("DELETE", `/api/profiles/${id}`); toast("已删除这个方案"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/profiles/${id}`); toast("已删除这个方案"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1717,7 +1738,7 @@ document.addEventListener("click", async e => {
   if (poolMerge) {
     const name = poolMerge.dataset.poolMerge;
     const members = state.providers.flatMap(p => modelsOf(p).filter(m => m.toLowerCase() === name).map(m => `${p.id}/${m}`));
-    try { await call("POST", "/api/pools", { name, strategy: "order", members }); toast(`已合成 pool/${name}，顺序是来源列表的顺序，可以再编辑`); } catch (error) { toast(error.message); }
+    try { await call("POST", "/api/pools", { name, strategy: "order", members }); toast(`已合成 pool/${name}，顺序是来源列表的顺序，可以再编辑`); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1726,7 +1747,7 @@ document.addEventListener("click", async e => {
     const id = poolDel.dataset.poolDel;
     if (poolConfirmDel !== id) { poolConfirmDel = id; render(); return; }
     poolConfirmDel = null;
-    try { await call("DELETE", `/api/pools/${id}`); toast("已删除模型池；绑定了它的 agent 回到原生"); } catch (error) { toast(error.message); }
+    try { await call("DELETE", `/api/pools/${id}`); toast("已删除模型池；绑定了它的 agent 回到原生"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1738,19 +1759,19 @@ document.addEventListener("click", async e => {
     const key = lvSave.dataset.levelsSave;
     const slash = key.indexOf("/");
     const levels = [...document.querySelectorAll(`[data-levels-editor="${CSS.escape(key)}"] input[type=checkbox]:checked`)].map(i => i.value);
-    try { await call("PUT", `/api/providers/${key.slice(0, slash)}/model-efforts`, { model: key.slice(slash + 1), levels }); toast(levels.length ? "已记下这个模型的档位" : "已清除这个模型的档位"); } catch (error) { toast(error.message); }
+    try { await call("PUT", `/api/providers/${key.slice(0, slash)}/model-efforts`, { model: key.slice(slash + 1), levels }); toast(levels.length ? "已记下这个模型的档位" : "已清除这个模型的档位"); } catch (error) { showError(error); }
     levelsEditor = null;
     await refresh(true);
     return;
   }
   const agentOpen = t.closest("[data-agent-open]");
   if (agentOpen) {
-    try { await call("POST", `/api/agents/${agentOpen.dataset.agentOpen}/open`); toast("已打开"); } catch (error) { toast(error.message); }
+    try { await call("POST", `/api/agents/${agentOpen.dataset.agentOpen}/open`); toast("已打开"); } catch (error) { showError(error); }
     return;
   }
 
   const currency = t.closest("[data-currency]");
-  if (currency) { try { await call("PUT", "/api/display", { currency: currency.dataset.currency }); } catch (error) { toast(error.message); } await refresh(true); return; }
+  if (currency) { try { await call("PUT", "/api/display", { currency: currency.dataset.currency }); } catch (error) { showError(error); } await refresh(true); return; }
   const metric = t.closest("[data-metric]");
   if (metric) { chartMetric = metric.dataset.metric; render(); return; }
 
@@ -1759,7 +1780,7 @@ document.addEventListener("click", async e => {
 
   const stop = t.closest("[data-stop]");
   if (stop) {
-    try { await call("POST", `/api/sessions/${stop.dataset.stop}/stop`); toast("已结束这个增强会话"); } catch (error) { toast(error.message); }
+    try { await call("POST", `/api/sessions/${stop.dataset.stop}/stop`); toast("已结束这个增强会话"); } catch (error) { showError(error); }
     setTimeout(() => refresh(true), 800);
     return;
   }
@@ -1777,7 +1798,7 @@ document.addEventListener("click", async e => {
       ocxImport = { candidates: candidates ?? [], chosen: new Set((candidates ?? []).filter(c => !c.skipReason).map(c => c.sourceId)) };
     } catch (error) {
       ocxImport = { candidates: [], chosen: new Set() };
-      toast(error.message);
+      showError(error);
     }
     addForm = null;
     render();
@@ -1796,7 +1817,7 @@ document.addEventListener("click", async e => {
       const bad = result.failed.map(f => `${f.sourceId}: ${f.reason}`).join("；");
       toast(ok ? `已导入 ${ok} 个来源${bad ? `；失败的：${bad}` : ""}` : `导入失败：${bad}`);
       ocxImport = null;
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1809,19 +1830,19 @@ document.addEventListener("click", async e => {
     const id = detail.dataset.provider;
     const priceClear = t.closest("[data-price-clear]");
     if (priceClear) {
-      try { await call("PUT", `/api/providers/${id}/prices`, { model: priceClear.dataset.priceClear, rates: null }); toast("已清除，改用价格表"); } catch (error) { toast(error.message); }
+      try { await call("PUT", `/api/providers/${id}/prices`, { model: priceClear.dataset.priceClear, rates: null }); toast("已清除，改用价格表"); } catch (error) { showError(error); }
       await refresh(true);
       return;
     }
     const keyPatch = t.closest("[data-key-patch]");
     if (keyPatch) {
-      try { await call("PATCH", `/api/providers/${id}/keys/${keyPatch.dataset.keyPatch}`, { enabled: keyPatch.dataset.enabled === "1" }); } catch (error) { toast(error.message); }
+      try { await call("PATCH", `/api/providers/${id}/keys/${keyPatch.dataset.keyPatch}`, { enabled: keyPatch.dataset.enabled === "1" }); } catch (error) { showError(error); }
       await refresh(true);
       return;
     }
     const keyDel = t.closest("[data-key-del]");
     if (keyDel) {
-      try { await call("DELETE", `/api/providers/${id}/keys/${keyDel.dataset.keyDel}`); toast("已删除这把 Key"); } catch (error) { toast(error.message); }
+      try { await call("DELETE", `/api/providers/${id}/keys/${keyDel.dataset.keyDel}`); toast("已删除这把 Key"); } catch (error) { showError(error); }
       await refresh(true);
       return;
     }
@@ -1848,7 +1869,7 @@ document.addEventListener("click", async e => {
             toast(model ? "模型已恢复来源设置" : "来源已恢复自动识别");
           }
           saved = true;
-        } catch (error) { toast(error.message); }
+        } catch (error) { showError(error); }
         finally { button.textContent = label; }
       });
       if (saved) await refresh(true);
@@ -1862,7 +1883,7 @@ document.addEventListener("click", async e => {
         protocolDrafts.delete(id);
         openProvider = null;
       }
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1885,7 +1906,7 @@ document.addEventListener("change", async e => {
   if (protocolForm) { rememberProtocolForm(protocolForm); return; }
   if (!e.target.matches(".billing-select")) return;
   const id = e.target.closest(".detail")?.dataset.provider;
-  try { await call("PUT", `/api/providers/${id}/billing`, { billing: e.target.value }); toast(e.target.value === "subscription" ? "已改为包月套餐" : "已改为按量计费"); } catch (error) { toast(error.message); }
+  try { await call("PUT", `/api/providers/${id}/billing`, { billing: e.target.value }); toast(e.target.value === "subscription" ? "已改为包月套餐" : "已改为按量计费"); } catch (error) { showError(error); }
   await refresh(true);
 });
 
@@ -1917,7 +1938,7 @@ document.addEventListener("submit", async e => {
         protocolDrafts.delete(id); saved = true;
         toast(model ? "模型协议已保存" : "来源协议已保存");
       });
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     finally { delete form.dataset.saving; }
     if (saved) await refresh(true);
     return;
@@ -1932,7 +1953,7 @@ document.addEventListener("submit", async e => {
       toast("已派出去，结果在「任务」页");
       page = "tasks";
       if (!PANEL) history.replaceState(null, "", "#tasks");
-    } catch (error) { toast(`没有派出去：${error.message}`); }
+    } catch (error) { toast(`没有派出去：${userErrorMessage(error)}`); }
     await refresh(true);
     return;
   }
@@ -1943,7 +1964,7 @@ document.addEventListener("submit", async e => {
     try {
       await call("PUT", `/api/providers/${e.target.dataset.providerBudgetForm}/budget`, { monthlyUsd: usd === "" ? null : Number(usd), stop: f.get("stop") === "on" });
       toast(usd === "" ? "已取消预算" : "预算已保存");
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -1959,7 +1980,7 @@ document.addEventListener("submit", async e => {
       vertexForm = null;
       toast(`已添加，有 ${out.models} 个模型`);
     } catch (error) {
-      vertexForm = { message: error.message };
+      vertexForm = { message: userErrorMessage(error) };
     }
     await refresh(true);
     return;
@@ -1978,7 +1999,7 @@ document.addEventListener("submit", async e => {
       e.target.querySelector("textarea").value = "";
     } catch (error) {
       msg.className = "msg bad";
-      msg.textContent = error.message;
+      msg.textContent = userErrorMessage(error);
     }
     await refresh(true);
     return;
@@ -1986,7 +2007,7 @@ document.addEventListener("submit", async e => {
   const profileFormEl = e.target.closest("form[data-profile-form]");
   if (profileFormEl) {
     e.preventDefault();
-    try { await call("POST", "/api/profiles", { name: new FormData(profileFormEl).get("name") }); toast("方案已保存"); profileNaming = false; } catch (error) { toast(error.message); }
+    try { await call("POST", "/api/profiles", { name: new FormData(profileFormEl).get("name") }); toast("方案已保存"); profileNaming = false; } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -2004,7 +2025,7 @@ document.addEventListener("submit", async e => {
       ruleForm = null;
       toast("规则已保存");
     } catch (error) {
-      ruleForm = { name: String(f.get("name")), words: String(f.get("words")), minChars: String(f.get("minChars")), maxChars: String(f.get("maxChars")), cwdPrefix: String(f.get("cwdPrefix")), agent: String(f.get("agent")), model: String(f.get("model")), effort: String(f.get("effort")), error: error.message };
+      ruleForm = { name: String(f.get("name")), words: String(f.get("words")), minChars: String(f.get("minChars")), maxChars: String(f.get("maxChars")), cwdPrefix: String(f.get("cwdPrefix")), agent: String(f.get("agent")), model: String(f.get("model")), effort: String(f.get("effort")), error: userErrorMessage(error) };
     }
     await refresh(true);
     return;
@@ -2019,7 +2040,7 @@ document.addEventListener("submit", async e => {
       poolForm = null;
       toast("模型池已保存");
     } catch (error) {
-      poolForm = { ...poolForm, name: body.name, strategy: body.strategy, members: body.members, error: error.message };
+      poolForm = { ...poolForm, name: body.name, strategy: body.strategy, members: body.members, error: userErrorMessage(error) };
     }
     await refresh(true);
     return;
@@ -2036,7 +2057,7 @@ document.addEventListener("submit", async e => {
       taskOpenIds.add(r.task.id);
       taskForm.task = "";
     } catch (error) {
-      taskNote = `没有派出去：${error.message}`;
+      taskNote = `没有派出去：${userErrorMessage(error)}`;
     }
     await refresh(true);
     return;
@@ -2047,7 +2068,7 @@ document.addEventListener("submit", async e => {
     const f = new FormData(priceForm);
     const num = k => Number(f.get(k) || 0);
     const id = priceForm.closest(".detail")?.dataset.provider;
-    try { await call("PUT", `/api/providers/${id}/prices`, { model: priceForm.dataset.priceForm, rates: { input: num("input"), output: num("output"), cacheRead: num("cacheRead"), cacheWrite: 0 } }); toast("已保存价格"); } catch (error) { toast(error.message); }
+    try { await call("PUT", `/api/providers/${id}/prices`, { model: priceForm.dataset.priceForm, rates: { input: num("input"), output: num("output"), cacheRead: num("cacheRead"), cacheWrite: 0 } }); toast("已保存价格"); } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -2057,7 +2078,7 @@ document.addEventListener("submit", async e => {
     try {
       await call("POST", "/api/accounts", { harness: accForm.dataset.addAccount, label: new FormData(accForm).get("label") });
       toast("已添加；点「启动」，第一次在终端里登录一次");
-    } catch (error) { toast(error.message); }
+    } catch (error) { showError(error); }
     await refresh(true);
     return;
   }
@@ -2069,7 +2090,7 @@ document.addEventListener("submit", async e => {
   try {
     await call("POST", `/api/providers/${id}/keys`, data);
     toast("已添加 Key，下一次请求开始使用");
-  } catch (error) { toast(error.message); }
+  } catch (error) { showError(error); }
   await refresh(true);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") { closePopover(); if (claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); } } });

@@ -76,7 +76,7 @@ test("budget form submits validated settings once and re-enables controls after 
   app.run("rejectSave(new Error('fixture budget failure'))"); await pending;
   assert.equal(controls[0]!.disabled, false);
   assert.equal(app.run("budgetSaving"), false);
-  assert.equal(app.run("messages[0]"), "fixture budget failure");
+  assert.match(app.run("messages[0]"), /这次操作没有完成/); assert.doesNotMatch(app.run("messages[0]"), /fixture budget failure/);
   form.values.limitUsd = "not-a-number";
   await app.dispatch("submit", form);
   assert.equal(app.run("requests.length"), 1);
@@ -141,7 +141,7 @@ test("service-account Vertex form is distinct from manual Gemini modes and suppr
   await app.dispatch("click", app.target("[data-vertex-close]"));
   assert.equal(app.run("vertexForm.busy"), true);
   app.run("failVertex(new Error('fake validation refused'))"); await pending;
-  assert.equal(app.run("vertexForm.message"), "fake validation refused");
+  assert.match(app.run("vertexForm.message"), /这次操作没有完成/); assert.doesNotMatch(app.run("vertexForm.message"), /fake validation refused/);
   assert.doesNotMatch(app.run("JSON.stringify(vertexForm)"), /FAKE-SA/);
   assert.equal(app.storageWrites(), 0);
 });

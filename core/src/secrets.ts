@@ -10,12 +10,15 @@ export interface SecretStoreHealth {
   osStatus?: number;
 }
 
+/** Passive status reads may inspect files/cache but must not launch verification programs. */
+export interface SecretStoreHealthOptions { passive?: boolean }
+
 /** Provider API keys live in the macOS Keychain, never in our JSON files. */
 export interface SecretStore {
   get(account: string): Promise<string | undefined>;
   set(account: string, value: string): Promise<void>;
   delete(account: string): Promise<void>;
-  health?(): SecretStoreHealth;
+  health?(options?: SecretStoreHealthOptions): SecretStoreHealth;
 }
 
 const PREFIX = "b64:";
@@ -51,7 +54,7 @@ export class EncodedSecretStore implements SecretStore {
   }
   async set(account: string, value: string): Promise<void> { await this.#raw.set(account, encodeSecret(value)); }
   async delete(account: string): Promise<void> { await this.#raw.delete(account); }
-  health(): SecretStoreHealth { return this.#raw.health?.() ?? { backend: "native-keychain", ready: false, status: "unknown", keychainChecked: false }; }
+  health(options?: SecretStoreHealthOptions): SecretStoreHealth { return this.#raw.health?.(options) ?? { backend: "native-keychain", ready: false, status: "unknown", keychainChecked: false }; }
 }
 
 /** Tests and CI: nothing touches the user's Keychain. */

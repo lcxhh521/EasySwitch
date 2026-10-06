@@ -11,7 +11,7 @@ const files = [
   "anthropic", "translate", "responses-upstream", "quirks", "model-efforts", "thinking",
   "gateway-chat", "gateway-gemini", "source-adapters", "protocol-safety", "outbound-shape", "outbound-corrections", "upstream-error", "protocol-streaming", "wire", "pool", "keypool",
   "plan-provider", "codex-plan", "copilot", "mimo-free", "subscription-support", "subscription-routes", "subscription-conversation",
-  "claude-native", "capabilities", "dispatch", "claude-desktop-ui", "claude-desktop-auth", "protocol-ui", "console-controls", "onboarding-ui",
+  "claude-native", "capabilities", "dispatch", "claude-desktop-ui", "claude-desktop-auth", "protocol-ui", "console-controls", "onboarding-ui", "doctor", "doctor-api", "doctor-ui", "user-errors", "probe-cancellation",
   "local-only-guard", "import-parse", "opencodex-import", "pricing", "profiles", "siwc", "ledger", "gateway-auth", "gateway-auth-persistence", "server-auth-persistence", "server-command", "es-cli-local", "gateway-upgrade", "chatgpt-boundary", "budget", "global-budget", "ledger-incremental", "secrets", "native-keychain", "secret-store-health", "server-security", "provider-presets", "provider-contract", "qoder-text-bridge", "codebuddy-text-bridge", "droid-text-bridge", "cli-text-source", "cli-text-process", "vertex", "vertex-gemini", "backlog", "verify-launchers", "setup-guides", "quota", "kiro", "antigravity", "cursor", "kimi", "plan-usage", "agent-config-gaps", "mcp-stdio-bridge", "mcp-capacity", "mcp-stdio",
 ];
 try {

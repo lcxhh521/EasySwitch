@@ -1,3 +1,6 @@
+import { buildDoctorReport, runDoctorChecks, DoctorCheckRequestError, type DoctorInput, type DoctorAgent, type DoctorCheckRunners } from "./doctor.ts";
+import { verifyLauncher, type Verdict } from "./verify-launchers.ts";
+import { humanError, type UserErrorContext } from "./user-errors.ts";
 import { cliTextBinaryIssue, type CliTextBinaryInspector } from "./cli-text-process.ts";
 import { codeBuddyTextBridgeIssue, type CodeBuddyTextBridgeConfig } from "./codebuddy-text-bridge.ts";
 import { cliTextSourceIssue } from "./cli-text-source.ts";
@@ -85,6 +88,8 @@ export interface ServerDeps {
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
+  /** Explicit metadata/runner seams for fake diagnostics. Never configurable through HTTP. */
+  doctor?: { agents?: () => DoctorAgent[]; runners?: DoctorCheckRunners };
   /** In-process fake executor for bridge integration tests; not a production switch. */
   qoderExecutor?: QoderExecutor;
   codeBuddyExecutor?: QoderExecutor;
@@ -124,7 +129,14 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+const consoleErrorContexts = new WeakMap<ServerResponse, UserErrorContext>();
 function json(res: ServerResponse, status: number, body: unknown): void {
+  const context = consoleErrorContexts.get(res);
+  if (context && status >= 400 && body && typeof body === "object") {
+    const value = body as Record<string, unknown>, uiError = humanError({ ...value, status }, { context });
+    body = { ...value, error: value.error && typeof value.error === "object" ? { code: uiError.code, message: uiError.message } : uiError.message,
+      code: uiError.details.technicalCode ?? uiError.code, uiError };
+  }
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(JSON.stringify(body));
 }
@@ -193,6 +205,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     return { ...basePublicProvider(p, hasKey, usedBy), ...(status ? { budgetStatus: status } : {}) };
   };
   const providerHasKey = async (p: Provider): Promise<boolean> => { try { return Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id)); } catch { return false; } };
+  const doctorHelp = new Map<string, { checkedAt: string; verdicts: Verdict[] }>();
   const desktopSessions = new Map<string, ClaudeDesktopSession>();
   const pendingVertexIds = new Set<string>();
   let desktopClosing = false;
@@ -572,8 +585,57 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     return parts.join("；");
   }
 
+  function probeStatus(report?: Provider["probe"]): number | undefined {
+    if(report?.checks.some(c=>["chat","responses","messages"].includes(c.id)&&c.status==="pass"))return 200;
+    const rejected=report?.checks.find(c=>c.status==="fail"&&/^HTTP (401|403)$/.test(c.detail));
+    return rejected ? Number(rejected.detail.slice(5)) : undefined;
+  }
+  function doctorInput(req?: IncomingMessage): DoctorInput {
+    const b = budget.status();
+    let tokens: DoctorInput["tokens"];
+    try {
+      const supplied = Boolean(req?.headers["x-easyswitch-session"] || req?.headers.authorization);
+      tokens = { storeAvailable: true, sessions: auth.list().map(s => ({expiresAt:s.expiresAt})), current: supplied ? auth.authenticate(req!.headers) ? "valid" : "invalid" : "absent" };
+    } catch { tokens = {storeAvailable:false}; }
+    const agents = deps.doctor?.agents?.() ?? AGENTS.map(a => {
+      const detected=agentCache?.list.find(x=>x.id===a.id);
+      return {id:a.id,installed:detected ? detected.installed : null,helpAllowed:Boolean(detected?.installed && detected.where && LAUNCHERS[a.id]),help:doctorHelp.get(a.id)};
+    });
+    const recent=log.find(e=>e.status>=400);
+    return {gateway:{reachable:true},helper:secrets.health?.({passive:true}) ?? null,tokens,agents,
+      providers:store.providers().map(p=>({id:p.id,off:p.off,authKind:p.plan||p.kiro||p.antigravity||p.cursor||p.kimi ? "subscription" : "key",probe:p.probe,lastStatus:probeStatus(p.probe) ?? log.find(e=>e.providerId===p.id)?.status,budgetBlocked:providerBudgets.isBudgetStopped(p),probeAllowed:!p.plan&&!p.kiro&&!p.antigravity&&!p.cursor&&!p.kimi&&!p.vertex&&!p.cliTextBridge&&!p.mimoFree})),
+      budget:{blocked:b.blocked,configurationInvalid:b.configurationInvalid,accountingUnavailable:b.accountingUnavailable,probeBlocked:b.settings.enabled&&b.settings.action==="stop"},
+      ...(recent ? {recentFailure:{status:recent.status,at:recent.at}} : {})};
+  }
+  const doctorRunners: DoctorCheckRunners = {
+    probeProvider: async (id,{signal}) => {
+      const p=store.provider(id); if(!p||p.off||p.plan||p.kiro||p.antigravity||p.cursor||p.kimi||p.vertex||p.cliTextBridge||p.mimoFree) throw new DoctorCheckRequestError("此来源暂未开放通用探测。","capability_unavailable",409);
+      if(probeBudgetBlocked(p)) throw new DoctorCheckRequestError(probeBudgetMessage,"budget_blocked",409);
+      budget.assertAllowed(); signal.throwIfAborted();
+      const originalConfig=JSON.stringify(p);const key=await secrets.get(p.id); signal.throwIfAborted();
+      const current=store.provider(id);
+      if(!current||current.off||JSON.stringify(current)!==originalConfig)throw new DoctorCheckRequestError("来源设置已改变，请刷新后重新确认检查。","source_disabled",409);
+      if(probeBudgetBlocked(current))throw new DoctorCheckRequestError(probeBudgetMessage,"budget_blocked",409);
+      budget.assertAllowed();
+      const model=p.defaultModel??p.models[0];if(!model) throw new DoctorCheckRequestError("请先选择来源模型。","model_unavailable",400);
+      const result=await probeProvider(p,key,model,signal); signal.throwIfAborted();
+      if(JSON.stringify(store.provider(id))!==originalConfig)throw new DoctorCheckRequestError("来源设置已改变，已丢弃旧检查结果，请刷新后重试。","source_disabled",409);
+      p.probe=result.report;if(result.models.length)p.models=result.models;p.defaultModel=model;p.streamUsage=result.streamUsage;
+      if(!p.routePinned)p.route=result.report.recommendedRoute;if(result.report.recommendedMessagesRoute)p.messagesRoute=result.report.recommendedMessagesRoute;store.upsertProvider(p);
+      return {probe:result.report,lastStatus:probeStatus(result.report)};
+    },
+    checkAgentHelp: async(id,{signal})=>{
+      const detected=agentCache?.list.find(a=>a.id===id), launcher=LAUNCHERS[id];
+      if(!detected?.installed||!detected.where||!launcher)throw new DoctorCheckRequestError("程序安装尚未确认。","client_not_installed",409);
+      signal.throwIfAborted();const verdicts=await verifyLauncher(detected.where,launcher,undefined,signal);signal.throwIfAborted();
+      const result={checkedAt:new Date().toISOString(),verdicts};doctorHelp.set(id,result);return result;
+    },
+    ...deps.doctor?.runners,
+  };
+
   async function api(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
     const method = req.method ?? "GET";
+    consoleErrorContexts.set(res, /budget/.test(path) ? "budget" : /providers|plan|signin|vertex|kiro|kimi|cursor|antigravity/.test(path) ? "source" : /launch|command/.test(path) ? "launch" : /gateway\/sessions/.test(path) ? "session" : "local");
     // A custom header forces a CORS preflight, which we never answer, so other
     // web pages cannot drive this API even though it listens on loopback.
     if (method !== "GET" && req.headers["x-easyswitch"] !== "1") {
@@ -582,6 +644,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     const body = method === "GET" ? {} : ((JSON.parse((await readBody(req)) || "{}")) as Json);
 
+    if (path === "/api/doctor" || path === "/api/doctor/checks") {
+      if(req.headers["x-easyswitch"]!=="1"){json(res,403,{error:"missing x-easyswitch header"});return;}
+      if(path==="/api/doctor"&&method==="GET"){json(res,200,buildDoctorReport(doctorInput(req)));return;}
+      if(path==="/api/doctor/checks"&&method==="POST"){
+        const controller=new AbortController();const cancel=()=>{if(!res.writableEnded)controller.abort();};res.once("close",cancel);
+        try{json(res,200,await runDoctorChecks(doctorInput(req),body,{...doctorRunners,signal:controller.signal}));}
+        catch(error){if(error instanceof DoctorCheckRequestError)json(res,error.status,{error:error.message,code:error.code});else throw error;}
+        finally{res.off("close",cancel);}return;
+      }
+      json(res,405,{error:"unsupported diagnostic action"});return;
+    }
     if (path === "/api/models" && method === "GET") {
       if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "missing x-easyswitch header" }); return; }
       json(res, 200, listExposedModels(store, false)); return;
@@ -808,8 +881,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         planSignIn = current;
         si.done.then(async account => {
           try { await syncAntigravity(account); current.status = "done"; }
-          catch (error) { current.status = "error"; current.message = `登录成功，但读取模型失败：${String((error as Error).message)}`; }
-        }).catch(error => { current.status = "error"; current.message = String((error as Error).message); });
+          catch (error) { current.status = "error"; current.message = humanError(error, {context:"source"}).message; }
+        }).catch(error => { current.status = "error"; current.message = humanError(error, {context:"source"}).message; });
         json(res, 200, { url: si.url });
       } catch (error) {
         json(res, 409, { error: String((error as Error).message) });
@@ -824,8 +897,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         planSignIn = current;
         si.done.then(async account => {
           try { await syncKimi(account); current.status = "done"; }
-          catch (error) { current.status = "error"; current.message = `登录成功，但读取模型失败：${String((error as Error).message)}`; }
-        }).catch(error => { current.status = "error"; current.message = String((error as Error).message); });
+          catch (error) { current.status = "error"; current.message = humanError(error, {context:"source"}).message; }
+        }).catch(error => { current.status = "error"; current.message = humanError(error, {context:"source"}).message; });
         json(res, 200, { url: si.url, userCode: si.userCode });
       } catch (error) {
         json(res, 409, { error: String((error as Error).message) });
@@ -857,8 +930,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         planSignIn = current;
         si.done.then(async account => {
           try { await syncCursor(account); current.status = "done"; }
-          catch (error) { current.status = "error"; current.message = `登录成功，但读取模型失败：${String((error as Error).message)}`; }
-        }).catch(error => { current.status = "error"; current.message = String((error as Error).message); });
+          catch (error) { current.status = "error"; current.message = humanError(error, {context:"source"}).message; }
+        }).catch(error => { current.status = "error"; current.message = humanError(error, {context:"source"}).message; });
         json(res, 200, { url: si.url });
       } catch (error) {
         json(res, 409, { error: String((error as Error).message) });
@@ -931,11 +1004,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
             if (!account.planUsage) current.message = "已登录，但你没有允许使用 ChatGPT 订阅额度；重新授权时请勾选允许。";
           } catch (error) {
             current.status = "error";
-            current.message = `登录成功，但读取模型失败：${String((error as Error).message)}`;
+            current.message = humanError(error, {context:"source"}).message;
           }
         }).catch(error => {
           current.status = "error";
-          current.message = String((error as Error).message);
+          current.message = humanError(error, {context:"source"}).message;
         });
         json(res, 200, { url: si.url, ...(si.userCode ? { userCode: si.userCode } : {}) });
       } catch (error) {

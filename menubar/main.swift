@@ -146,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
   @objc private func startCore() {
     guard let repo = infoString("EasySwitchRepo"), let node = infoString("EasySwitchNode") else {
-      alert("缺少配置", "构建时没有写入仓库路径或 Node 路径。")
+      problem("启动配置还没准备好", "安装时没有保存程序位置。请打开控制台查看安装说明，重新安装后再试。")
       return
     }
     let task = Process()
@@ -166,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
       try task.run()
       coreProcess = task
     } catch {
-      alert("启动失败", "\(error)")
+      problem("暂时无法启动服务", "本地程序可能已移除，或没有运行权限。请打开控制台检查安装位置后重试。")
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.refreshHealth() }
   }
@@ -209,9 +209,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     request.setValue("1", forHTTPHeaderField: "x-easyswitch")
     URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
       let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-      let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+      let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+      let issue = payload?["uiError"] as? [String: Any]
+      let message = issue?["message"] as? String ?? "本地服务或启动程序暂时不可用。请打开控制台检查连接和安装状态后重试。"
       DispatchQueue.main.async {
-        if code != 200 { self?.alert("没能启动增强会话", body) }
+        if code != 200 { self?.problem("没能启动增强会话", message) }
         self?.refreshHealth()
       }
     }.resume()
@@ -249,6 +251,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   @objc private func quit() {
     if let process = coreProcess, process.isRunning { process.terminate() }
     NSApp.terminate(nil)
+  }
+
+  private func problem(_ title: String, _ text: String) {
+    let a = NSAlert()
+    a.messageText = title
+    a.informativeText = text
+    a.addButton(withTitle: "打开控制台")
+    a.addButton(withTitle: "稍后处理")
+    NSApp.activate(ignoringOtherApps: true)
+    if a.runModal() == .alertFirstButtonReturn { openConsole() }
   }
 
   private func alert(_ title: String, _ text: String) {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { humanError } from "../core/src/user-errors.ts";
 import { spawn as nodeSpawn } from "node:child_process";
 import { realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -120,13 +121,24 @@ export async function esMain(argv: string[], deps: EsCliDeps = {}): Promise<numb
   try {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("EASYSWITCH_PORT 必须是有效端口");
     const [cmd, ...args] = argv;
+    if (cmd === "doctor") {
+      if(args.some(a=>a!=="--json"))throw new Error("自检只接受 --json；主动检测请在控制台明确选择并确认。");
+      // Read-only by default: never start a daemon or run an agent/help command.
+      try {
+        const report=check(await api("GET","/api/doctor"));
+        if(report.version!==1||!Array.isArray(report.findings))throw new Error("invalid diagnostic report");
+        if(args.includes("--json"))out(JSON.stringify(report));
+        else {out("EasySwitch 自检（只读取状态，不调用模型或启动程序）");for(const f of report.findings)out(`${safeText(f.title)}：${safeText(f.message)} ${safeText(f.nextStep)}`);}
+        return report.status==="error"?1:0;
+      } catch {const view=humanError({code:"service_unavailable"});if(args.includes("--json"))out(JSON.stringify({version:1,status:"error",error:view}));else err(view.message);return 1;}
+    }
     if (cmd === "--check") {
       if (!(await up())) return 1;
       const agent = (await agents()).find(a => a.id === args[0]);
       return agent?.installed && agent.can?.interactive ? 0 : 1;
     }
     if (cmd === "-h" || cmd === "--help") {
-      out("es              看有哪些 agent 可以启动\nes <agent> [-m 来源/模型] [-e 档位] [-- agent 自己的参数]\nes models       看模型\nes shell-init   让直接敲 claude / codex 也走 EasySwitch（需要你自己加进 shell 配置）");
+      out("es              看有哪些 agent 可以启动\nes <agent> [-m 来源/模型] [-e 档位] [-- agent 自己的参数]\nes models       看模型\nes doctor [--json]  只读取本地自检状态，不运行模型或程序\nes shell-init   让直接敲 claude / codex 也走 EasySwitch（需要你自己加进 shell 配置）");
       return 0;
     }
     if (!cmd || cmd === "list" || cmd === "models" || cmd === "shell-init") {

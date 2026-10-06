@@ -66,7 +66,7 @@ test("a failed protocol save keeps the chosen values and permits retry", async (
   const app = ui(); const form = app.form(["gemini"]);
   app.run("call = async () => { throw new Error('fixture failure'); }");
   await app.submit(form); assert.equal(form.dataset.saving, undefined); assert.equal(form.controls[0]!.disabled, false);
-  assert.deepEqual(form.values.protocols, ["gemini"]); assert.equal(app.run("messages[0]"), "fixture failure");
+  assert.deepEqual(form.values.protocols, ["gemini"]); assert.match(app.run("messages[0]"), /这次操作没有完成/); assert.doesNotMatch(app.run("messages[0]"), /fixture failure/);
   app.run("call = async (method,path,body) => { requests.push({method,path,body}); return {}; }");
   await app.submit(form); assert.equal(app.run("requests.length"), 1);
 });

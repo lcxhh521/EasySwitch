@@ -2,7 +2,7 @@ import { execFileSync, spawnSync, spawn, type ChildProcessWithoutNullStreams } f
 import { accessSync, constants, lstatSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SecretStore, SecretStoreHealth } from "./secrets.ts";
+import type { SecretStore, SecretStoreHealth, SecretStoreHealthOptions } from "./secrets.ts";
 
 export type KeychainRequest = { operation: "get" | "delete"; account: string } | { operation: "set"; account: string; value: string };
 export type KeychainReply = { ok: true; found?: boolean; value?: string } | { ok: false; code: number };
@@ -23,7 +23,7 @@ export class NativeKeychainError extends Error {
   }
 }
 
-export interface HelperInspection {
+export interface HelperInspection extends SecretStoreHealthOptions {
   platform?: string;
   file?: (helper: string) => { executable: boolean; stamp: string } | undefined;
   verify?: (helper: string) => boolean;
@@ -62,7 +62,7 @@ function verifyHelper(helper: string): boolean {
   } catch { return false; }
 }
 
-/** Secret-free health: metadata/signature checks only, never invoke the helper or query Keychain. */
+/** Secret-free health; passive reads never run signature verification, the helper, or Keychain. */
 export function keychainHelperHealth(helper = bundledHelper, inspection: HelperInspection = {}): SecretStoreHealth {
   const base = { backend: "native-keychain" as const, ready: false, keychainChecked: false };
   if ((inspection.platform ?? process.platform) !== "darwin") return { ...base, status: "unsupported_platform", message: "原生钥匙串只支持 macOS；测试请明确使用内存存储。" };
@@ -70,12 +70,15 @@ export function keychainHelperHealth(helper = bundledHelper, inspection: HelperI
   if (!file) return { ...base, status: "helper_missing", message: "缺少钥匙串 helper，请在 Mac 前台使用已有代码签名身份运行 scripts/build-keychain.sh。" };
   if (!file.executable) return { ...base, status: "helper_not_executable", message: "钥匙串 helper 不是可执行的常规文件，请重新构建。" };
   let valid: boolean;
-  if (inspection.verify) valid = inspection.verify(helper);
-  else {
-    const cached = verifiedFiles.get(helper);
-    if (cached?.stamp === file.stamp) valid = cached.valid;
-    else { valid = verifyHelper(helper); verifiedFiles.set(helper, { stamp: file.stamp, valid }); }
-  }
+  const cached = verifiedFiles.get(helper);
+  if (inspection.passive) {
+    if (cached?.stamp !== file.stamp) return { ...base, status: "helper_signature_unchecked", message: "钥匙串小程序签名尚未检查；被动状态查询不会运行验证程序。" };
+    valid = cached.valid;
+  } else if (inspection.verify) {
+    valid = inspection.verify(helper);
+    verifiedFiles.set(helper, { stamp: file.stamp, valid });
+  } else if (cached?.stamp === file.stamp) valid = cached.valid;
+  else { valid = verifyHelper(helper); verifiedFiles.set(helper, { stamp: file.stamp, valid }); }
   return valid ? { ...base, ready: true, status: "helper_ready" } : { ...base, status: "helper_signature_invalid", message: "钥匙串 helper 缺少有效的稳定签名，请用同一已有签名身份重新构建；不会使用未签名或 ad-hoc 版本。" };
 }
 
@@ -148,13 +151,13 @@ export class NativeKeychainStore implements SecretStore {
   #failure?: { error: NativeKeychainError; retryAt: number };
   #checked = false;
   #tail: Promise<void> = Promise.resolve();
-  #inspect: () => SecretStoreHealth;
-  constructor(transport?: KeychainTransport, options: { now?: () => number; inspect?: () => SecretStoreHealth } = {}) {
+  #inspect: (options?: SecretStoreHealthOptions) => SecretStoreHealth;
+  constructor(transport?: KeychainTransport, options: { now?: () => number; inspect?: (options?: SecretStoreHealthOptions) => SecretStoreHealth } = {}) {
     this.#transport = transport ?? createKeychainTransport(); this.#now = options.now ?? Date.now;
-    this.#inspect = options.inspect ?? (() => keychainHelperHealth());
+    this.#inspect = options.inspect ?? (healthOptions => keychainHelperHealth(bundledHelper, healthOptions));
   }
-  health(): SecretStoreHealth {
-    const helper = this.#inspect();
+  health(options?: SecretStoreHealthOptions): SecretStoreHealth {
+    const helper = this.#inspect(options);
     if (!helper.ready) return helper;
     if (this.#failure) return { ...helper, ready: false, status: this.#failure.error.code, keychainChecked: this.#checked, message: this.#failure.error.message, ...(this.#failure.error.osStatus !== undefined ? { osStatus: this.#failure.error.osStatus } : {}) };
     return { ...helper, keychainChecked: this.#checked };

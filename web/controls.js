@@ -32,7 +32,7 @@ document.addEventListener("click", async event => {
   event.stopImmediatePropagation();
   if (revoke.disabled) return; revoke.disabled = true;
   try { await call("DELETE", `/api/gateway/sessions/${encodeURIComponent(revoke.dataset.sessionRevoke)}`); if (guideData?.session?.id === revoke.dataset.sessionRevoke) { guideData = null; guideOpen = null; } await refresh(true); }
-  catch (error) { toast(error.message); revoke.disabled = false; }
+  catch (error) { showError(error); revoke.disabled = false; }
 });
 document.addEventListener("submit", async event => {
   if (!event.target.matches?.("[data-global-budget-form]")) return;
@@ -45,7 +45,7 @@ document.addEventListener("submit", async event => {
   const controls = [...form.querySelectorAll("button,input,select")]; const disabled = controls.map(el => el.disabled);
   budgetSaving = true; controls.forEach(el => { el.disabled = true; });
   try { await call("PUT", "/api/budget", settings); await refresh(true); toast("预算已保存"); }
-  catch (error) { toast(error.message); }
+  catch (error) { showError(error); }
   finally { budgetSaving = false; controls.forEach((el, i) => { el.disabled = disabled[i]; }); }
 });
 
@@ -89,7 +89,7 @@ document.addEventListener("click", async event => {
   if (!button) return; event.stopImmediatePropagation();
   if (button.disabled) return; button.disabled = true;
   try { await call("PUT", `/api/providers/${encodeURIComponent(button.dataset.cliSourceSwitch)}/switch`, { on: button.dataset.on !== "1" }); await refresh(true); }
-  catch (error) { toast(error.message); button.disabled = false; }
+  catch (error) { showError(error); button.disabled = false; }
 });
 document.addEventListener("submit", async event => {
   if (!event.target.matches?.("[data-cli-text-form]")) return;
@@ -101,6 +101,6 @@ document.addEventListener("submit", async event => {
   const body = { kind: cliTextKind, ...(cliTextKind === "codebuddy" ? { edition } : {}), name: String(fields.get("name") ?? "").trim(), binary: String(fields.get("binary") ?? "").trim(), model: String(fields.get("model") ?? "").trim(), apiKey: String(fields.get("apiKey") ?? ""), experimental: true };
   cliTextBusy = true; form.querySelectorAll("button,input,select").forEach(el => { el.disabled = true; });
   try { await call("POST", "/api/cli-text-sources", body); cliTextFormOpen = false; await refresh(true); toast("文字来源已添加，仍处于关闭状态"); }
-  catch (error) { toast(error.message); }
+  catch (error) { showError(error); }
   finally { cliTextBusy = false; form.querySelectorAll("button,input,select").forEach(el => { el.disabled = false; }); }
 });

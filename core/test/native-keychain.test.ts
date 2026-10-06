@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { createKeychainTransport, keychainHelperHealth, keychainSigningRequirement, keychainOperationError, KEYCHAIN_RETRY_DELAY_MS, NativeKeychainError, NativeKeychainStore, type KeychainRequest, type KeychainSpawn } from "../src/native-keychain.ts";
+import { EncodedSecretStore } from "../src/secrets.ts";
 
 function fakeSpawn(response: string, code: number | null = 0, options: { error?: boolean; neverFinish?: boolean } = {}) {
   const captured: { file?: string; argv?: string[]; options?: unknown; input: string; killed: boolean } = { input: "", killed: false };
@@ -102,6 +103,41 @@ test("health reports helper absence, permissions and signing without touching Ke
   assert.equal(ready.ready, true); assert.equal(ready.status, "helper_ready"); assert.equal(ready.keychainChecked, false);
   assert.equal(verified, 1);
   assert.equal(keychainHelperHealth("/fixture/helper", { platform: "linux", file: () => { throw new Error("must not read filesystem"); } }).status, "unsupported_platform");
+});
+
+test("passive helper health uses only unchanged cached verification and never invokes a verifier", () => {
+  let stamp = "cold", verified = 0, valid = true;
+  const inspection = { platform: "darwin", file: () => ({ executable: true, stamp }), verify: () => { verified++; return valid; } };
+  const read = (passive: boolean) => keychainHelperHealth("/fixture/passive-helper", { ...inspection, passive });
+  assert.equal(read(true).status, "helper_signature_unchecked");
+  assert.equal(read(true).ready, false);
+  assert.equal(verified, 0, "cold cache does not verify even with an injected verifier");
+  assert.equal(read(false).status, "helper_ready");
+  assert.equal(read(true).ready, true);
+  assert.equal(verified, 1, "warm passive health reuses the matching file stamp");
+  stamp = "changed";
+  assert.equal(read(true).status, "helper_signature_unchecked");
+  assert.equal(read(true).ready, false);
+  assert.equal(verified, 1, "changed files cannot reuse trust or trigger automatic verification");
+  valid = false;
+  assert.equal(read(false).status, "helper_signature_invalid");
+  assert.equal(read(true).status, "helper_signature_invalid");
+  assert.equal(verified, 2, "a cached rejection remains a rejection without another process");
+});
+
+test("encoded and native stores pass passive health through without touching credentials", () => {
+  let verified = 0, transported = 0;
+  const raw = new NativeKeychainStore(async () => { transported++; return { ok: true, found: false }; }, {
+    inspect: options => keychainHelperHealth("/fixture/passive-store", { ...options, platform: "darwin", file: () => ({ executable: true, stamp: "fixture" }), verify: () => { verified++; return true; } }),
+  });
+  const store = new EncodedSecretStore(raw);
+  assert.equal(store.health({ passive: true }).status, "helper_signature_unchecked");
+  assert.equal(verified, 0);
+  assert.equal(store.health().ready, true, "an explicit ordinary check still verifies the signature");
+  assert.equal(verified, 1);
+  assert.equal(store.health({ passive: true }).ready, true);
+  assert.equal(verified, 1);
+  assert.equal(transported, 0, "status reads never invoke the credential transport");
 });
 
 test("missing default Keychain and denied legacy access have actionable secret-free failures", async () => {

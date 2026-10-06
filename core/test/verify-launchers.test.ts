@@ -25,6 +25,7 @@ test("injected help fixtures cover stdout, nonzero stderr, top-level fallback an
   const fake: HelpRunner = async (bin, args, options) => {
     assert.equal(bin, "/never-run/fake-agent");
     assert.equal(options.timeout, 15_000); assert.equal(options.maxBuffer, 2_000_000); assert.equal(options.env.NO_COLOR, "1");
+    assert.equal(options.killSignal, "SIGKILL");
     const command = args.join(" "); calls.push(command);
     if (command === "chat --help") throw { stdout: "", stderr: "chat options: --reasoning LEVEL   how hard to think" };
     if (command === "run --help") return { stdout: "run options: -q quiet --no-session do not keep a session", stderr: "" };
@@ -38,4 +39,27 @@ test("injected help fixtures cover stdout, nonzero stderr, top-level fallback an
   assert.ok(none.every(v => !v.helpOk && v.error), "no help text at all is said plainly, not guessed");
   const found = await verifyLauncher("/never-run/lacking", launcher, async () => ({ stdout: "only --reasoning exists here", stderr: "" }));
   assert.deepEqual(found[1]!.missing.sort(), ["--no-session", "--patch", "-q"], "what is not in the help is listed");
+});
+
+test("an already cancelled help check never calls its injected runner", async () => {
+  const signal = AbortSignal.abort("fixture must not leak");
+  await assert.rejects(verifyLauncher("/never-run/fake", launcher, async () => { assert.fail("must not execute"); }, signal), { name:"AbortError" });
+});
+
+test("active cancellation reaches the help process boundary and skips fallback and later forms", async () => {
+  const controller=new AbortController();const calls:string[]=[];let began!:()=>void;const started=new Promise<void>(resolve=>{began=resolve;});
+  let aborted=false;
+  const runner:HelpRunner=async(_bin,args,options)=>{
+    calls.push(args.join(" "));assert.equal(options.signal,controller.signal);assert.equal(options.killSignal,"SIGKILL");began();
+    return new Promise((_resolve,reject)=>{options.signal!.addEventListener("abort",()=>{aborted=true;reject({stdout:"--reasoning --patch -q --no-session fixture secret output",stderr:"fake-private-token"});},{once:true});});
+  };
+  const pending=verifyLauncher("/never-run/fake",launcher,runner,controller.signal);await started;controller.abort();
+  await assert.rejects(pending,e=>e instanceof DOMException && e.name==="AbortError" && !e.message.includes("fake-private"));
+  assert.equal(aborted,true);assert.deepEqual(calls,["chat --help"]);
+});
+
+test("cancellation just after help resolves cannot launch the top-level fallback", async () => {
+  const controller=new AbortController();let calls=0;
+  await assert.rejects(verifyLauncher("/never-run/fake",launcher,async()=>{calls++;controller.abort();return {stdout:"--reasoning",stderr:""};},controller.signal),{name:"AbortError"});
+  assert.equal(calls,1);
 });
