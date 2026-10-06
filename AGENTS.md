@@ -116,7 +116,8 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 
 ### 分工与分支
 
-- `main`（`~/workspace/EasySwitch`）：本地 GPT 的工作区，风险档适配和协议层重构的进展在这里（未提交，待推到云端分支，见 B44）；协议层重构（B21）由 Dot 做，订阅适配（B20）由 Claude 做。
-- `dev`（`~/workspace/EasySwitch-dev`，独立 worktree）：Claude 的工作区。避开 GPT 正在改的文件（`gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层）。合入前保证测试全过。
+- **2026-10-06 用户决定：剩下的所有待办都交给 Dot，Claude 不再开发这个项目（B72）。** 在云端 `dev` 分支上开发；Claude 的全部工作已推上去（最后一个提交见 `git log`）。
+- `main`（`~/workspace/EasySwitch`）：本地 GPT 的工作区，风险档适配和协议层重构的进展在这里（未提交，待推到云端分支，见 B44）。
+- `dev`：合入前保证测试全过；避开 GPT 正在改的文件，或先和用户确认。
 - 提交信息不加署名行（沿用用户的 PR 工作规则）。
 <!-- private:end -->

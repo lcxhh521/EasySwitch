@@ -19,8 +19,8 @@
 5. 新功能尽量放新文件，共享文件里只留最少的接线。
 
 正在改（谁 · 哪些文件 · 做什么 · 登记时间）：
-- Claude · （没有，B20 Cursor 已推完）
-- Dot · （还没登记；B21 会碰 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`，B45 是新文件为主）
+- Claude · 已停止开发：用户 2026-10-06 决定剩下的全部交给 Dot（见 B72）。之后只有 Dot 改共享文件，不用登记给 Claude
+- Dot · （还没登记；B21 会碰 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`、`keypool.ts`、`server.ts` 的出站分支；每个订阅现在是 `core/src/` 下自己的模块，共享文件里只有一两行挂钩，重构时照着挂钩迁）
 
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
 
@@ -32,7 +32,7 @@
 
 - [~] B38 · Claude 桌面端：用官方「第三方推理（网关）」配置 + CLAUDE_USER_DATA_DIR 独立数据目录，另开一个只含外接模型的独立窗口（不拦截、不改平时的 Claude）；先在本机实测能不能启动 — 来源：「为什么claude桌面端做不了呢，opencodex都可以做来着，而且我记得在我们对话讨论产品定义的时候，你好像想出来过一个解决办法」（10-06）· 备注：我之前写的「做不了」是把「官方网关配置」和「拦截流量」混为一谈，已更正；opencodex 的做法见 src/claude/desktop-3p*.ts
 
-## 订阅适配与协议层（B20 Claude，B21 Dot）
+## 订阅适配与协议层（全部由 Dot 接手，见 B72）
 
 - [ ] B21 · 协议层重构（按出站来源选适配器）— 来源：AGENTS.md 硬性原则 5；原本是 GPT 的，2026-10-06 改给 Dot · 备注：本地 GPT 在 main 工作区已有未提交的进展，要先推到云端分支（见 B44）
 - [ ] B45 · Claude 桌面端（B38）的测试和实现交给 Dot — 来源：「claude桌面端那个也让dot做测试」（10-06）· 备注：用户建议 Dot 在自己的云电脑上下载 Claude 桌面端来测（Claude 桌面端只有 macOS / Windows 版，Linux 云电脑测不了，要说明）；测通后仍要在用户的 Mac 上跑一次短确认（macOS 路径）；详细步骤在 HANDOVER.md 的 B38 段

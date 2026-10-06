@@ -34,3 +34,6 @@ From the two reference trees only (opencodex and the Magpie clone); (inferred) m
 - Already covered by presets (the user fills in a key): Doubao/Ark coding plan, Kimi coding plan, MiniMax coding plan.
 - Quota display is cheap for these three (and Grok): see the usage endpoints above. Worth doing as part of B48.
 - Worth building next: Kimi sign-in by device code (low risk, explicit permission), Grok reading its local login (medium risk).
+
+## Open question for Grok (B68)
+The references disagree on the wire format of `https://cli-chat-proxy.grok.com/v1`: Magpie treats it as OpenAI Responses (and its tool-type whitelist and `prompt_cache_key` handling are Responses fields); opencodex's preset says chat. Settle it with one real request before building on it; use the existing Responses translation (`responses-upstream.ts`) if it is Responses.

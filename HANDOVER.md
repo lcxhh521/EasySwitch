@@ -3,6 +3,24 @@
 > 你是接手的 agent，**在云端仓库的 `dev` 分支上开发**（用户 2026-10-06 明确要求：从 dev 分支开发）。这份文件只在私有仓库里，发布公开版时会被排除。
 > 先读完这一页，再读 `AGENTS.md`（项目说明和代码地图）和 `BACKLOG.md`（唯一的需求清单）。
 
+## 0.5 2026-10-06 晚的变更（分工以这一节为准，覆盖下面第 4 节里「B20 归 Claude」「B21 归你」的说法）
+
+用户决定：**剩下的所有待办都交给 Dot，Claude 不再开发这个项目**（BACKLOG B72）。你是唯一在 `dev` 上开发的 agent，不用再避让 Claude；只需避让本地 GPT 的 `main` 工作区。
+
+交接单写完之后，Claude 又做完并推到 `dev` 的（你不要重做，要核对的才碰）：
+- **订阅当模型来源**（每个订阅是 `core/src/` 下自己的模块，共享文件里只有一两行挂钩，做 B21 时按挂钩迁移）：Kiro（`kiro*.ts`）、Antigravity（`antigravity*.ts`、`gemini-upstream.ts`）、Vertex（`vertex.ts`）、Cursor（`cursor/*`，纯文字）、Kimi 会员登录（`kimi.ts`）、Kimi/MiniMax 套餐额度（`plan-usage.ts`）。都只用假服务验证过，没有用真账号测。
+- **网关鉴权**（`gateway-auth.ts`）、**每月预算**（`budget.ts`）、**Keychain 写入走标准输入**（`secrets.ts`）、**stdio 小桥**（`bin/es-mcp-stdio.ts`，给只认 stdio MCP 的 agent）、Copilot/Gemini 档位、Trae Agent 的 MCP、README 重写、界面配色。
+- **调研**：`research/subscription-sources-2.md`、`-3.md`（十个订阅的可行性）、`research/cursor-adapter.md`（Cursor 的事实、做了什么、没做什么、哪些没核实）。
+- 当前 279 个测试，278 通过、0 失败（1 个是默认跳过的真钥匙串测试，设 `EASYSWITCH_TEST_KEYCHAIN=1` 才跑）。
+
+留给你的（`BACKLOG.md` 里都有，按这个顺序做比较顺）：
+1. **B21 协议层重构**（先读 AGENTS.md 硬性原则 5，再看 `upstream-chat.ts` 的 `sendChat`：现在是 kiro / antigravity / cursor / mimoFree / plan 几个分支，要改成按出站来源选适配器）。
+2. **B38/B45 Claude 桌面端**（第 4 节有完整做法；云端能测的先测，再给用户一条本机确认命令）。
+3. **B68 Grok、B69 Qoder、B70 WorkBuddy/Droid 订阅、B71 Cursor 工具调用**：事实在 `research/` 里；Grok 的线上格式（Responses 还是 Chat）两个参考仓库说法不一致，先用一次真请求定下来（用户的 Mac 上有 Grok CLI 登录时再核对，不要自己去读用户的登录文件）。
+4. **B58/B33** 公开前清单（Antigravity 的客户端密钥改成运行时读取并移出仓库）、**B34** dev 合入 main。
+5. **B48 余下、B49–B51 远期**。
+6. **需要用户 Mac 的**（B2/B5/B57/B60，以及各订阅的真账号核对）：你做不了，在交付说明里写成「需要用户在本机验证」并给命令（`npm run verify-launchers`）。
+
 ## 0. 先搞清楚三件事
 
 1. **仓库永远私有**，绝不改成公开，也不要把它的历史推到任何公开仓库。公开版是以后用 `tools/release/` 从干净快照另建一个新仓库（见第 7 节）。所以在这个仓库里写出处、参照谁、复制了谁的代码都没问题，只要按第 5 节声明。
@@ -60,7 +78,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 
 ## 3. 现状（`dev` 分支，截至本文提交）
 
-- 207 个测试，`npm test` 全过；`npm run typecheck` 干净。Node ≥ 22.18 直接跑 TypeScript，运行时零依赖。
+- 279 个测试（278 通过、1 个默认跳过），`npm test` 全过；`npm run typecheck` 干净。Node ≥ 22.18 直接跑 TypeScript，运行时零依赖。
 - **已实测**（用真实程序跑过）：ChatGPT/Codex（命令行和桌面端）、Claude Code、Hermes、DeepSeek Harness（dsh）。
 - **按文档写了启动方式，没实测**：Gemini CLI、Qwen Code、OpenCode、Aider、Copilot CLI，以及 `core/src/launchers-extra.ts` 里新写的 Kimi、Pi、OMP、Droid、Cline、Goose、Crush、Grok、MiniMax Code、Qoder、OpenClaw、Trae Agent、AtomCode。每个启动器的 `caveat` 字段写明了哪部分是照厂商文件格式写的（可信）、哪部分是凭记忆猜的（要用 `--help` 核实）。
 - 能力矩阵和界面：`/api/agents` 返回每个 agent 的各功能状态；Agent 页每行下有一排小点，底部有“覆盖情况”表。**当前账（2026-10-06）**：启动 27/32 已定、后台任务 31/32、能调其他 agent 21/32、档位 25/32、子 agent/小模型 11/32、订阅当来源 4/18。“已定”= 已做或明确做不了；缺口就是 `todo`。
