@@ -1,0 +1,77 @@
+# Claude Desktop 独立会话：实现与验证边界
+
+核对日期：2026-10-06。B38 / B45 尚未完成真实应用验收。
+
+## 当前阻塞：官方签名版已改变目录覆盖行为
+
+已在用户明确批准后，从 Anthropic 官方 apt 源下载 Linux amd64 **2.19675.1**（179,366,068 字节），核验官方发布签名、包清单和包文件 SHA-256，并解包到仓库外的私有测试目录。没有执行包的 `postinst`、注册 apt 源、修改系统策略或安装到系统目录。
+
+- 签名指纹：`31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`，与官方安装页一致
+- `.deb` SHA-256：`9ba127eeccf270f6e60d35f5c5333654053bf0540c88fc82a009d01711b106fc`
+- 官方 `InRelease` 日期 2026-10-05，有效期至 2026-10-12；签名及其覆盖的 amd64 Packages 摘要、Packages 中的包摘要全部通过核对
+- 主程序动态链接依赖未发现缺失；这不等于 GUI 实际启动成功
+
+对该签名包的静态检查发现：`.vite/build/index.pre.js` 在普通 packaged 启动时删除 `CLAUDE_USER_DATA_DIR`；另一个日志模块明确说明签名版忽略该变量并使用默认数据目录。这推翻了旧交接中把这个变量当作现成隔离契约的假设。未尝试开发者鉴权、修改应用或绕过该限制。
+
+真实应用尚未启动，也没有发送消息或启动其 agent helper。进程级网络隔离预检因系统拒绝创建 `NETLINK_ROUTE` socket 而失败；没有绕过、关闭 sandbox 或修改系统安全/网络设置。因此没有建立“真实 helper 的推理只访问本地假服务”的运行证明。
+
+现在生产 API 和默认 `ClaudeDesktopSession.start()` 均拒绝真实启动，`experimental: true` 不能绕过；控制台显示具体阻塞，能力矩阵保留待完成。现有 mock 生命周期代码通过显式的进程内测试注入运行，不向 HTTP 暴露测试开关。静态检查与模拟测试不能被描述为真实桌面验收。
+
+## 已核实的官方事实
+
+- [官方安装页](https://support.claude.com/en/articles/10065433-install-claude-desktop) 已列出 Linux beta：Debian 12+ / Ubuntu 22.04+，x64 / arm64。旧交接单“没有官方 Linux 版”已过时。
+- [官方网关模式](https://claude.com/docs/third-party/claude-desktop/gateway) 使用 Anthropic Messages API，要求流式响应与工具调用；模型发现可选，也可明确列出模型。
+- [单机配置](https://claude.com/docs/third-party/claude-desktop/installation#single-machine-setup) 不要求先登录 Anthropic 账号。官方说明的是 Claude 模型经网关使用，不保证任意非 Claude 模型可用。
+- 同一安装文档说明 Chat / Cowork / Code 可能下载、运行应用自带的 agent helper。仅打开桌面窗口不等于发消息也不会运行 CLI。
+- [官方配置参考](https://claude.com/docs/third-party/claude-desktop/configuration) 提供独立部署的模型列表、禁用深链注册、更新、遥测与非必要服务等设置。
+
+`CLAUDE_USER_DATA_DIR` 与 `configLibrary` 的原候选文件布局来自项目此前的实现事实表。模拟代码保留这些候选结构用于回归测试，但当前官方签名包已证明不能依赖该变量。即使私有 HOME / XDG 目录可能有用，也没有据此绕过或宣称隔离已成立。
+
+## 已实现
+
+`core/src/claude-desktop.ts` 生成独立会话：
+
+- 每次创建新的 0700 临时根目录，配置文件 0600
+- 私有 HOME、Claude 数据、CLI 配置、XDG 配置/缓存/数据/状态/运行目录、临时目录与日志目录
+- 清洁环境白名单，不继承登录令牌、CLI hooks、Node preload、代理、DBus/keyring 会话等覆盖项
+- 在私有的应用数据目录与私有 HOME 默认 3P 位置写同一配置，兼容“先查配置，再应用数据目录覆盖”的候选行为
+- 模型使用网关的真实 ID，不伪装成已验证的 Claude 家族、上下文容量或能力
+- 直接启动可执行文件并跟踪自己创建的进程组；不使用 `open -a`、`pkill` 或向正常 Claude 发退出指令
+- 正常退出、启动失败、崩溃、显式停止时将自有目录原子移入新建的私有清理隔离目录，核对移动后的 inode 再删除；所跟踪进程组仍在运行或目录被替换时拒绝删除并保留文件。主进程退出后不再根据旧 PID 发信号；若留下进程组成员则保留目录并报告阻塞。另起会话或脱离进程组的 helper 不在当前跟踪证明范围内，必须在真实应用验收时检查
+
+环境变量隔离不是操作系统沙箱。文件清理的私有隔离目录可以防止原始路径被替换造成的误删，但不能声称抵抗同 UID 恶意进程对隔离目录内部的并发篡改。真实应用如果忽略覆盖项或通过系统服务访问原生目录，仍需运行时文件审计才能发现。Linux 当前要求 X11；Wayland 的原始运行目录不会被借用。Windows 暂未实现安全的进程生命周期，因此明确拒绝启动。
+
+## API
+
+- `GET /api/claude-desktop`：只读安装与自有会话状态，始终明确 `verified: false`；正常服务返回 `launchBlocked: true` 与具体原因
+- `POST /api/claude-desktop/sessions`：正常服务返回 `409 desktop_isolation_unverified`，所有 HTTP 参数都不能启用测试例外；仅显式注入假程序的测试服务会验证控制台头、确认和模型参数
+- `POST /api/claude-desktop/sessions/<id>/stop`：只停止那个自有会话
+- 最多三个同时存活的独立会话；HTTP 输入不能指定任意可执行文件、环境或路径
+- 桌面模型发现总是用 Anthropic 格式，只包含外接模型；即使正常 Claude 的原生支持开着，也不读取或混入原生模型
+- 桌面请求中的未知模型被拒绝，不能回退到用户原生 Claude 账号
+- 主服务退出前等待自有桌面会话停止。非正常断电 / SIGKILL 不能保证清理，绝不据此删除来历不明的旧目录
+
+## 已完成的安全测试
+
+```sh
+node --test --test-force-exit core/test/claude-desktop.test.ts
+node --test --test-force-exit core/test/claude-desktop-ui.test.ts
+npm run typecheck
+```
+
+14 个本地模拟测试覆盖配置权限、环境净化、macOS 私有路径构造、平台和参数拒绝、只读探测、模拟桌面到 loopback 假网关、原生目录哨兵不变、启动失败与崩溃、定向终止、并发隔离、清理后不访问旧 PID、API 同意与数量限制、关机清理、桌面模型发现与原生回退禁用、已存在来源下的未知模型拒绝、混合鉴权头识别、根目录替换与清理检查后竞态保护，以及生产默认启动拒绝和 HTTP 参数不能绕过。测试禁止父进程访问任何非 `http://127.0.0.1` URL 并拒绝自动重定向，只启动测试现场生成的假程序。
+
+另有 5 个控制台事件测试覆盖：实验性提示、未安装禁用、错误文本转义；取消、Escape、改模型、切页撤销确认；重复点击只发一次请求、失败后重新确认；停止按钮只使用对应的独立会话 API；已知隔离阻塞下旧确认按钮也不能启动。测试运行真实前端渲染函数和事件代码，不代表已完成浏览器视觉验收。
+
+## 真实应用验收仍需做
+
+当前已获准下载、验签和私有解包，尚未启动真实 Claude Desktop、登录或运行真实模型 / agent helper。后续真实运行取决于解决上面的支持边界，不能靠关闭安全机制继续。
+
+1. 官方包下载、签名链与摘要核对、私有解包已完成。能否不降低安全保护地运行、用受支持机制隔离所有应用数据并约束 helper 推理请求，仍未解决
+2. 确认真实 GUI 所在进程环境。命令工作区是 Debian 13 x64、非 root、无 sudo 与 DISPLAY；已通过云端 Xfce 终端只读核实 GUI 环境同为 Debian 13 x64、uid 1000、无 sudo。二者进程和临时目录仍不能当成一台机器使用。EasySwitch 和假上游必须在运行 Claude 的同一个 loopback 环境；官方 apt 系统安装目前缺少管理员权限，能否私有解包运行还要核验依赖
+3. 若发消息会启用自带 helper，先取得该测试范围的明确许可；否则只验证窗口和配置，不声称消息链路已通过
+4. 只用空白、一次性数据目录与本地假上游，禁止真实账号登录、真实 API key、付费模型。配置不生效或出现原生登录时停止，不通过修改系统策略、真实配置或证书来补救
+5. 证明独立 PID 及子进程实际文件访问均符合隔离边界；检查未生成正常用户的 Claude / Claude-3p、配置、缓存或日志文件。仅比较目录时间戳不能证明并行原生进程未受影响
+6. 验证模型菜单、首选模型、消息与 SSE 到达假网关、停止与崩溃后的清理。Linux 结果不能代表 macOS 已实测
+
+用户已允许官方软件下载、核验、私有解包及满足本地假推理约束时的测试。该许可不包含关闭安全机制或绕过应用限制；若后续涉及新协议接受、登录或额外系统设置，仍需按实际页面取得所需许可。无需也不应借用 Codex、Claude 或其他订阅账号来完成当前模拟测试。

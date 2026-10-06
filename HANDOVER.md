@@ -11,12 +11,12 @@
 - **订阅当模型来源**（每个订阅是 `core/src/` 下自己的模块，共享文件里只有一两行挂钩，做 B21 时按挂钩迁移）：Kiro（`kiro*.ts`）、Antigravity（`antigravity*.ts`、`gemini-upstream.ts`）、Vertex（`vertex.ts`）、Cursor（`cursor/*`，纯文字）、Kimi 会员登录（`kimi.ts`）、Kimi/MiniMax 套餐额度（`plan-usage.ts`）。都只用假服务验证过，没有用真账号测。
 - **网关鉴权**（`gateway-auth.ts`）、**每月预算**（`budget.ts`）、**Keychain 写入走标准输入**（`secrets.ts`）、**stdio 小桥**（`bin/es-mcp-stdio.ts`，给只认 stdio MCP 的 agent）、Copilot/Gemini 档位、Trae Agent 的 MCP、README 重写、界面配色。
 - **调研**：`research/subscription-sources-2.md`、`-3.md`（十个订阅的可行性）、`research/cursor-adapter.md`（Cursor 的事实、做了什么、没做什么、哪些没核实）。
-- 当前 279 个测试，278 通过、0 失败（1 个是默认跳过的真钥匙串测试，设 `EASYSWITCH_TEST_KEYCHAIN=1` 才跑）。
+- 交接前历史检查点：279个测试，278 通过、0 失败（1 个是默认跳过的真钥匙串测试，设 `EASYSWITCH_TEST_KEYCHAIN=1` 才跑）。
 
 留给你的（`BACKLOG.md` 里都有，按这个顺序做比较顺）：
 1. **B21 协议层重构**（先读 AGENTS.md 硬性原则 5，再看 `upstream-chat.ts` 的 `sendChat`：现在是 kiro / antigravity / cursor / mimoFree / plan 几个分支，要改成按出站来源选适配器）。
 2. **B38/B45 Claude 桌面端**（第 4 节有完整做法；云端能测的先测，再给用户一条本机确认命令）。
-3. **B68 Grok、B69 Qoder、B70 WorkBuddy/Droid 订阅、B71 Cursor 工具调用**：事实在 `research/` 里；Grok 的线上格式（Responses 还是 Chat）两个参考仓库说法不一致，先用一次真请求定下来（用户的 Mac 上有 Grok CLI 登录时再核对，不要自己去读用户的登录文件）。
+3. **B68 Grok、B69 Qoder、B70 WorkBuddy/Droid 订阅、B71 Cursor 工具调用**：事实在 `research/` 里；Grok 的线上格式（Responses 还是 Chat）两个参考仓库说法不一致，先核实公开资料与假服务；真实账号和请求须另外满足授权，不自行读取用户登录文件。
 4. **B58/B33** 公开前清单（Antigravity 的客户端密钥改成运行时读取并移出仓库）、**B34** dev 合入 main。
 5. **B48 余下、B49–B51 远期**。
 6. **需要用户 Mac 的**（B2/B5/B57/B60，以及各订阅的真账号核对）：你做不了，在交付说明里写成「需要用户在本机验证」并给命令（`npm run verify-launchers`）。
@@ -24,7 +24,7 @@
 ## 0. 先搞清楚三件事
 
 1. **仓库永远私有**，绝不改成公开，也不要把它的历史推到任何公开仓库。公开版是以后用 `tools/release/` 从干净快照另建一个新仓库（见第 7 节）。所以在这个仓库里写出处、参照谁、复制了谁的代码都没问题，只要按第 5 节声明。
-2. **你在云端，看不到用户的 Mac。** 需要真机验证的东西（装各个 CLI 实测、启动 Claude 桌面端、截图界面）你做不了，必须在交付说明里写成“需要用户在本机验证”，并给出一条能照着跑的命令，不要写成“已验证”。
+2. **本轮只在用户指定的dot云端工作，不使用用户Mac或Codex账户额度。** 真实客户端、厂商或系统验收需符合另行授权范围；未验证不代表产品不可能，也不自动改到用户电脑。
 3. **待办就是授权，做完一件直接接下一件，不要做一件问一件**（用户明确说过）；只有真正被卡住（要用户的真机、密钥、决定）才停下来问，一次问清，其余能做的接着做。
 4. **你和 Claude 都在 `dev` 上开发，别撞车**：开工前 `git fetch && git log HEAD..origin/dev`，碰共享文件先在 `BACKLOG.md` 开头的「正在改」登记，小步提交、做完就推（推前 `git pull --rebase`）。详细规矩在那里。
 5. **需求清单只有 `BACKLOG.md`。** 用户在对话里提的每个需求、变更、决定，立刻写进去（带用户原话和日期）再动手；做完标 `[x]` 并写“验证：”；收工时说清做完几条、还剩几条、新增几条。`npm run backlog -- --check` 查格式。
@@ -76,34 +76,32 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 6. **功能要做到每个 agent，不是一两个。** 用户专门为此批评过。每做一个功能，要给每个相关 agent 一个明确状态（见能力矩阵），不能只做手边能测的那个就算完。
 7. 界面文字用人话句子；提交信息用英文，一行标题 + 要点正文，**不加任何 AI 署名行**；对用户用中文。
 
-## 3. 现状（`dev` 分支，截至本文提交）
+## 3. Claude交接前的历史基线（不代表当前新版验收）
 
 - 279 个测试（278 通过、1 个默认跳过），`npm test` 全过；`npm run typecheck` 干净。Node ≥ 22.18 直接跑 TypeScript，运行时零依赖。
 - **已实测**（用真实程序跑过）：ChatGPT/Codex（命令行和桌面端）、Claude Code、Hermes、DeepSeek Harness（dsh）。
 - **按文档写了启动方式，没实测**：Gemini CLI、Qwen Code、OpenCode、Aider、Copilot CLI，以及 `core/src/launchers-extra.ts` 里新写的 Kimi、Pi、OMP、Droid、Cline、Goose、Crush、Grok、MiniMax Code、Qoder、OpenClaw、Trae Agent、AtomCode。每个启动器的 `caveat` 字段写明了哪部分是照厂商文件格式写的（可信）、哪部分是凭记忆猜的（要用 `--help` 核实）。
-- 能力矩阵和界面：`/api/agents` 返回每个 agent 的各功能状态；Agent 页每行下有一排小点，底部有“覆盖情况”表。**当前账（2026-10-06）**：启动 27/32 已定、后台任务 31/32、能调其他 agent 21/32、档位 25/32、子 agent/小模型 11/32、订阅当来源 4/18。“已定”= 已做或明确做不了；缺口就是 `todo`。
+- 能力矩阵和界面：`/api/agents` 返回每个 agent 的各功能状态；Agent 页每行下有一排小点，底部有“覆盖情况”表。**历史覆盖计数（2026-10-06）**：启动 27/32 已定、后台任务 31/32、能调其他 agent 21/32、档位 25/32、子 agent/小模型 11/32、订阅当来源 4/18。“已定”= 已做或明确做不了；缺口就是 `todo`。
 - 派活规则、任务页、`es` 命令（终端里 `es claude`）、模型池、方案、订阅登录（ChatGPT / Copilot）、MiMo 免 key、用量计费都在。
 
 ## 4. 待办与做法（编号对应 `BACKLOG.md`）
 
 建议顺序：B2 → B3/B4 → B38 → B6 → B7 → B41（差异化评审）→ 其余。**先读 `research/` 里四份事实表**，里面有每个 agent 的私有目录变量、配置文件内容、MCP 写法、档位参数，凡标 `(inferred)` 的都是没核实的。
 
-- **B2 补全 CLI 的启动和后台任务**：大部分已写在 `launchers-extra.ts`，**剩的是实测**。云端没法测，所以请在交付里列出“每个 agent 的核对命令”，由用户在本机跑。`minimax-code` 没查到无界面参数，只有交互形态；**CodeBuddy（命令行）和 WorkBuddy（桌面应用）是两个产品，用户明确要求分开，不要再混成一个**：`codebuddy` 命令行版不能改地址，做不了；`workbuddy` 桌面版可以读私有 `WORKBUDDY_CONFIG_DIR` 下的 `models.json`（做得了，但没法每次指定模型），归到 B6；`amp` 只能检测并打开。
-- **B3 MCP 挂载**：已挂的：Codex、Claude Code、Hermes、OpenCode、Gemini/Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw（后面几个的 MCP 写法大多是推测，见各自 `mcpCaveat`）。还缺：**dsh**（做得了，见 `research/agent-facts-4.md` 的更正段：在 patch 里加 `dsh-mcp-client` 插件，但要先给私有 `DSH_HOME` 预置那个插件的符号链接）、**Trae Agent**（只认 stdio，要一个 HTTP 转 stdio 的小桥）、Kimi、OMP、AtomCode（没查到）。
+- **B2 补全 CLI 的启动和后台任务**：大部分已写在 `launchers-extra.ts`，**剩的是实测**。本轮仅做获准云端纯/假服务检查，真实程序验收未完成。`minimax-code` 没查到无界面参数，只有交互形态；**CodeBuddy（命令行）和 WorkBuddy（桌面应用）是两个产品，用户明确要求分开，不要再混成一个**：`codebuddy` 已按官方Messages配置补私有启动；`workbuddy` 归B6，按当前官方UI给出完整地址、临时令牌和模型，不写原生文件；`amp` 只能检测并打开。
+- **B3 MCP挂载历史清单（dsh、Trae桥、Kimi/OMP/AtomCode/CodeBuddy本轮已补，见当前验收与专题文档）**：已挂的：Codex、Claude Code、Hermes、OpenCode、Gemini/Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw（后面几个的 MCP 写法大多是推测，见各自 `mcpCaveat`）。还缺：**dsh**（做得了，见 `research/agent-facts-4.md` 的更正段：在 patch 里加 `dsh-mcp-client` 插件，但要先给私有 `DSH_HOME` 预置那个插件的符号链接）、**Trae Agent**（只认 stdio，要一个 HTTP 转 stdio 的小桥）、Kimi、OMP、AtomCode（没查到）。
 - **B4 档位与子 agent/小模型模型**：dsh 的补法在 `research/agent-facts-4.md`（注意 patch 是整条替换，要带回原键）；Gemini 的档位只能写 `thinkingConfig`，把握不大；Copilot 的 `effortLevel`；其余见事实表。
-- **B38 Claude 桌面端**：**之前的“做不了”是我错了**，把两件事混为一谈。官方有“第三方推理（网关）”配置：配置库在 `<userData>/configLibrary/`（默认 `Application Support/Claude-3p`），里面一个 profile JSON `{inferenceProvider:"gateway", inferenceCredentialKind:"static", inferenceGatewayBaseUrl, inferenceGatewayApiKey, modelDiscoveryEnabled, inferenceModels:[...]}` 加 `_meta.json {appliedId, entries:[{id,name}]}`；并且环境变量 **`CLAUDE_USER_DATA_DIR`** 可以让这个应用用任意目录当数据目录。所以做法是：**另开一个独立的 Claude 窗口**，数据目录指向一个私有临时目录、里面写好网关 profile，指向 EasySwitch——不碰用户平时的 Claude，不拦截流量，用完删目录。代价：这个窗口是纯第三方模式，没有 claude.ai 账号功能，只有外接模型；原生 Claude 在平时的窗口里用，两个实例可以同时开。细节和字段含义看 `research/agent-facts-4.md` 末段；opencodex 是怎么写的在它的 `src/claude/desktop-3p*.ts`（用户本机 `~/workspace/opencodex`，你看不到，需要时让用户贴）。**这一项的测试用户 2026-10-06 明确交给你（Dot）做（B45）。** 要在用户的 Mac 上跑（本机装了 `/Applications/Claude.app`，版本 2.19675.0；opencodex 移植的是 1.18286.0 的代码，**行为可能已经变了，别照抄，要实测**）。**用户 2026-10-06 的建议：你在自己的云电脑上下载安装 Claude 桌面端来测**，EasySwitch 也装在那台云电脑上（`npm test` 同款环境，网关不用跨机器）。前提是它的系统要能装：**Claude 桌面端只有 macOS 和 Windows 版，没有官方 Linux 版**；Linux 云电脑装不了就测不了这一项，请直接告诉用户，改成“写好一条能直接跑的脚本加核对步骤，让用户在 Mac 上运行并把输出贴回来”。云电脑上测通以后，**仍要让用户在他的 Mac 上跑一次很短的确认**（macOS 的数据目录是 `~/Library/Application Support/...`，Windows 在 `%LOCALAPPDATA%\Claude-3p`，路径只能在 Mac 上最终验证）。不要把没跑过的东西写成“已验证”。我（Claude）没有启动过它，没改过任何 Claude 数据，只做了准备，下面是我摸到的（第 1、2 条是为用户的 Mac 写的；在你自己的云电脑上，实例是你自己的，不涉及用户的真实数据，但“私有数据目录确实生效”这一点照样要证明）：
+- **B38 / B45 Claude 桌面端**：官方第三方网关模式与拦截流量是两件事，后者仍明确不做。旧交接单“没有官方 Linux 版”已过时：[官方安装页](https://support.claude.com/en/articles/10065433-install-claude-desktop) 已列 Linux beta。当前按用户要求只在 dot 云端工作，不把用户 Mac 作为替代执行目标；macOS 兼容性保持未实测。
 
-1. **用户平时用的 Claude 桌面端经常正开着**，那是他的真实数据（`~/Library/Application Support/Claude`），绝对不能碰。测试只能开**第二个独立实例**：`open -n -a Claude --env CLAUDE_USER_DATA_DIR=<私有临时目录>`（`open` 支持 `-n` 新实例和 `--env`，已确认）。
-2. **证明没碰真实数据**：新实例启动后用 `lsof -p <新进程pid>` 看它打开的文件全在私有目录里；`~/Library/Application Support/Claude-3p` 如果测试前不存在，测试后也不能出现。（真实目录自己会被正在运行的那个实例不断改动，所以不能用“目录没变”来证明。）
-3. **私有目录里写配置库**：`<目录>/configLibrary/_meta.json` 和一个 profile JSON（字段见上）；`inferenceGatewayBaseUrl` 指向 EasySwitch 网关，`inferenceGatewayApiKey` 用一个 `es-session-claude-desktop-…` 令牌（网关靠令牌前缀认出是哪个 agent）。模型列表先用 `modelDiscoveryEnabled: true` 让它读我们网关的 `/v1/models`（Claude Code 已经在用的 `es-claude-<来源>--<模型>` 编码），看它认不认；不认再退回静态 `inferenceModels`（opencodex 的做法是把模型映射成 `claude-opus-4-8-…` 这种 Claude 形状的别名，网关再解码，见它的 `desktop-profile.ts`）。
-4. **本地假环境**：`node core/test/mock-relay.ts`（端口 18790，假中转站）+ 起一个 dev 实例（`EASYSWITCH_PORT=18766 EASYSWITCH_HOME=<临时目录> EASYSWITCH_SECRETS=memory node core/src/main.ts`），再 `POST /api/providers`（头要带 `x-easyswitch: 1`，体 `{"name":"Mock Relay","baseUrl":"http://127.0.0.1:18790/v1","apiKey":"mock"}`）。
-5. **看窗口**：我确认过 `screencapture -x <文件>.png` 在这台 Mac 上能用；如果它的 Electron 支持，也可以带 `--remote-debugging-port` 启动后用 CDP 看界面（ChatGPT 桌面端支持，Claude 没试过）。
-6. 要回答的问题：私有数据目录真的生效吗？应用有没有自己进入第三方模式（还是需要在界面里手动选）？模型菜单里出现的是什么？发一条消息，请求是否到了网关、模型对不对？用完删私有目录后，用户的 Claude 是否毫发无损？
-- **B6 桌面端 / IDE 的手动配置向导**：Trae、Z Code、WorkBuddy（Windsurf 和豆包确实没有自定义入口，不硬做）。统一做法：界面里给出地址、令牌、模型一键复制和该应用的操作步骤，**不碰它的配置文件**。
+  已实现隔离后端、模拟生命周期、模型限制及明确的阻塞界面。官方 Linux 2.19675.1 amd64 包已核验签名链和 SHA-256 并私有解包，但签名版 bootstrap 会忽略 CLAUDE_USER_DATA_DIR；旧环境变量方案不能证明隔离。云端独立网络命名空间预检被拒绝，未绕过，也未启动真实应用/helper。生产 API 和默认 start 在 spawn 前拒绝，experimental:true 不能解锁。详见 docs/claude-desktop-isolation.md。
+
+  后续验收应关注持久用户数据、配置、缓存与日志的实际路径，不能要求系统库和应用文件也全部位于临时目录。必须使用获准环境；用户已指定仅云端，不把用户 Mac 作为默认后备。未获得明确授权不运行真实账号、模型或修改安全设置。
+
+- **B6 桌面端 / IDE 的手动配置向导**：Trae、Z Code、WorkBuddy（Windsurf/豆包未核实受支持自定义端点，不编造接入）。统一做法：界面里给出地址、令牌、模型一键复制和该应用的操作步骤，**不碰它的配置文件**。
 - **B7 其余 agent 的订阅当来源**：逐个调研，能接就接，不能接写明原因。
-- **B10 Vertex**、**B11 MiMo**（免 key 版已做；官方 API 预设在不在要核对）、**B12 DeepSeek/Kimi 的档位界面**、**B13 花费预算**、**B30 网关鉴权令牌**、**B31 原生 Keychain API**（现在用 `security` 命令）、**B32 README 刷新**（还有借鉴描述，要写成面向用户的）。
+- **B10/B11/B12/B13/B30/B31/B32** 已整合：Vertex三模式、官方MiMo预设、模型档位、全局/来源预算、限时可撤销鉴权、原生Keychain桥和README。MiMo Free及未经验证桌面路径明确阻塞，详见专题文档与当前验收。
 - **B33 公开前清单**：见第 7 节。
-- **B20（Cursor、Kiro、Antigravity 的订阅适配）原本是本地 GPT 的，后来说给你，但你说不做，2026-10-06 用户改回由 Claude 做，你不要碰。** **B21（协议层重构，按出站来源选适配器）仍是你的**，不过 B20 要用到它，做之前和用户确认接口，别让两边撞车。**注意：本地 GPT 在用户 Mac 的 `main` 工作区里已经做了一部分，没有提交**（B44 已经把快照推到云端 `gpt-wip`）。你仍然在 `dev` 上开发；云端已经有 **`gpt-wip` 分支（提交 8303a37）**，是本地 GPT 在 main 工作区里未提交进展的快照（Kiro 适配器 `kiro*.ts` / `aws-eventstream.ts`、新的协议层 `protocol.ts` / `inbound.ts` / `outbound*.ts` / `downstream.ts` / `gateway-route.ts` / `upstream-events.ts`、`docs/outbound-adapters.md`、两个新测试，以及对 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`、`server.ts`、`web/app.js` 的改动）。它**可能编译不过或测试不过**，是某一时刻的样子，GPT 之后的改动不在里面。它只是**参考**（可以按需把里面的文件或思路取过来，注意它改了 `gateway*.ts`、`types.ts`、`server.ts` 等，和 `dev` 会有冲突，不要整支合并）；没有就问用户，别从零重做已经有的东西。这两项会改 `gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层。**你改动前先看这些文件在 `dev` 上是否被动过，避免冲突。**
+- **B20/B21当前分工**：剩余开发已按B72/B73交给dot，保留Claude已推的登录/来源模块，不另写重复实现。B21经`subscription-compat.ts`兼容其Chat结构，普通API走中立四协议层。`gpt-wip`的8303a37只作按需参考，未整支合并；真实账号、条款和厂商接口验收仍独立保留。
 
 ## 5. 借鉴别人代码的规矩
 
@@ -127,3 +125,29 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 1. 做完了 BACKLOG 的哪几条（编号）、还剩哪几条、新增了哪几条。
 2. 哪些结论是“云端写的、需要用户在本机验证”，每条给出可直接复制的验证命令。
 3. 任何你没把握的地方，直接写“不确定”，不要写成已验证。
+
+## Dot 当前整合状态（2026-10-06）
+
+已获用户确认：保留 Claude 的 B20，不重复其适配器开发。Dot 的 B21、鉴权、预算、启动器补缺与文档在云端 dev 实现；原 103a2ab 组合受保护测试 314/314，通过类型检查，无真实 agent/模型调用。当前固定 0a9f8e2 再整合 Vertex 不同鉴权/协议模式、dsh、B55/B57 及待办归档；这些新组合须重新验证。B30 与 Claude 的最新登记重叠已向用户请求协调，尚不能把待确认分工写成已确认。
+
+不得把旧“无 Linux Claude”或 CLAUDE_USER_DATA_DIR 覆盖当可用方案：已核验官方签名 2.19675.1 包会忽略该变量；真实启动阻塞，详见 docs/claude-desktop-isolation.md。本轮只使用 npm run test:local 的审计白名单、临时 HOME、内存凭据和 loopback 假服务；不直接运行 npm test 或 verify-launchers 的真实客户端路径。README 与各专题文档记录实际支持和未验收边界。
+
+### 固定 0a9f8e2 的最终云端组合检查
+
+2026-10-06：335/335 通过（318 项纯函数/本地假服务/UI，17 项内容哈希限定的桌面假程序），零失败；类型检查、前端/脚本语法、待办格式与暂存/未暂存差异检查通过。Vertex 保留服务账号 JWT→Chat、手动短期令牌→Gemini、Express Key→Gemini 三种明确模式；B55 面板、B57 只读工具/注入测试、待办归档、dsh/B60 菜单与 Claude 的 B20 均已保留。没有运行真实 agent、使用真实模型账户或推送远端。
+
+当前结果固定于该远端基线；后续远端推进不自动包含在测试结论中。生产 Claude Desktop 仍拒绝启动；原生 ChatGPT WebSocket 因无法证明持续会话/预算约束而拒绝。Keychain Swift 只经过源码与桥模拟检查，macOS 编译和系统行为未验收。普通交互窗口的关闭不保证即时撤销令牌，可显式撤销/到期失效。停止预算开启时拒绝未完整记账的探测；不是厂商账单硬上限。B20真实授权与条款验收归其负责人，不能把保留代码等同于已批准运行。
+
+### a2741c9 去重整合
+
+固定该远端版本保留 Claude 的已推实现和产品设计；两套鉴权/预算不能整文件选边。鉴权以实际签发、过期、撤销、权限范围及安全转发为边界；全局 UTC 日/月预算与来源月预算分开显示和验证，不能表单混用。钥匙串兼容远端 b64 编码，但原生 helper 的 macOS 编译行为仍未验收。335 是前一快照测试数，新组合必须复跑。用户已明确授权有验证进展就小步提交推送私有 dev；先检查远端，不强推、不覆盖并行成果。
+
+### 最新所有权与推送（2026-10-06）
+
+用户已确认剩余当前开发待办全部归 Dot（B72/B73），Claude 转为产品定义、审查和独立验收；旧 B20 分工仅属历史。远端 2045808 的 Cursor/Kimi/余量实现保留，不重复创建。首个独立安全提交 d13a72c 已推送 dev，精确树类型检查与10项假测试通过、1真实Keychain跳过。主整合bfefccc已推送并重新验收，不将先前335数字套到新树。新的剩余研究条目不授权读取真实登录、创建凭据或付费调用。
+
+### 当前已推送代码验收：bfefccc（2026-10-06）
+
+安全白名单386项通过（369项纯函数/本地假服务/UI +17项桌面假程序），1项真实Keychain明确跳过，零失败；类型、前端语法、待办和差异检查通过。包括完整页面、off/none交集、双预算表单隔离、别名鉴权，以及最后保留的Cursor/Kimi/余量回归。
+
+已正常推送d13a72c（独立Keychain/b64兼容）和bfefccc（协议/鉴权/预算/控制台整合）。仓库核实为private，未强推或改写远端历史。没有真实agent、账户或付费模型调用。真实客户端/平台限制仍保留，不能把本轮通过等同于所有剩余待办已完成。当前源码冻结，后续按新登记小步推进。

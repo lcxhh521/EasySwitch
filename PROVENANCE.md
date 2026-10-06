@@ -73,3 +73,9 @@ commit, license and how far the code was changed.
 | Antigravity 适配：`antigravity-client.ts`（客户端 ID/密钥、端点、UA 格式照 opencodex）、`antigravity.ts`（登录流程、项目发现、信封照 opencodex）、`gemini-upstream.ts`（自写） | opencodex（MIT） | 改编，文件头已声明；**密钥暂时写死在 `antigravity-client.ts`（用户决定，B56）** | **OAuth client secret 不得写进公开仓库**（来自 Antigravity 桌面端，会触发密钥扫描）；改为运行时从用户本机读取 | 待办 |
 | `core/src/opencodex-import.ts` | 自写（读用户自己的 opencodex 配置） | 互操作功能，无拷贝 | 保留 | 无需 |
 | git 历史与本仓库 | 含出处声明、台账、协议调研 | 本仓库永远私有，不改写历史 | 公开版用发布脚本生成清理过的快照，作为**新仓库**的首次提交；旧历史不进入公开仓库 | 待办 |
+
+## 本仓库内的 WIP 复用（2026-10-06）
+
+B21 的 `protocol.ts`、`inbound.ts`、`outbound-format.ts`、`outbound.ts`、`upstream-events.ts`、`downstream.ts`、`gateway-route.ts`、四入口精简以及 `source-adapters.test.ts` 按需取自本仓库 `gpt-wip` 提交 `8303a37`，再适配 `dev` 的 `eae6e21`。没有整支合并，也没有直接引入仓库外代码；既有厂商怪癖、图标等第三方出处仍按上表处理。
+
+云端续接修改了原生错误/响应头透传、归一化能力查找、取消和模型池保护、签名块顺序、Gemini 可见文字及截断工具语义，并新增本地假上游回归。WIP 中的 Kiro 登录库/私有接口模块没有移入本次协议实现。本文只记录复用来源，不把未经真实客户端验证的行为写成实测。

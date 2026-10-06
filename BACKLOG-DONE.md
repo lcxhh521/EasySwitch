@@ -97,3 +97,7 @@
 ## 归档 2026-10-06
 
 - [x] B72 · 分工：剩下的所有待办都交给 Dot，Claude 不再开发这个项目（B2、B3、B5、B7 以外的各项、B21、B33、B34、B38/B45、B48 余下部分、B49–B51、B58、B60、B68–B71 全部是 Dot 的）— 来源：「剩下的事情要不都让dot做了吧」（10-06）· 验证：HANDOVER.md 第 0.5 节、AGENTS.md「分工与分支」、本文件的登记表和各小节标题都已按此改写；Claude 的全部工作已推到云端 dev · 备注：需要用户 Mac 的几项（B2/B5/B57/B60 的真机核对、各订阅的真账号核对）仍然要用户亲自跑命令，Dot 在云端做不了
+
+## Dot 云端补充证据（不改写上文历史完成记录）
+
+B4/B6/B7/B10/B11/B12/B13/B30/B31/B32/B41 的本轮实现边界与待验收项分别见 docs/agent-gaps-validation.md、subscription-support.md、vertex.md、mimo-sources.md、provider-thinking.md、gateway-budget-keychain.md 和 differentiation-review.md。历史条目里的“已完成”不表示真实厂商调用或 macOS 验收已经由 Dot 执行。钥匙串原生实现已在 d13a72c 推送，macOS 编译仍未执行。

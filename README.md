@@ -1,79 +1,77 @@
 # EasySwitch
 
-把从各处找来的模型来源（中转站、官方 API、订阅、本地模型），用进你自己顺手的那个 agent 里——**而且不顶替它原生的网关，也不改它的任何配置文件。**
+把用户授权的模型来源用进熟悉的 agent，通过明确开启的增强会话工作，尽量保留日常原生配置。
 
-> 当前是 demo（v0.0.1），只在 macOS 上运行。哪些是真的在真实程序上跑通过、哪些只是按文档写了，下面和控制台里的「覆盖情况」表都写明了，不会混在一起说。
+当前为 **v0.0.1 demo**：Node 核心与网页控制台可在 Linux 开发测试；Swift 菜单栏和原生钥匙串属于 macOS。支持清单中的“实现”“文档支持”“模拟测试”“真实客户端验证”不是同一个状态，请查看能力矩阵和 [BACKLOG.md](BACKLOG.md)。
 
-## 和同类工具不一样的地方
+## 工作方式
 
-- **旁路，不顶替。** 原生线路保持原样；外接模型只在你明确开启的「增强会话」里生效。停掉 EasySwitch，你的 agent 照常工作。
-- **不改别人的配置文件。** 每次启动靠命令行参数、环境变量或一个用完就删的私有目录把 agent 指向本机网关。`~/.codex`、`~/.claude`、`~/.dsh` 这些一个字节都不动。控制台实时显示原生配置有没有出现 EasySwitch 的痕迹。
-- **从「切换模型」走到「调度 agent」。** agent 之间可以互相派活（它们启动时挂着 EasySwitch 的 MCP），任务页里可以按你写的规则把活分给不同的 agent、模型和思考档位。
-- **订阅也是模型来源，由你开关。** ChatGPT、Copilot、Kiro、Antigravity 的订阅都能当来源；每个订阅一个开关，新登录的默认关，开不开你说了算；额度用完了自动换下一个。
-- **每个功能逐个 agent 交代清楚。** 控制台的「覆盖情况」表把每个 agent 的每项能力标成：已实测 / 按文档做了未实测 / 手动配置 / 做不了（附原因）/ 还没做。
+- 每次启动使用参数、环境变量或私有目录；不直接改写用户日常 agent 配置
+- 入站协议由 agent 决定，出站协议由来源和模型能力决定。同协议优先直通，跨协议按需转换，不把 Chat 当统一中间协议
+- 原生 Claude 与外接来源的鉴权分开；外接请求只使用选中来源的凭据
+- 本地访问令牌需实际签发，不能仅靠字符串前缀取得权限。普通交互窗口关闭尚不能保证自动撤销，可手动撤销或等待到期；托管后台任务结束会撤销。会话停止、到期和重启行为见 [鉴权与预算说明](docs/gateway-budget-keychain.md)
+- 真实调用可能使用厂商额度或产生费用。模型探测、登录及真实 agent 端到端测试均不属于“纯本地测试”
 
-## 能做什么
+控制台保留 Claude 新增的暖纸色/青绿色样式、Agent 页快捷派活、菜单栏面板订阅开关，以及启动器的全模型菜单配置；真实宿主菜单验收仍单独列明。
 
-**模型来源**
-- 中转站、各家官方 API、本地模型、Google Vertex AI（服务账号）、小米 MiMo 免 key 档位：预设一键添加，加进来先自动测一遍（能否列出模型、普通回答、流式、工具调用、走哪种协议）。
-- 订阅：ChatGPT（用 Codex 客户端的登录）、GitHub Copilot、Kiro（读你本机 Kiro CLI 的登录）、Google Antigravity（浏览器里 Google 登录）、Cursor（浏览器里登录，目前只能纯文字对话、不能替 agent 执行工具）、Kimi 会员（设备码登录）。每个订阅一个开关，新的默认关；用量和重置时间显示在卡片上，用完了模型池自动跳过它。
-- 模型池：同一个模型多个来源合成一个名字，一个挂了自动换下一个。
-- 每月预算：给按量计费的来源设一个估算预算，可以只提醒，也可以用完就停用到下个月。
-- Key 存在 macOS 钥匙串；订阅的令牌只发给它所属的厂商。
+## 当前功能与证据
 
-**agent**
-- 已在真实程序上跑通：ChatGPT / Codex（命令行和桌面端）、Claude Code、Hermes、DeepSeek Harness。
-- 按各家文档写了启动方式，**还没在真实程序上跑过**：Gemini CLI、Qwen Code、OpenCode、Aider、Copilot CLI，以及 Kimi、Pi、Oh My Pi、Droid、Cline、Goose、Crush、Grok、MiniMax Code、Qoder、OpenClaw、Trae Agent、AtomCode。每个启动器都标了哪些参数是猜的。`npm run verify-launchers` 会在你机器上对已装的那几个做一次只读检查。
-- 没有每次启动单独指定的办法、但有地方填自定义模型的应用（Trae、Z Code、WorkBuddy）：给你「配置向导」，地址、令牌、模型一键复制，不替你改它们的文件。
-- 做不了的（Windsurf、豆包、CodeBuddy 命令行、Amp 等）在表里写明了原因。
-- 每个 agent 各有自己的主模型、想得多深、后台小任务模型和子 agent 模型，都在它自己那一行；启动后可以在它自己的模型菜单里换到别的来源的模型（Codex 和 Claude Code 已实测，Claude Code 里原生模型和外接模型并排）。
-- 终端里 `es claude`、`es codex` 直接以 EasySwitch 启动。
+| 部分 | 当前实现及边界 |
+|---|---|
+| 网关 | Responses、Chat Completions、Anthropic Messages、Gemini 四种入口；来源/模型级协议选择、同协议 JSON/SSE 与错误响应透传、跨协议转换。详见 [协议说明](docs/outbound-adapters.md) |
+| 来源与模型 | 预设、自定义来源、Key 轮换、模型池故障切换、能力探测；开始输出后不重放生成。预设存在不代表真实账号已验证 |
+| 启动器与 MCP | 多 agent 的每次启动配置、后台任务、MCP 互调、任务分派；新增配置与本地桥接的验证边界见 [agent 补缺记录](docs/agent-gaps-validation.md) |
+| 控制台 | agent、来源、会话、用量、任务及能力信息；协议设置、手动配置向导、本地访问凭据和预算控件按实际能力显示，不能配置的产品明确说明 |
+| 计费与预算 | 按调用时的价格估算；未知价格不显示为零，订阅不冒充逐次 API 账单。日/月阈值可提醒或阻止后续请求，但不是供应商账单硬上限，不能消除在途请求和未知价格误差；启用停止预算时阻止未完整计费的来源探测 |
+| 订阅支持 | 官方 API Key 接入、官方 agent 接口与原生登录复用分别标注。Claude 已推送的 B20 实现保留，后续未完成项现由 dot 接手，新订阅默认关闭；其原生登录复用、条款与真实账号验收不因代码存在而获得确认。本轮未启用登录或真实调用；Cursor/Kimi 与余量挂钩按新远端保留。其他未支持来源按能力边界拒绝。见 [支持边界](docs/subscription-support.md) |
+| Claude Desktop | 实验性隔离后端、UI 和模拟测试存在，**真实启动默认拒绝**。官方 Linux 2.19675.1 签名包忽略旧隔离变量，当前云环境网络隔离预检也受限；未通过真实应用验收。见 [证据与限制](docs/claude-desktop-isolation.md) |
+| ChatGPT Desktop | 历史原生/外接网关代码与模型目录存在；当前原生 WebSocket 路径明确拒绝，因为尚不能保证逐帧预算和会话失效处理；不能用旧客户端测试替代新鉴权路径验收 |
+| 菜单栏与密钥 | Swift 菜单栏；密钥桥改用 Security.framework helper，密钥经 stdin 传入而非命令参数。Linux 测试不证明 macOS 编译、钥匙串访问或菜单栏行为 |
 
-**控制台和菜单栏**
-- 控制台（本地网页）：Agent、任务、模型来源、订阅账号、会话、用量六页；用量按估算花费，不是账单。
-- 菜单栏小程序（Swift）：面板里选模型、开关每个订阅；右键或核心服务没运行时是原生菜单，「全部退回原生」永远不依赖核心服务。
+## 开发运行
 
-## 运行
+需要 Node ≥ 22.18。运行时保持零 npm 依赖；开发依赖按锁文件安装：
 
 ```bash
-# 核心服务（控制台：http://127.0.0.1:18765）
-node core/src/main.ts
-
-# 菜单栏程序
-./scripts/build-menubar.sh && open menubar/build/EasySwitch.app
-
-# 不想用真实 key 试玩：本地假中转站（http://127.0.0.1:18790/v1）
-node core/test/mock-relay.ts
-
-# 看看你装了的 agent，EasySwitch 的启动参数它们认不认（只读，不跑任务、不读任何凭据）
-npm run verify-launchers
-```
-
-需要 Node ≥ 22.18（直接运行 TypeScript，运行时零依赖）、Xcode Command Line Tools（编译菜单栏程序）。
-
-## 测试
-
-```bash
-npm install          # 只装类型检查用的 TypeScript
+npm ci --ignore-scripts
 npm run typecheck
-npm test             # 单元测试 + 端到端测试
+npm run test:local
+node core/src/main.ts
 ```
 
-端到端测试会调用**真实的 Codex、Claude Code、Hermes 和 DeepSeek Harness**：agent → EasySwitch 网关 → 严格的假中转站，走完「下令执行命令 → agent 执行 → 带回输出作答」；这些测试在开着网关鉴权的情况下跑。agent 运行在临时的目录里，并检查你真实的配置里没有出现 EasySwitch 的痕迹。各家订阅（Kiro、Antigravity、Cursor、Kimi、Vertex、ChatGPT、Copilot）只用本地的假服务验证过，没有用真账号测。
+本地控制台默认位于 `http://127.0.0.1:18765`。不要把控制台或网关暴露到公网；Host 检查、自定义控制台头和网关令牌并不构成完整的多用户远程服务安全方案。
 
-## 安全
+macOS 原生组件需要 Xcode Command Line Tools，尚须在相应平台验收：
 
-- 网关只监听本机回环地址，并校验 Host；**只接受 EasySwitch 自己签发的令牌**（用本机密钥签名，每次启动一个），没有令牌的请求——比如浏览器里某个网页——花不了你的 key 和订阅。
-- 控制台的修改类接口要求自定义请求头，别的网页驱动不了。
-- 日志和状态文件里没有令牌；订阅的刷新令牌和服务账号密钥在钥匙串里。
+```bash
+sh scripts/build-keychain.sh
+./scripts/build-menubar.sh
+```
 
-## 已知限制
+不要把源码包含构建脚本当成已经完成系统安装。
 
-- 走「协议转换」线路时，没有 Chat 协议对应物的东西（Codex 的 `namespace` 工具、服务端的网页搜索等）会被去掉并记在请求记录里；原生支持对应协议的中转站走「原样转发」，不受影响。
-- 外接模型在 Codex 里一律按 128k 上下文、只收文字来登记。
-- Claude 桌面端还没做；Cursor 的订阅只能纯文字对话（工具调用还没做）；Claude 订阅不会借给别的 agent。
-- 升级前启动、还在跑的旧会话用的是没签名的令牌，网关会拒绝，重启一次就好。
-- 订阅类来源（尤其是 Kiro 和 Antigravity）是用第三方工具使用厂商的订阅，**账号有被限制的风险**，新登录的默认关闭，打开前请自己决定。
+## 安全测试入口
+
+`npm run test:local` 使用临时 HOME、内存凭据、显式测试白名单及本地网络限制；普通测试禁止子进程，桌面模拟测试只允许经过核对的固定假程序。新增测试必须先审查再加入白名单。
+
+`npm test` 是完整测试入口，包含可能调用真实 agent 的用例。只有明确允许真实客户端及其潜在账户用量时才运行，不能用它替代零模型调用的测试命令。
+
+当前bfefccc：386项安全白名单通过、1项真实Keychain明确跳过、零失败；类型检查通过，没有真实agent、账户或付费模型调用。历史“全通过”不能代替当前验证。
+
+## 仍需注意
+
+- 跨协议转换存在能力差异；不支持的原生工具和无法无损转换的内容应拒绝或明确记录损失。部分流式转换为保持顺序会缓冲块
+- 签名/续传元数据需要客户端保留；本地假服务不能证明所有厂商真实兼容
+- 官方 MiMo API、Token Plan 与未公开接口不是同一来源；未经文档支持的 Free 路径不开放真实使用。见 [MiMo](docs/mimo-sources.md)
+- Vertex服务账号Chat、手动令牌Gemini与Express Key Gemini的地址和鉴权不同；真实云项目、密钥及计费请求需另行授权与验证。见 [Vertex](docs/vertex.md)
+- DeepSeek/Kimi 推理设置按具体模型处理，不能套用统一档位。见 [推理能力](docs/provider-thinking.md)
+- macOS Keychain、真实 agent、Claude Desktop 及本机原生配置隔离仍有独立验收要求
+
+## 来源与差异化
+
+借鉴记录与许可证见 [PROVENANCE.md](PROVENANCE.md)；结构/功能差异化审查见 [审查记录](docs/differentiation-review.md)。保留通用交互的理由是降低使用成本；EasySwitch 的差异必须落在隔离、回退、鉴权分离和可核验的功能支持上，不能只靠名称或配色。
+
+本仓库维持私有。公开发布、历史处理与公开前重写不属于当前实现验收。
 
 ## 许可证
 
