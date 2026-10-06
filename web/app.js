@@ -318,6 +318,25 @@ function chatgptCard() {
 }
 
 /** The wider catalog under the two ready rows: what is installed here, then the rest. */
+let guideOpen = null; // agent id whose setup guide is shown
+let guideData = null; // what /api/agents/:id/setup returned
+let guideReveal = false; // the token is shown masked until asked for
+
+/** The manual-setup helper: what to type into an app that has no per-launch override, each value ready to copy. */
+function guidePanel(a) {
+  const g = guideData;
+  if (!g || guideOpen !== a.id) return "";
+  const field = (label, value, secret) => `<div class="gfield"><div class="glabel">${esc(label)}</div><code class="gvalue">${esc(secret && !guideReveal ? "•".repeat(12) : value)}</code>${secret ? `<button class="btn secondary" data-guide-reveal>${guideReveal ? "隐藏" : "显示"}</button>` : ""}<button class="btn secondary" data-copy="${esc(value)}">复制</button></div>`;
+  return `<div class="row guide"><div class="grow">
+    <div class="title">怎么把 EasySwitch 的模型加进 ${esc(g.name)}</div>
+    <ol class="gsteps">${g.steps.map(t => `<li>${esc(t)}</li>`).join("")}</ol>
+    ${g.fields.map(f => field(f.label, f.value, f.secret)).join("")}
+    <div class="gfield"><div class="glabel">模型 ID（要用哪个就加哪个，第一个是你选的默认）</div><div class="gmodels">${g.models.map(m => `<button class="chip" data-copy="${esc(m)}" title="点一下复制">${esc(m)}</button>`).join("") || "<span class=\"hint\">还没有可用的模型：先去「模型来源」里添加并打开一个</span>"}</div></div>
+    ${g.file ? `<div class="gfield"><div class="glabel">文件：${esc(g.file.path)}</div><pre class="gfile">${esc(g.file.content)}</pre><button class="btn secondary" data-copy="${esc(g.file.content)}">复制文件内容</button><div class="sub">${esc(g.file.warning)}</div></div>` : ""}
+    <div class="sub gcaveat">${esc(g.caveat)}</div>
+  </div><button class="btn secondary" data-guide-close>收起</button></div>`;
+}
+
 function genericAgentRow(a) {
   const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
   const binding = state.bindings?.[a.id];
@@ -333,10 +352,11 @@ function genericAgentRow(a) {
     ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button></div>` : ""}
     ${can ? agentControls(a.id) : ""}
     <div class="acts">
+      ${a.guide ? `<button class="btn" data-guide="${esc(a.id)}">配置向导</button>` : ""}
       ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
       ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
     </div>
-  </div>${can ? agentEditor(a.id) : ""}`;
+  </div>${a.guide ? guidePanel(a) : ""}${can ? agentEditor(a.id) : ""}`;
 }
 
 /** Every agent except the two with their own rows, split into installed and not. */
@@ -1353,6 +1373,21 @@ document.addEventListener("click", async e => {
   if (planModels) {
     try { const r = await call("POST", `/api/plan/${planModels.dataset.planModels}/models`); toast(`模型已更新：${r.models.length} 个`); } catch (error) { toast(error.message); }
     await refresh(true);
+    return;
+  }
+  const guideBtn = t.closest("[data-guide]");
+  if (guideBtn) {
+    const id = guideBtn.dataset.guide;
+    if (guideOpen === id) { guideOpen = null; render(); return; }
+    try { guideData = await call("GET", `/api/agents/${id}/setup`); guideOpen = id; guideReveal = false; } catch (error) { toast(error.message); }
+    render();
+    return;
+  }
+  if (t.closest("[data-guide-close]")) { guideOpen = null; render(); return; }
+  if (t.closest("[data-guide-reveal]")) { guideReveal = !guideReveal; render(); return; }
+  const copyBtn = t.closest("[data-copy]");
+  if (copyBtn) {
+    try { await navigator.clipboard.writeText(copyBtn.dataset.copy); toast("已复制"); } catch { toast("复制失败：请手动选中复制"); }
     return;
   }
   if (t.closest("[data-antigravity-signin]")) {

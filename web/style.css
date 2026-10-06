@@ -259,3 +259,13 @@ body.panel .panel-foot button:hover { color: var(--fg); background: var(--pill);
 .switch.on { color: var(--green); border-color: var(--green); }
 .switch.on .knob { background: var(--green); }
 .switch.on .knob::after { left: 14px; }
+
+/* ---- the manual-setup helper ---- */
+.row.guide { align-items: flex-start; background: var(--accent-soft); }
+.gsteps { margin: 6px 0 10px 18px; padding: 0; color: var(--fg); font-size: 13px; line-height: 1.7; }
+.gfield { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.glabel { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+.gvalue { padding: 4px 8px; border-radius: 6px; background: var(--bg, #fff); border: 1px solid var(--line); font-size: 12px; word-break: break-all; }
+.gmodels { display: flex; flex-wrap: wrap; gap: 6px; }
+.gfile { margin: 0; padding: 8px 10px; max-height: 220px; overflow: auto; border-radius: 6px; background: var(--bg, #fff); border: 1px solid var(--line); font-size: 11px; flex-basis: 100%; }
+.gcaveat { margin-top: 8px; color: var(--amber); }

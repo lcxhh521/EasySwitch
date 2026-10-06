@@ -113,6 +113,20 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     task: { state: "impossible", note: "绑定 Google 登录，没有自定义端点" },
     source: { state: "todo", note: "订阅适配由 Claude 做（起点：云端 gpt-wip 里的草稿）" },
   },
+  trae: {
+    launch: { state: "manual", note: "配置向导：给出接口地址、令牌和模型，你在 Trae 的设置里添加一次；Trae 没有每次启动单独指定的办法，我们不改它的文件" },
+    task: { state: "impossible", note: "桌面 IDE，没有无界面的调用方式" },
+    picker: { state: "manual", note: "你把想用的模型逐个添加到 Trae 里，之后在它自己的模型选择里换" },
+  },
+  zcode: {
+    launch: { state: "manual", note: "配置向导：给出接口地址、令牌和模型，你在 Z Code 的设置里添加一次；它的供应商在全局配置里，没有每次启动单独指定的办法，我们不改 ~/.zcode" },
+    task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
+    picker: { state: "manual", note: "你把想用的模型逐个添加到 Z Code 里，之后在它自己的选择器里换" },
+  },
+  doubao: {
+    launch: { state: "impossible", note: "聊天客户端，没有自定义模型或自定义地址的入口（豆包的模型可以通过火山方舟当模型来源接进别的 agent）" },
+    task: { state: "impossible", note: "桌面聊天客户端，没有无界面的调用方式" },
+  },
   windsurf: {
     launch: { state: "impossible", note: "闭源，没有自定义端点" },
     task: { state: "impossible", note: "闭源，没有自定义端点" },
@@ -134,7 +148,8 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     tiers: { state: "impossible", note: "改不了它连的服务地址，用什么模型由腾讯自己的服务决定" },
   },
   workbuddy: {
-    launch: { state: "todo", note: "做得了：另开一个 WorkBuddy，把 WORKBUDDY_CONFIG_DIR 指向一个私有目录，里面写好 models.json（地址、令牌、模型），不碰你平时那份 ~/.workbuddy；还没做，也没实测。具体用哪个模型要在它的窗口里选，没法每次启动替你选好；使用条款待核实" },
+    launch: { state: "manual", note: "配置向导：给出 models.json 的内容和位置，你自己放进去，WorkBuddy 会自己发现变化；我们不改 ~/.workbuddy。以后可以做成另开一个用私有目录的 WorkBuddy（WORKBUDDY_CONFIG_DIR），那时才算一键；具体用哪个模型要在它的窗口里按任务选，没法替你选好；使用条款待核实" },
+    picker: { state: "manual", note: "向导给出的 models.json 里有所有可用的模型，在它的窗口里按任务选名字带 custom-local 的" },
     task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
     mcp: { state: "todo", note: "还没查它的 MCP 配置怎么给" },
     effort: { state: "todo", note: "models.json 里有档位字段（reasoning.supportedEfforts），还没做" },
@@ -167,9 +182,6 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   },
 };
 
-/** Closed apps that need EasySwitch to hand the user the settings to type in by hand: see the setup helper. */
-const BY_HAND = new Set(["trae", "zcode", "windsurf", "doubao"]);
-
 /** The agents whose own subscription is worth turning into a model source (everyone else: not applicable). */
 const HAS_SUBSCRIPTION = new Set(["gemini-cli", "qoder-cli", "codebuddy", "trae", "amp", "doubao", "grok-build", "minimax-code", "kimi-cli", "droid"]);
 
@@ -181,7 +193,6 @@ function derive(agent: AgentInfo): AgentCaps {
     form ? { state: l!.verified ? "verified" : "documented", ...(l!.verified ? {} : { note: l!.caveat ? `没在真实程序上跑过。${l!.caveat}` : `${what}按官方文档写的，还没在真实程序上跑过` }) } : { state: "todo" };
 
   const launch: Cap = d.launch ?? (l?.interactive ? withForm(l.interactive, "启动方式")
-    : BY_HAND.has(agent.id) ? { state: "todo", note: "要做「手动配置向导」：地址、令牌、模型一键复制，再附它的操作步骤" }
     : closed ? { state: "todo", note: "还没定方案" }
     : { state: "todo", note: l ? "只做了无界面形态" : "还没写启动方式" });
   const task: Cap = d.task ?? (l?.headless ? withForm(l.headless, "无界面形态")

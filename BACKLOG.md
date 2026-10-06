@@ -15,7 +15,7 @@
 - [ ] B3 · 每个支持“按次指定 MCP”的 agent 都挂上 EasySwitch 的 MCP（现在只有 Codex、Claude Code），不支持的写明原因 — 来源：「agents calling agents」产品定义 + 同上（10-06）
 - [ ] B4 · 每个 agent 的思考档位和子 agent/小任务模型：能设的都设，不能设的写明原因 — 来源：「每个agent都应该有自己的推理程度、子模型、小任务模型」（10-05）+ 同上（10-06）
 - [ ] B5 · 把“按文档写的、没实测”的启动方式逐个实测（Gemini CLI、Qwen Code、OpenCode、Copilot CLI、Aider）：用独立目录临时安装，不动系统环境 — 来源：盘点发现 Gemini CLI 被多报为已接入（10-06）
-- [ ] B6 · 桌面端 / IDE 逐个定方案：有官方口子的像 ChatGPT 那样启动；没有的（Trae、Windsurf、Z Code、豆包）做“手动配置向导”（地址/令牌/模型一键复制 + 操作步骤，不碰它的配置）— 来源：「我们的桌面版app，你就实现了chatgpt，其余的都没实现」（10-06）
+- [x] B6 · 桌面端 / IDE 的手动配置向导（Trae、Z Code、WorkBuddy）— 来源：「我们的桌面版app，你就实现了chatgpt，其余的都没实现」（10-06）· 验证：Agent 页对这三个有「配置向导」按钮，给出可一键复制的接口地址、令牌（默认打码）、模型 ID 和操作步骤，WorkBuddy 另给 models.json 内容和位置；不改它们的任何文件；setup-guides.test.ts 3 个用例，WorkBuddy 的面板截图看过 · 备注：这些应用的菜单名字没在真实应用上核对过（向导里已写明）；Windsurf、豆包确实没有自定义入口，在能力表里标「做不了」并写了理由；WorkBuddy 以后可做成另开一个用私有目录的实例，才算一键
 - [ ] B7 · 其余各 agent 的订阅当模型来源（Gemini CLI、Qoder、CodeBuddy、Trae、Amp、豆包、Grok、MiniMax、Kimi、Droid）逐个调研：能接就接，不能接写明原因 — 来源：「订阅额度给其他harness用」产品定义（10-05）
 - [x] B8 · Claude 桌面端放进目录，标明做不了及原因（不拦截）— 来源：「Claude 订阅不借给别的 harness」（10-05）· 验证：提交 d040764，capabilities.test.ts 的 Claude 用例
 

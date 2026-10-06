@@ -7,6 +7,7 @@ import { extname, isAbsolute } from "node:path";
 import { antigravityAccessToken, AntigravityError, beginAntigravitySignIn, forgetAntigravityAccount, listAntigravityModels, type AntigravityAccount } from "./antigravity.ts";
 import { antigravityEndpoints } from "./antigravity-client.ts";
 import { listKiroModels } from "./kiro.ts";
+import { GUIDE_IDS, setupGuide } from "./setup-guides.ts";
 import { KiroError } from "./kiro-login.ts";
 import { fileURLToPath } from "node:url";
 import { writeCodexCatalog } from "./catalog.ts";
@@ -832,7 +833,18 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (!agentCache || Date.now() - agentCache.at > 30_000) agentCache = { at: Date.now(), list: await detectAgents() };
       await Promise.all(agentCache.list.filter(a => a.installed && LAUNCHERS[a.id]).map(a => levelsOf(a.id)));
       const matrix = capabilityMatrix(agentCache.list);
-      json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null, caps: matrix[a.id] })), coverage: coverage(matrix), features: FEATURES });
+      json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null, caps: matrix[a.id], ...((GUIDE_IDS as readonly string[]).includes(a.id) ? { guide: true } : {}) })), coverage: coverage(matrix), features: FEATURES });
+      return;
+    }
+    // The manual-setup helper: what to type into an app that has no per-launch override. Nothing is written for the person.
+    const guideMatch = /^\/api\/agents\/([a-z0-9-]+)\/setup$/.exec(path);
+    if (guideMatch && method === "GET") {
+      const binding = store.binding(guideMatch[1]!);
+      const first = store.catalog()[0];
+      const main = binding ? `${binding.providerId}/${binding.model}` : first ? `${first.providerId}/${first.model}` : "";
+      const guide = setupGuide(guideMatch[1]!, { port, models: modelsFor(main) });
+      if (!guide) { json(res, 404, { error: "这个应用没有配置向导" }); return; }
+      json(res, 200, guide);
       return;
     }
     const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|command)$/.exec(path);
