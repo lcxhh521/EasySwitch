@@ -85,6 +85,21 @@ function relay(upstream: Response, res: ServerResponse, onDone?: () => void): vo
   if (onDone) res.on("finish", onDone);
 }
 
+/** Weak validator for directory semantics, independent of JSON key order and transport stamps. */
+function catalogTag(list: Json, models: Json[]): string {
+  const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, child]) => [key, stable(child)])) : value;
+  const records = models.map(model => JSON.stringify(stable(model))).sort().map(value => JSON.parse(value));
+  // Model fields (including priority and nested timestamps) remain significant. Only
+  // known top-level transport metadata is excluded, not arbitrary vendor extensions.
+  const envelope = Object.fromEntries(Object.entries(list).filter(([key]) => !["models", "request_id", "generated_at", "fetched_at"].includes(key)));
+  return `W/"${createHash("sha256").update(JSON.stringify(stable({ ...envelope, models: records }))).digest("hex").slice(0, 24)}"`;
+}
+function matchesTag(value: string | string[] | undefined, tag: string): boolean {
+  const expected = tag.replace(/^W\//i, "");
+  return (Array.isArray(value) ? value.join(",") : value ?? "").split(",").some(part => part.trim() === "*" || part.trim().replace(/^W\//i, "") === expected);
+}
+
 /** The merged model list: ChatGPT's own entries first, then ours, under an ETag that covers both. */
 export async function handleChatgptModels(req: IncomingMessage, res: ServerResponse, search: string, deps: GatewayDeps): Promise<void> {
   // Vendor credentials authorize only the vendor list, never the local catalog.
@@ -111,8 +126,8 @@ export async function handleChatgptModels(req: IncomingMessage, res: ServerRespo
   const ours = template ? (codexCatalog(template, deps.store.catalog()).models as Json[]) : [];
   const taken = new Set(native.map(m => String(m.slug)));
   const merged = [...native, ...ours.filter(m => !taken.has(String(m.slug)))];
-  const tag = `"${createHash("sha256").update(`${upstream.headers.get("etag") ?? JSON.stringify(native.map(m => m.slug))}|${ours.map(m => m.slug).join(",")}`).digest("hex").slice(0, 24)}"`;
-  if (req.headers["if-none-match"] === tag) {
+  const tag = catalogTag(list, merged);
+  if (matchesTag(req.headers["if-none-match"], tag)) {
     res.writeHead(304, { etag: tag });
     res.end();
     return;

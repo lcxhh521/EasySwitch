@@ -58,7 +58,7 @@
 - [~] B81 · 【Dot】文字桥（Qoder、CodeBuddy）：加全局并发上限（2 到 3 个）；孙进程握着管道时 close 不触发的兜底超时；stderr 与 stdout 分开计字节；控制台创建时 binary 要限制 basename、存在、可执行且不是所有人可写；子进程要带代理环境变量；首次真机验证要在无网或假上游下确认「让它读文件，它读不了」；Qoder 用的 --config-dir 与 research 里记的 QODER_CONFIG_DIR 对账 — 来源：Claude 评审
 - [x] B82 · 【Dot】docs/ 改成面向用户的公开文档：去掉 B 编号、提交号、人名和「用户明确批准」这类内部话，differentiation-review.md 挪进 research/；README 里指向 docs 的链接要保持有效（公开快照现在整体排除 docs/，要么发布脚本把清理后的 docs 带上，要么 README 去掉这些链接）；release-check 加一条：公开内容里不得出现 B 编号、dot、gpt-wip — 来源：Claude 评审 · 验证：面向用户的docs/README去内部标记，结构评审原文移research，snapshot保留docs；文档链接检查0发现、10项离线合成树发布检查通过，未扫描实际凭据源码/生成公开快照/执行发布（2026-10-06）
 - [x] B83 · 【Dot】界面：协议多选默认折叠并写「通常不用动」，加「检测一下」；Claude 桌面端永久禁用的卡片折叠进「实验功能」；controls.js 里 b.unknownCostCalls 转义；native-keychain.md 与 gateway-budget-keychain.md 重复的合并 — 来源：Claude 评审 · 验证：协议默认折叠/带费用提示的显式检测、实验桌面区及计数转义，32项纯DOM回归与类型/JS语法通过；Keychain重复段已改专页链接，未运行真实桌面或来源探测（2026-10-06）
-- [x] B84 · 【Dot】`npm test` 和 `test:local` 白名单的关系写清楚；白名单漏掉的文件（chatgpt-e2e、claude-e2e、codex-e2e、es-cli、agent-launch 等）这次在 macOS 上暴露了 16 个失败，今后改了 gateway-auth、路径、启动接口就要同步改这些测试（Claude 会在 macOS 上定期跑完整 `npm test`）；mac 路径敏感的新测试用 realpathSync(tmpdir()) — 来源：Claude 评审与测试结果 · 验证：docs/testing.md区分真实套件与审计白名单；新增HTTP原目标/代理和Socket守卫、27项遗漏纯用例及ledger纯项，图标生成子进程按精确名称排除；未来真机命令断言不打开Terminal，纯CLI/API验证替代不了真机；最终Node白名单592项通过、1真实Keychain跳过（2026-10-06）
+- [x] B84 · 【Dot】`npm test` 和 `test:local` 白名单的关系写清楚；白名单漏掉的文件（chatgpt-e2e、claude-e2e、codex-e2e、es-cli、agent-launch 等）这次在 macOS 上暴露了 16 个失败，今后改了 gateway-auth、路径、启动接口就要同步改这些测试（Claude 会在 macOS 上定期跑完整 `npm test`）；mac 路径敏感的新测试用 realpathSync(tmpdir()) — 来源：Claude 评审与测试结果 · 验证：docs/testing.md区分真实套件与审计白名单；新增HTTP原目标/代理和Socket守卫、27项遗漏纯用例及ledger纯项，图标生成子进程按精确名称排除；未来真机命令断言不打开Terminal，纯CLI/API验证替代不了真机；合并目录ETag覆盖同ID名称/档位与原生目录变化，忽略无意义顺序和传输时间戳；最终Node白名单593项通过、1真实Keychain跳过（2026-10-06）
 - [ ] B85 · 【Claude】需要用户 Mac 的验收：B2/B5/B57/B60 的真机核对、B38 在 macOS 上验证 --user-data-dir 开关和文件系统审计（HANDOVER 第 9 节）、ChatGPT 桌面端增强启动回归验证、各订阅的真账号核对（要用户在场）；Dot 不做 — 来源：用户 10-06「做dot不能做的事情」
 
 ## 产品方向（2026-10-06 讨论，用户拍板）
@@ -107,4 +107,4 @@ run_agent在异步发现前同步预留名额，失败/未安装/执行结束都
 
 ### 本轮最终云端验证（2026-10-06）
 
-B74–77、B79、B80、B82–84共9项完成；B78/B81源码与fake部分推进，真实平台/CLI条件仍未验收，B85未执行。最终审计Node白名单592项通过（575项纯/loopback/UI与17项哈希限定桌面假程序）、1项真实Keychain跳过、零失败；Python发布检查10项仅跑合成树，通过。typecheck、前端/脚本语法、待办、链接和差异检查通过。没有真实模型、账号、CLI、Mac或Keychain操作，没有公开发布；未把旧真实测试标题/原作者Mac报告当本轮通过。所有进展按小批私有dev推送，不强推，不覆盖并行提交。
+B74–77、B79、B80、B82–84共9项完成；B78/B81源码与fake部分推进，真实平台/CLI条件仍未验收，B85未执行。最终审计Node白名单593项通过（576项纯/loopback/UI与17项哈希限定桌面假程序）、1项真实Keychain跳过、零失败；Python发布检查10项仅跑合成树，通过。typecheck、前端/脚本语法、待办、链接和差异检查通过。没有真实模型、账号、CLI、Mac或Keychain操作，没有公开发布；未把旧真实测试标题/原作者Mac报告当本轮通过。所有进展按小批私有dev推送，不强推，不覆盖并行提交。

@@ -12,20 +12,21 @@ import { DEFAULT_BUDGET } from "../src/global-budget.ts";
 
 const listen = async (server: Server) => { await new Promise<void>(r => server.listen(0, "127.0.0.1", r)); return `http://127.0.0.1:${(server.address() as { port: number }).port}`; };
 const close = async (server: Server) => { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); };
-async function http(base: string, path: string, method = "GET", headers: Record<string, string> = {}, body?: unknown): Promise<{ status: number; text: string; body: any }> {
+async function http(base: string, path: string, method = "GET", headers: Record<string, string> = {}, body?: unknown): Promise<{ status: number; text: string; body: any; etag?: string }> {
   return new Promise((resolve, reject) => {
-    const req = request(base + path, { method, headers }, res => { let text = ""; res.on("data", d => text += d); res.on("end", () => { let body; try { body = JSON.parse(text); } catch { body = text; } resolve({ status: res.statusCode!, text, body }); }); });
+    const req = request(base + path, { method, headers }, res => { let text = ""; res.on("data", d => text += d); res.on("end", () => { let body; try { body = JSON.parse(text); } catch { body = text; } resolve({ status: res.statusCode!, text, body, etag: res.headers.etag }); }); });
     req.on("error", reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "es-chatgpt-boundary-"));
   const native: IncomingHttpHeaders[] = [], external: IncomingHttpHeaders[] = []; let keyReads = 0, upgrades = 0;
+  let catalog: any = { models: [{ slug: "gpt-fixture", display_name: "Native" }] };
   const upstream = createServer((req, res) => {
     req.resume(); res.setHeader("content-type", "application/json");
     if (req.url?.startsWith("/backend-api/codex")) {
       native.push(req.headers);
-      res.end(JSON.stringify(req.url.includes("/models") ? { models: [{ slug: "gpt-fixture", display_name: "Native" }] } : { native: true }));
+      res.end(JSON.stringify(req.url.includes("/models") ? catalog : { native: true }));
     } else {
       external.push(req.headers);
       res.end(JSON.stringify({ model: "m", choices: [{ message: { role: "assistant", content: "external answer" }, finish_reason: "stop" }] }));
@@ -40,7 +41,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const gateway = createEasySwitchServer({ store, port: 0, gatewayAuth: auth, secrets: { async get() { keyReads++; return "fixture-stored-key"; }, async set() {}, async delete() {} } });
   const base = await listen(gateway);
   t.after(async () => { await close(gateway); await close(upstream); if (old === undefined) delete process.env.EASYSWITCH_CHATGPT_UPSTREAM; else process.env.EASYSWITCH_CHATGPT_UPSTREAM = old; if (flag === undefined) delete process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES; else process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES = flag; rmSync(dir, { recursive: true, force: true }); });
-  return { base, auth, native, external, keyReads: () => keyReads, upgrades: () => upgrades };
+  return { base, auth, native, external, store, setCatalog: (value: unknown) => { catalog = value; }, keyReads: () => keyReads, upgrades: () => upgrades };
 }
 
 test("ChatGPT vendor credentials never authorize stored external source keys or local catalog access", async t => {
@@ -107,4 +108,29 @@ test("native destination overrides cannot send vendor credentials outside the of
     for (const value of ["http://chatgpt.com/backend-api/codex", "https://example.invalid/backend-api/codex", "https://chatgpt.com:444/backend-api/codex", "https://user@chatgpt.com/backend-api/codex", "https://chatgpt.com/backend-api/codex?x=1", "https://chatgpt.com/not-codex", "http://127.0.0.1:1/backend-api/codex"]) { process.env.EASYSWITCH_CHATGPT_UPSTREAM = value; assert.throws(chatgptUpstream); }
     process.env.EASYSWITCH_CHATGPT_UPSTREAM = "https://chatgpt.com/backend-api/codex"; assert.equal(chatgptUpstream(), process.env.EASYSWITCH_CHATGPT_UPSTREAM);
   } finally { if (old === undefined) delete process.env.EASYSWITCH_CHATGPT_UPSTREAM; else process.env.EASYSWITCH_CHATGPT_UPSTREAM = old; if (flag === undefined) delete process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES; else process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES = flag; }
+});
+
+test("merged catalog validators cover names and effort changes but ignore irrelevant ordering and transport stamps", async t => {
+  const f = await fixture(t); const token = f.auth.issue("chatgpt").token;
+  const headers = { authorization: "Bearer fixture-vendor", "x-easyswitch-session": token };
+  const read = (etag?: string) => http(f.base, "/backend-api/codex/models", "GET", { ...headers, ...(etag ? { "if-none-match": etag } : {}) });
+  const first = await read(); assert.equal(first.status, 200); assert.ok(first.etag?.startsWith('W/"'));
+  assert.equal((await read(first.etag)).status, 304);
+  f.store.upsertProvider({ ...f.store.provider("p")!, name: "Changed source name" });
+  const renamed = await read(first.etag); assert.equal(renamed.status, 200); assert.notEqual(renamed.etag, first.etag);
+  assert.match(renamed.text, /Changed source name/);
+  f.store.upsertProvider({ ...f.store.provider("p")!, modelEfforts: { m: ["low", "high"] } });
+  const effort = await read(renamed.etag); assert.equal(effort.status, 200); assert.notEqual(effort.etag, renamed.etag);
+  assert.match(effort.text, /"effort":"low"/);
+  f.setCatalog({ models: [{ slug: "gpt-fixture", display_name: "Changed native name" }], request_id: "first", generated_at: 1 });
+  const native = await read(effort.etag); assert.equal(native.status, 200); assert.notEqual(native.etag, effort.etag);
+  // Same semantic records with different object key order and transport metadata remain cached.
+  f.setCatalog({ generated_at: 2, request_id: "second", models: [{ display_name: "Changed native name", slug: "gpt-fixture" }] });
+  assert.equal((await read(native.etag)).status, 304);
+  assert.equal((await read(`"unrelated", ${native.etag!.slice(2)}`)).status, 304, "GET weak comparison accepts a matching item in a validator list");
+  // Record ordering alone is immaterial; explicit priority fields would remain significant.
+  const one = { slug: "gpt-fixture", display_name: "Same", visibility: "list", priority: 1 };
+  const two = { slug: "gpt-other", display_name: "Same", visibility: "list", priority: 1 };
+  f.setCatalog({ models: [one, two] }); const ordered = await read();
+  f.setCatalog({ models: [two, one] }); assert.equal((await read(ordered.etag)).status, 304);
 });
