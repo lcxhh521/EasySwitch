@@ -11,6 +11,7 @@ import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { findCodex } from "../src/launch.ts";
 import { Store } from "../src/store.ts";
+import { sessionToken } from "../src/gateway-auth.ts";
 import { startMockRelay } from "./mock-relay.ts";
 
 /**
@@ -21,6 +22,7 @@ import { startMockRelay } from "./mock-relay.ts";
 
 type Json = Record<string, unknown>;
 const run = promisify(execFile);
+const localFixtureToken = sessionToken("chatgpt");
 process.env.EASYSWITCH_SECRETS = "memory";
 
 const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -101,6 +103,7 @@ before(async () => {
   });
   await new Promise<void>(r => backend.listen(0, "127.0.0.1", r));
   backendPort = (backend.address() as { port: number }).port;
+  process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES = "1";
   process.env.EASYSWITCH_CHATGPT_UPSTREAM = `http://127.0.0.1:${backendPort}/backend-api/codex`;
 
   gatewayPort = await freePort();
@@ -119,12 +122,13 @@ after(() => {
     server.close();
   }
   delete process.env.EASYSWITCH_CHATGPT_UPSTREAM;
+  delete process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES;
 });
 
 test("the merged model list holds ChatGPT's models and EasySwitch's, under an ETag that covers both", async t => {
   if (!codexPath) { t.skip("codex not installed"); return; }
   const base = `http://127.0.0.1:${gatewayPort}/backend-api/codex/models?client_version=0.160.0`;
-  const headers = { authorization: "Bearer fake-access", "chatgpt-account-id": "acct-fake", originator: "codex_cli_rs" };
+  const headers = { "x-easyswitch-session": localFixtureToken, authorization: "Bearer fake-access", "chatgpt-account-id": "acct-fake", originator: "codex_cli_rs" };
   const first = await fetch(base, { headers });
   assert.equal(first.status, 200);
   const etag = first.headers.get("etag")!;
@@ -139,7 +143,7 @@ test("the merged model list holds ChatGPT's models and EasySwitch's, under an ET
   assert.equal(again.status, 304);
 });
 
-test("the real Codex app-server, started on the gateway, lists ChatGPT's models and ours in its picker data", async t => {
+test("the real Codex app-server without a local capability receives only ChatGPT native models", async t => {
   if (!codexPath) { t.skip("codex not installed"); return; }
   const home = fakeChatgptHome();
   // detached: the app-server starts helpers of its own; killing the group is the only way to free every pipe.
@@ -166,7 +170,7 @@ test("the real Codex app-server, started on the gateway, lists ChatGPT's models 
     const list = (await rpc(2, "model/list", { includeHidden: true })) as { result?: { data?: Json[] } };
     const ids = (list.result?.data ?? []).map(m => String(m.id ?? m.model));
     assert.ok(ids.includes("gpt-5.5"), `native model present: ${ids.join(",")}`);
-    assert.ok(ids.includes("mock-relay/mock-coder"), `our model present: ${ids.join(",")}`);
+    assert.ok(!ids.includes("mock-relay/mock-coder"), "local source catalog requires a separate local capability");
   } finally {
     try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
@@ -178,7 +182,7 @@ test("a native model goes to ChatGPT with the app's own login; an EasySwitch mod
   // Driven by HTTP rather than the Codex CLI: with a fake login the CLI also calls OpenAI's real
   // MCP and token endpoints, which reject it, so a whole turn cannot complete offline.
   const url = `http://127.0.0.1:${gatewayPort}/backend-api/codex/responses`;
-  const headers = { "content-type": "application/json", authorization: "Bearer fake-access", "chatgpt-account-id": "acct-fake", originator: "codex_cli_rs" };
+  const headers = { "content-type": "application/json", "x-easyswitch-session": localFixtureToken, authorization: "Bearer fake-access", "chatgpt-account-id": "acct-fake", originator: "codex_cli_rs" };
 
   const native = await fetch(url, { method: "POST", headers, body: JSON.stringify({ model: "gpt-5.5", stream: true, input: "say hi" }) });
   assert.equal(native.status, 200);
@@ -199,24 +203,13 @@ test("a native model goes to ChatGPT with the app's own login; an EasySwitch mod
   assert.equal(String((relay.requests.at(-1) as Json).model), "mock-coder");
 });
 
-test("a WebSocket upgrade is piped to ChatGPT as raw bytes", async () => {
+test("a production native WebSocket is refused until its ongoing lifecycle is supported", async () => {
   const socket = net.connect(gatewayPort, "127.0.0.1");
   await new Promise<void>(r => socket.once("connect", r));
-  socket.write([
-    "GET /backend-api/codex/responses HTTP/1.1", `Host: 127.0.0.1:${gatewayPort}`, "Upgrade: websocket", "Connection: Upgrade",
-    "Sec-WebSocket-Key: dGVzdA==", "Sec-WebSocket-Version: 13", "Authorization: Bearer fake-access", "", "",
-  ].join("\r\n"));
-  let received = "";
-  socket.on("data", d => (received += d.toString()));
-  await new Promise(r => setTimeout(r, 300));
-  assert.match(received, /101 Switching Protocols/);
-  socket.write("frame-bytes");
-  await new Promise(r => setTimeout(r, 300));
-  assert.match(received, /echo:frame-bytes/);
-  assert.deepEqual(wsFrames, ["frame-bytes"]);
-  const upgrade = backendSeen.find(s => s.method === "UPGRADE")!;
-  assert.equal(upgrade.headers.authorization, "Bearer fake-access");
-  socket.destroy();
+  socket.write(["GET /backend-api/codex/responses HTTP/1.1", `Host: 127.0.0.1:${gatewayPort}`, "Upgrade: websocket", "Connection: Upgrade", "Authorization: Bearer fake-access", "", ""].join("\r\n"));
+  let received = ""; socket.on("data", d => received += d);
+  await new Promise<void>(r => socket.once("close", () => r()));
+  assert.match(received, /409 Conflict/); assert.deepEqual(wsFrames, []);
 });
 
 test("paths outside /backend-api/codex never upgrade", async () => {

@@ -22,6 +22,8 @@ test("native WebSocket handshake helper strips local capabilities when called by
   });
   const remote = await listen(upstream);
   const previous = process.env.EASYSWITCH_CHATGPT_UPSTREAM;
+  const previousFlag = process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES;
+  process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES = "1";
   process.env.EASYSWITCH_CHATGPT_UPSTREAM = remote + "/backend-api/codex";
   const auth = new GatewayTokenAuthority(); const local = auth.issue("codex");
   const gateway = createServer();
@@ -45,6 +47,7 @@ test("native WebSocket handshake helper strips local capabilities when called by
   } finally {
     gateway.closeAllConnections(); upstream.closeAllConnections(); gateway.close(); upstream.close();
     if (previous === undefined) delete process.env.EASYSWITCH_CHATGPT_UPSTREAM; else process.env.EASYSWITCH_CHATGPT_UPSTREAM = previous;
+    if (previousFlag === undefined) delete process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES; else process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES = previousFlag;
     rmSync(dir, { recursive: true, force: true });
   }
 });

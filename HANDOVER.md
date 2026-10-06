@@ -176,3 +176,7 @@ CodeBuddy官方CLI来源独立于原有反向启动器：专用表单要求显�
 4. **本地假环境**：`node core/test/mock-relay.ts`（端口 18790，假中转站）+ 起一个 dev 实例（`EASYSWITCH_PORT=18766 EASYSWITCH_HOME=<临时目录> EASYSWITCH_SECRETS=memory node core/src/main.ts`），再 `POST /api/providers`（头要带 `x-easyswitch: 1`，体 `{"name":"Mock Relay","baseUrl":"http://127.0.0.1:18790/v1","apiKey":"mock"}`）。
 5. **看窗口**：我确认过 `screencapture -x <文件>.png` 在这台 Mac 上能用；如果它的 Electron 支持，也可以带 `--remote-debugging-port` 启动后用 CDP 看界面（ChatGPT 桌面端支持，Claude 没试过）。
 6. 要回答的问题：私有数据目录真的生效吗？应用有没有自己进入第三方模式（还是需要在界面里手动选）？模型菜单里出现的是什么？发一条消息，请求是否到了网关、模型对不对？用完删私有目录后，用户的 Claude 是否毫发无损？
+
+### 966a5de 安全复查后的边界（2026-10-06）
+
+保留B86的兼容性与Mac路径修复及原作者测试说明，但外部模型不能沿原生登录旁路消费本地保存的Key。ChatGPT原生HTTP仅将调用方凭据送固定官方目标，且不读取本地secret；外部模型与合并本地目录另需已签发capability。WS持续预算/会话处理尚未验证，生产409；未经验证的增强启动也409。18项纯/loopback安全测试通过；真实Mac、Codex、ChatGPT与Keychain路径没有由Dot执行。第9节旧变量和“无Linux版”文字不改变已核验的Linux隔离证据。

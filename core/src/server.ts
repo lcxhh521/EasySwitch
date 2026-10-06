@@ -20,7 +20,7 @@ import { GUIDE_IDS, setupGuide } from "./setup-guides.ts";
 import { KiroError } from "./kiro-login.ts";
 import { fileURLToPath } from "node:url";
 import { claudeModelId, fromClaudeModelId, writeCodexCatalog } from "./catalog.ts";
-import { handleChatgpt, handleChatgptUpgrade, isChatgptPath } from "./chatgpt-gateway.ts";
+import { handleChatgpt, isChatgptPath } from "./chatgpt-gateway.ts";
 import { handleChatCompletions } from "./gateway-chat.ts";
 import { GEMINI_PATH, handleGemini, listGeminiModels } from "./gateway-gemini.ts";
 import { handleMcp, mcpEndpoint, type McpDeps } from "./mcp.ts";
@@ -1078,11 +1078,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
     // --- ChatGPT desktop app: start it on this gateway, or plainly ------------
     if (path === "/api/chatgpt" && method === "GET") {
-      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port) });
+      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port), launchBlocked: true, note: "外部模型需要已核实的本地会话令牌传递方式；原生HTTP凭据只授权原生转发，增强启动暂未开放" });
       return;
     }
-    if ((path === "/api/chatgpt/enhance" || path === "/api/chatgpt/native") && method === "POST") {
-      // The app keeps its own ChatGPT login and talks to this gateway on /backend-api/codex, which does not need our session token (see protectedRoute).
+    if (path === "/api/chatgpt/enhance" && method === "POST") { json(res, 409, { code: "desktop_gateway_auth_unverified", error: "尚未核实桌面端如何传递外部模型所需的本地会话令牌；不会以匿名访问代替" }); return; }
+    if (path === "/api/chatgpt/native" && method === "POST") {
+      // Ordinary startup is unchanged; enhanced local-source access needs a separate local capability.
       const status = await chatgptStatus(port);
       if (!status.installed) {
         json(res, 404, { error: "没有找到 ChatGPT 桌面端" });
@@ -1093,14 +1094,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 409, { error: "ChatGPT 正在运行，需要重启才能切换", needsRestart: true });
         return;
       }
-      let launcher: string | undefined;
-      if (path === "/api/chatgpt/enhance") {
-        if (!store.providers().length) { json(res, 409, { error: "还没有模型来源，先添加一个再增强" }); return; }
-        launcher = (await prepareLauncher(store.dir, port, store.providers()))?.launcher;
-        if (!launcher) { json(res, 500, { error: "生成启动器失败：找不到 ChatGPT 自带的 Codex 程序" }); return; }
-      }
-      const result = await restartChatgpt(launcher);
-      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: Boolean(launcher), staticCatalog: status.staticCatalog } : { error: result.error });
+      const result = await restartChatgpt(undefined);
+      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: false, staticCatalog: status.staticCatalog } : { error: result.error });
       return;
     }
 
@@ -1700,8 +1695,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const isModels = req.method === "GET" && ["/v1/models", "/models", "/v1beta/models", "/v1beta/openai/models"].includes(path);
       const isMcp = path === "/mcp";
       const regularPost = req.method === "POST" && (["/v1/responses", "/responses", "/v1/chat/completions", "/chat/completions", "/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"].includes(path) || Boolean(gemini));
-      // The ChatGPT desktop app and Codex app-server send their own ChatGPT login to /backend-api/codex and cannot be given our token,
-      // so those paths are not behind the session token (as before); a stop budget still applies to what they send.
+      // Native vendor forwarding and access to local sources have separate authority below.
       const protectedRoute = isModels || isMcp || regularPost;
       const protocol: ApiProtocol = gemini || path.startsWith("/v1beta/") ? "gemini" : path.includes("messages") ? "messages" : path.includes("responses") ? "responses" : "chat";
       if (protectedRoute) {
@@ -1716,12 +1710,16 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         }
       }
       if (isChatgptPath(path)) {
+        if (repeatedGatewayCredential(req)) { gatewayError(res, protocol, 401, "重复的鉴权字段无效", "invalid_gateway_session"); return; }
+        session = auth.authenticate(req.headers, url);
+        const localSupplied = req.headers["x-easyswitch-session"] !== undefined || [req.headers.authorization, req.headers["x-api-key"], req.headers["x-goog-api-key"]].some(value => typeof value === "string" && /^(?:Bearer\s+)?es-session-/i.test(value));
+        if (localSupplied && !session) { gatewayError(res, protocol, 401, "本地会话令牌无效、已撤销或已过期", "invalid_gateway_session"); return; }
         if (req.method !== "GET") {
           try { budget.assertAllowed(); }
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
-        await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog });
+        await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog, session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         return;
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
@@ -1831,10 +1829,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       socket.destroy();
       return;
     }
-    // The app's WebSocket carries its own ChatGPT login, not our token (see the note on protectedRoute); a stop budget refuses it up front.
-    // Frames are opaque, so a budget reached mid-connection is only noticed on the next one.
-    try { budget.assertAllowed(); } catch { socket.destroy(); return; }
-    handleChatgptUpgrade(req, socket as import("node:net").Socket, head);
+    // Opaque native frames cannot enforce ongoing budgets or capability expiry/revocation.
+    // Keep the helper for local fixtures, but never open an unaccounted production tunnel.
+    socket.end("HTTP/1.1 409 Conflict\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   });
   // Coding plans used with a key are asked how much is left now and then, so a used-up one is skipped by the pools and the cards show it.
   const pollUsage = async () => {

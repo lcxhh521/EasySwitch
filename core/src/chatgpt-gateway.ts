@@ -4,7 +4,7 @@ import net from "node:net";
 import { Readable } from "node:stream";
 import tls from "node:tls";
 import { catalogModels, codexCatalog, pickTemplate } from "./catalog.ts";
-import { handleResponses, resolveModel, type GatewayDeps } from "./gateway.ts";
+import { handleResponses, type GatewayDeps } from "./gateway.ts";
 
 /**
  * The ChatGPT desktop app's side of the gateway.
@@ -29,7 +29,11 @@ type Json = Record<string, unknown>;
 export const CHATGPT_PREFIX = "/backend-api/codex";
 
 export function chatgptUpstream(): string {
-  return (process.env.EASYSWITCH_CHATGPT_UPSTREAM ?? "https://chatgpt.com/backend-api/codex").replace(/\/+$/, "");
+  const target = new URL(process.env.EASYSWITCH_CHATGPT_UPSTREAM ?? "https://chatgpt.com/backend-api/codex");
+  const fixture = process.env.EASYSWITCH_TEST_CHATGPT_FIXTURES === "1" && target.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(target.hostname);
+  const official = target.protocol === "https:" && target.hostname === "chatgpt.com" && !target.port;
+  if ((!official && !fixture) || target.username || target.password || target.search || target.hash || target.pathname.replace(/\/+$/, "") !== CHATGPT_PREFIX) throw new Error("Invalid native ChatGPT destination");
+  return target.origin + CHATGPT_PREFIX;
 }
 
 export function isChatgptPath(path: string): boolean {
@@ -37,7 +41,7 @@ export function isChatgptPath(path: string): boolean {
 }
 
 /** Request headers that describe the hop, not the request, and must not be copied. */
-const HOP = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "proxy-connection", "x-easyswitch-session"]);
+const HOP = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "proxy-connection", "x-easyswitch-session", "x-easyswitch-depth", "x-easyswitch"]);
 
 function forwardHeaders(req: IncomingMessage, dropConditional = false): Record<string, string> {
   const out: Record<string, string> = { "accept-encoding": "identity" };
@@ -83,6 +87,8 @@ function relay(upstream: Response, res: ServerResponse, onDone?: () => void): vo
 
 /** The merged model list: ChatGPT's own entries first, then ours, under an ETag that covers both. */
 export async function handleChatgptModels(req: IncomingMessage, res: ServerResponse, search: string, deps: GatewayDeps): Promise<void> {
+  // Vendor credentials authorize only the vendor list, never the local catalog.
+  if (!deps.session) return forward(req, res, `${CHATGPT_PREFIX}/models`, search);
   // Conditional headers are answered here against the merged list, not by ChatGPT against its own.
   const upstream = await fetch(upstreamUrl(`${CHATGPT_PREFIX}/models`, search), { redirect: "error", headers: forwardHeaders(req, true) }).catch((e: Error) => e);
   if (upstream instanceof Error) {
@@ -123,10 +129,13 @@ async function handleChatgptResponses(req: IncomingMessage, res: ServerResponse,
   } catch {
     // Not JSON: let ChatGPT answer it.
   }
-  if (model.includes("/") && resolveModel(deps.store, model)) {
+  if (model.includes("/")) {
+    // Check the capability before reading source state or any stored credential.
+    if (!deps.session) { sendJson(res, 401, { error: { code: "invalid_gateway_session", message: "外部模型需要本次启动签发的 EasySwitch 会话令牌。" } }); return; }
     await handleResponses(req, res, raw.toString("utf8"), deps);
     return;
   }
+  if (!nativeCredentials(req)) { nativeCredentialError(res); return; }
   await forward(req, res, `${CHATGPT_PREFIX}/responses`, search, raw);
 }
 
@@ -148,11 +157,23 @@ async function forward(req: IncomingMessage, res: ServerResponse, path: string, 
   relay(upstream, res);
 }
 
+/** Incoming vendor credentials are forwarded to the fixed vendor, never used as local authority. */
+function nativeCredentials(req: IncomingMessage): boolean {
+  return typeof req.headers.authorization === "string" && /^Bearer [^\s,]+$/i.test(req.headers.authorization) && !/^Bearer es-session-/i.test(req.headers.authorization);
+}
+function nativeCredentialError(res: ServerResponse): void {
+  sendJson(res, 401, { error: { code: "vendor_credentials_required", message: "原生请求需要调用方自己的厂商凭据。" } });
+}
+
 /** Entry point for every request under /backend-api/codex. */
 export async function handleChatgpt(req: IncomingMessage, res: ServerResponse, path: string, search: string, deps: GatewayDeps): Promise<void> {
   const method = req.method ?? "GET";
-  if (method === "GET" && path === `${CHATGPT_PREFIX}/models`) return handleChatgptModels(req, res, search, deps);
+  if (method === "GET" && path === `${CHATGPT_PREFIX}/models`) {
+    if (!nativeCredentials(req)) { nativeCredentialError(res); return; }
+    return handleChatgptModels(req, res, search, deps);
+  }
   if (method === "POST" && path === `${CHATGPT_PREFIX}/responses`) return handleChatgptResponses(req, res, search, deps);
+  if (!nativeCredentials(req)) { nativeCredentialError(res); return; }
   const body = method === "GET" || method === "HEAD" ? undefined : await readBuffer(req);
   return forward(req, res, path, search, body);
 }
