@@ -22,8 +22,8 @@ mkdir -p "$out"
 git -C "$repo" archive "$ref" | tar -x -C "$out"
 
 rm -f "$out/PROVENANCE.md" "$out/BACKLOG.md" "$out/BACKLOG-DONE.md" "$out/HANDOVER.md"
-# docs/ holds working notes (item numbers, commit ids, who did what); public documentation is written separately.
-rm -rf "$out/research" "$out/.claude" "$out/tools/release" "$out/docs"
+# User-facing docs stay with README links; internal reviews remain under research/.
+rm -rf "$out/research" "$out/.claude" "$out/tools/release"
 python3 - "$out" <<'EOF'
 import os, re, sys
 root = sys.argv[1]

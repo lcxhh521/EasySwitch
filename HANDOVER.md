@@ -168,11 +168,13 @@ CodeBuddy官方CLI来源独立于原有反向启动器：专用表单要求显�
 
 用户 2026-10-06 定的分工（B73）：Dot 做开发，Claude 做产品定义、审查、完善和需要用户 Mac 的验收。下面是原来写在 B38 里的 Mac 验收做法，Dot 改写 B38 时被删掉了，这里恢复；Claude 开工前先看 `docs/claude-desktop-isolation.md` 里 Dot 查到的事实（签名版会忽略 `CLAUDE_USER_DATA_DIR`，所以第 1 步要先验证 `--user-data-dir` 开关和文件系统审计，不能默认旧变量有效）。
 
-- **B38 Claude 桌面端**：**之前的“做不了”是我错了**，把两件事混为一谈。官方有“第三方推理（网关）”配置：配置库在 `<userData>/configLibrary/`（默认 `Application Support/Claude-3p`），里面一个 profile JSON `{inferenceProvider:"gateway", inferenceCredentialKind:"static", inferenceGatewayBaseUrl, inferenceGatewayApiKey, modelDiscoveryEnabled, inferenceModels:[...]}` 加 `_meta.json {appliedId, entries:[{id,name}]}`；并且环境变量 **`CLAUDE_USER_DATA_DIR`** 可以让这个应用用任意目录当数据目录。所以做法是：**另开一个独立的 Claude 窗口**，数据目录指向一个私有临时目录、里面写好网关 profile，指向 EasySwitch——不碰用户平时的 Claude，不拦截流量，用完删目录。代价：这个窗口是纯第三方模式，没有 claude.ai 账号功能，只有外接模型；原生 Claude 在平时的窗口里用，两个实例可以同时开。细节和字段含义看 `research/agent-facts-4.md` 末段；opencodex 是怎么写的在它的 `src/claude/desktop-3p*.ts`（用户本机 `~/workspace/opencodex`，你看不到，需要时让用户贴）。**这一项的测试用户 2026-10-06 明确交给你（Dot）做（B45）。** 要在用户的 Mac 上跑（本机装了 `/Applications/Claude.app`，版本 2.19675.0；opencodex 移植的是 1.18286.0 的代码，**行为可能已经变了，别照抄，要实测**）。**用户 2026-10-06 的建议：你在自己的云电脑上下载安装 Claude 桌面端来测**，EasySwitch 也装在那台云电脑上（`npm test` 同款环境，网关不用跨机器）。前提是它的系统要能装：**Claude 桌面端只有 macOS 和 Windows 版，没有官方 Linux 版**；Linux 云电脑装不了就测不了这一项，请直接告诉用户，改成“写好一条能直接跑的脚本加核对步骤，让用户在 Mac 上运行并把输出贴回来”。云电脑上测通以后，**仍要让用户在他的 Mac 上跑一次很短的确认**（macOS 的数据目录是 `~/Library/Application Support/...`，Windows 在 `%LOCALAPPDATA%\Claude-3p`，路径只能在 Mac 上最终验证）。不要把没跑过的东西写成“已验证”。我（Claude）没有启动过它，没改过任何 Claude 数据，只做了准备，下面是我摸到的（第 1、2 条是为用户的 Mac 写的；在你自己的云电脑上，实例是你自己的，不涉及用户的真实数据，但“私有数据目录确实生效”这一点照样要证明）：
+- **B38 Claude 桌面端的独立验收方向**：官方第三方推理profile研究保留：配置库位于 `<userData>/configLibrary/`，profile含 `{inferenceProvider:"gateway", inferenceCredentialKind:"static", inferenceGatewayBaseUrl, inferenceGatewayApiKey, modelDiscoveryEnabled, inferenceModels:[...]}`，并配 `_meta.json {appliedId,entries:[{id,name}]}`。目标是独立窗口/私有目录，不修改平时Claude配置、不拦截其登录流量。第三方窗口可能不具备claude.ai账号功能，原生窗口仍单独使用；这些真实行为需由获准验收者核对。
 
-1. **用户平时用的 Claude 桌面端经常正开着**，那是他的真实数据（`~/Library/Application Support/Claude`），绝对不能碰。测试只能开**第二个独立实例**：`open -n -a Claude --env CLAUDE_USER_DATA_DIR=<私有临时目录>`（`open` 支持 `-n` 新实例和 `--env`，已确认）。
-2. **证明没碰真实数据**：新实例启动后用 `lsof -p <新进程pid>` 看它打开的文件全在私有目录里；`~/Library/Application Support/Claude-3p` 如果测试前不存在，测试后也不能出现。（真实目录自己会被正在运行的那个实例不断改动，所以不能用“目录没变”来证明。）
-3. **私有目录里写配置库**：`<目录>/configLibrary/_meta.json` 和一个 profile JSON（字段见上）；`inferenceGatewayBaseUrl` 指向 EasySwitch 网关，`inferenceGatewayApiKey` 用一个 `es-session-claude-desktop-…` 令牌（网关靠令牌前缀认出是哪个 agent）。模型列表先用 `modelDiscoveryEnabled: true` 让它读我们网关的 `/v1/models`（Claude Code 已经在用的 `es-claude-<来源>--<模型>` 编码），看它认不认；不认再退回静态 `inferenceModels`（opencodex 的做法是把模型映射成 `claude-opus-4-8-…` 这种 Claude 形状的别名，网关再解码，见它的 `desktop-profile.ts`）。
+  **旧交接中的两个前提已失效**：官方已有Linux beta；签名Linux 2.19675.1会忽略CLAUDE_USER_DATA_DIR，不能照旧变量方案启动。macOS的 `--user-data-dir` 或其他隔离方式也必须先验证，不能由Linux/假程序结果推定可用。当前生产启动在spawn前拒绝，experimental不能解锁。Dot本轮只在云端做源码/假服务工作；B85的Mac操作归另行获准的验收者，不是云端失败后的默认后备。原作者报告的Mac版本/命令经历仅属历史证据，不代表本轮复验。以下清单保留作验收设计，不授予读取账号、签名私钥或修改系统权限的许可。
+
+1. **用户平时用的 Claude 桌面端经常正开着**，那是他的真实数据（`~/Library/Application Support/Claude`），绝对不能碰。测试只能开**第二个独立实例**：先验证当前版本真正接受的隔离参数并审计其写入；旧 `CLAUDE_USER_DATA_DIR` 命令不是已证明隔离的启动方式。
+2. **证明没碰真实数据**：新实例启动后用 `lsof -p <新进程pid>` 核对其用户数据、缓存、日志等可写状态落在私有目录；系统库和应用文件可以位于安装目录；`~/Library/Application Support/Claude-3p` 如果测试前不存在，测试后也不能出现。（真实目录自己会被正在运行的那个实例不断改动，所以不能用“目录没变”来证明。）
+3. **私有目录里写配置库**：`<目录>/configLibrary/_meta.json` 和一个 profile JSON（字段见上）；`inferenceGatewayBaseUrl` 指向 EasySwitch 网关，`inferenceGatewayApiKey` 用一个 `es-session-claude-desktop-…` 令牌（必须由网关真实签发并验证agent/权限/expiry，不能仅拼接令牌前缀）。模型列表先用 `modelDiscoveryEnabled: true` 让它读我们网关的 `/v1/models`（Claude Code 已经在用的 `es-claude-<来源>--<模型>` 编码），看它认不认；不认再退回静态 `inferenceModels`（opencodex 的做法是把模型映射成 `claude-opus-4-8-…` 这种 Claude 形状的别名，网关再解码，见它的 `desktop-profile.ts`）。
 4. **本地假环境**：`node core/test/mock-relay.ts`（端口 18790，假中转站）+ 起一个 dev 实例（`EASYSWITCH_PORT=18766 EASYSWITCH_HOME=<临时目录> EASYSWITCH_SECRETS=memory node core/src/main.ts`），再 `POST /api/providers`（头要带 `x-easyswitch: 1`，体 `{"name":"Mock Relay","baseUrl":"http://127.0.0.1:18790/v1","apiKey":"mock"}`）。
 5. **看窗口**：我确认过 `screencapture -x <文件>.png` 在这台 Mac 上能用；如果它的 Electron 支持，也可以带 `--remote-debugging-port` 启动后用 CDP 看界面（ChatGPT 桌面端支持，Claude 没试过）。
 6. 要回答的问题：私有数据目录真的生效吗？应用有没有自己进入第三方模式（还是需要在界面里手动选）？模型菜单里出现的是什么？发一条消息，请求是否到了网关、模型对不对？用完删私有目录后，用户的 Claude 是否毫发无损？
@@ -180,3 +182,9 @@ CodeBuddy官方CLI来源独立于原有反向启动器：专用表单要求显�
 ### 966a5de 安全复查后的边界（2026-10-06）
 
 保留B86的兼容性与Mac路径修复及原作者测试说明，但外部模型不能沿原生登录旁路消费本地保存的Key。ChatGPT原生HTTP仅将调用方凭据送固定官方目标，且不读取本地secret；外部模型与合并本地目录另需已签发capability。WS持续预算/会话处理尚未验证，生产409；未经验证的增强启动也409。18项纯/loopback安全测试通过；真实Mac、Codex、ChatGPT与Keychain路径没有由Dot执行。第9节旧变量和“无Linux版”文字不改变已核验的Linux隔离证据。
+
+### 966a5de评审项最终云端收尾（2026-10-06）
+
+已分批完成B74–77/B79/B80/B82–84。B78稳定签名/非交互/health和B81文字桥有界执行的源码与fake完成，真实系统/厂商CLI验收仍保留；旧unsigned/ad-hoc helper须由用户在Mac前台用已有身份重建，未自动签名。B85未执行。最终Node审计白名单592项通过、1真实Keychain跳过、零失败；另10项Python发布检查只使用合成树通过；类型、语法、链接、待办和差异检查通过。
+
+会话摘要可持久化但仍默认24小时，重启不续期；外部模型/本地模型合并仍要求真实capability。ChatGPT原生HTTP只转发调用方自己的厂商凭据，未经验证的增强启动与原生WS继续拒绝。B86的Mac记录保留为原作者报告，本轮不使用用户Mac、Codex账户额度或真实模型，不将未来公开发布/远期条目混入完成数。

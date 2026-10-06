@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import unquote, urlsplit
 
 NAMES = re.compile(r"opencodex|magpie|cc[ -]?switch|lobe-?icons|lobehub|jawcode|CLIProxyAPI|OmniRoute|cli-jaw|yetone|farion1231", re.I)
 ATTRIBUTION = re.compile(r"\(MIT[,)]|\bMIT License\b|Copyright \(c\)|\bAdapted from|\bPorted from|\bDerived from|\bLearned from|\bDesign(?:ed)? after|\bthird_party\b|PROVENANCE")
@@ -22,6 +23,8 @@ SECRETS = [
     ("Slack token", re.compile(r"\bxox[bpas]-[A-Za-z0-9-]{20,}")),
 ]
 PERSONAL = re.compile(r"/Users/alexyoung|alexyoung")
+INTERNAL_MARKERS = re.compile(r"\b(?:B[0-9]+|(?i:dot|gpt-wip))\b")
+MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^\s)]+)(?:\s+['\"][^'\"]*['\"])?\)")
 FORBIDDEN_FILES = {"PROVENANCE.md", "SOURCES.md", "BACKLOG.md", "BACKLOG-DONE.md", "HANDOVER.md"}
 SKIP_DIRS = {".git", "node_modules"}
 MAX_BYTES = 2_000_000
@@ -30,11 +33,32 @@ MAX_BYTES = 2_000_000
 def load_allow(path):
     if not path or not os.path.exists(path):
         return []
-    return [(re.compile(a["path"]), re.compile(a["pattern"], re.I)) for a in json.load(open(path))]
+    with open(path, encoding="utf-8") as source:
+        return [(re.compile(a["path"]), re.compile(a["pattern"], re.I)) for a in json.load(source)]
 
 
 def allowed(allow, rel, text):
     return any(p.search(rel) and q.search(text) for p, q in allow)
+
+
+def markdown_link_issues(root, rel, text):
+    """Check local file targets, never browse or fetch links. Ignore fenced examples."""
+    content = re.sub(r"(?ms)^```[^\n]*\n.*?^```\s*$", "", text)
+    root = os.path.realpath(root)
+    for match in MARKDOWN_LINK.finditer(content):
+        target = match.group(1).strip("<>")
+        try:
+            url = urlsplit(target)
+        except ValueError:
+            yield target
+            continue
+        if url.scheme or url.netloc or not url.path:
+            continue
+        path = unquote(url.path)
+        destination = os.path.realpath(os.path.join(root, path.lstrip("/")) if path.startswith("/")
+                                       else os.path.join(root, os.path.dirname(rel), path))
+        if os.path.commonpath([root, destination]) != root or not os.path.exists(destination):
+            yield target
 
 
 def main():
@@ -65,7 +89,8 @@ def main():
             try:
                 if os.path.getsize(path) > MAX_BYTES:
                     continue
-                data = open(path, "rb").read()
+                with open(path, "rb") as source:
+                    data = source.read()
             except OSError:
                 continue
             if b"\0" in data:
@@ -74,6 +99,9 @@ def main():
                 text = data.decode("utf-8")
             except UnicodeDecodeError:
                 continue
+            if name.lower().endswith(".md"):
+                for target in markdown_link_issues(root, rel, text):
+                    add("broken or escaping local Markdown links", rel, target)
             for n, line in enumerate(text.splitlines(), 1):
                 short = line.strip()[:140]
                 if "private:start" in line or "private:end" in line:
@@ -87,10 +115,13 @@ def main():
                         add(f"secrets: {label}", rel, f"{n}: (matched, not shown)")
                 if PERSONAL.search(line) and not allowed(allow, rel, line):
                     add("personal paths or names", rel, f"{n}: {short}")
+                # Internal work history must not be waived via the attribution allow-list.
+                if INTERNAL_MARKERS.search(line):
+                    add("internal work markers", rel, f"{n}: (matched, not shown)")
 
     total = sum(len(v) for v in findings.values())
     if not total:
-        print("release check: nothing found. The tree can be published.")
+        print("release check: no automated findings. This is not publication approval; manual licence, credential and release reviews remain required.")
         return 0
     print(f"release check: {total} finding(s) in {len(findings)} group(s). Do NOT publish yet.\n")
     for kind, items in sorted(findings.items(), key=lambda kv: -len(kv[1])):

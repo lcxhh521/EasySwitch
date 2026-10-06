@@ -4,7 +4,7 @@
 
 ## 稳定签名构建
 
-在用户明确批准的 Mac 前台，用**已有**代码签名证书的 40 位 SHA-1 指纹指定身份：
+在 macOS 前台确认签名操作后，用**已有**代码签名证书的 40 位 SHA-1 指纹指定身份：
 
 ```sh
 EASYSWITCH_KEYCHAIN_SIGN_IDENTITY='<已有代码签名证书的40位指纹>' sh scripts/build-keychain.sh
@@ -53,7 +53,7 @@ sh -n scripts/build-keychain.sh
 
 “不回退 argv”的测试同时扫描 `secrets.ts` 和实际启动 helper 的 `native-keychain.ts`，并用假进程确认凭据只写入 stdin。
 
-**Mac 现场验收仍由 B85 承担，不能把以上假测试写成系统实测。** 获得用户授权后，只用随机的一次性 `selftest-…` 账号和假值：
+**macOS 现场验收仍需完成，不能把以上假测试写成系统实测。** 获得用户授权后，只用随机的一次性 `selftest-…` 账号和假值：
 
 1. 构建并验证稳定签名，更新代码后用同一证书重建，核对旧/新 requirement 一致
 2. 用旧 CLI 方式创建的一次性条目测试读取、原地更新和删除，记录是否需要用户前台授权；不碰任何真实服务 Key

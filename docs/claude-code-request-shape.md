@@ -17,5 +17,5 @@ a local capture server. No prompt text is reproduced here.
 - An unknown model name only produces a warning
   (`[claude-code:unrecognized_model]`); the session continues assuming a
   200k context window.
-- The user's `claude` shell command may be a wrapper (CC Switch's unsets
+- The user's `claude` shell command may be a wrapper (for example, one that unsets
   `ANTHROPIC_*`), so sessions must start the real binary.

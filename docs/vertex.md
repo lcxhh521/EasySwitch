@@ -1,6 +1,6 @@
-# Vertex AI 三种明确模式（B10）
+# Vertex AI 三种明确模式
 
-核对及整合日期：2026-10-06。保留 Claude 在 `af91f97` 完成的服务账号 Chat 来源，并与本轮的手动访问令牌 / Express 原生 Gemini 来源并存。两者认证和协议各自保留，没有把一方的凭据静默改给另一方。
+Vertex 支持服务账号 Chat、手动访问令牌 Gemini 和 Express API Key 三种模式。认证来源与协议分别配置，不会静默互换凭据。
 
 ## 认证与协议合同
 
@@ -10,7 +10,7 @@
 | 手动令牌（`standard`） | 来源普通密钥入口/Key 池里的用户访问令牌 | 原生 Gemini；`gemini-*`；项目/区域 `/publishers/google/models` | 不读取或刷新原生登录；到期后用户提供新令牌 |
 | Express | 来源普通密钥入口/Key 池里的 Google Cloud API Key | 原生 Gemini；无项目/区域段的 `/publishers/google/models` | `x-goog-api-key` HTTP 头，不进 URL |
 
-新记录明确保存 `mode/auth`。已有 `af91f97` 的精确旧形状 `{project, location, clientEmail}` 只解释为服务账号，保留其 credential namespace、模型名和 Chat 端点。未知、混合或含凭据的元数据会被拒绝；不能凭模型前缀或“哪个 Key 恰好存在”猜认证模式。
+新记录明确保存 `mode/auth`。既有配置的精确旧形状 `{project, location, clientEmail}` 只解释为服务账号，保留其 credential namespace、模型名和 Chat 端点。未知、混合或含凭据的元数据会被拒绝；不能凭模型前缀或“哪个 Key 恰好存在”猜认证模式。
 
 服务账号新增继续保留“验证并添加”的明确 token 验证步骤；手动令牌/Express 创建只做本地配置检查，不自动 mint 或模型探测。通用 `/api/providers` 不能提交服务账号 JSON；服务账号不能通过普通 Key 池界面换成另一种认证。
 
@@ -36,13 +36,12 @@ token 缓存绑定服务账号 email、私钥和 audience 的内存指纹；同�
 
 ## 验证边界
 
-- `vertex.test.ts` 保留远端服务账号测试，并增加 strict config、固定地址、模式/hasKey 展示、缓存身份、并发 mint、重定向和 fixture override 拒绝覆盖
-- `vertex-gemini.test.ts` 保留 6 项原生 Gemini 假传输测试，并增加旧配置兼容、三模式 secret 路由和混合鉴权拒绝
+- `vertex.test.ts` 覆盖服务账号 strict config、固定地址、模式/hasKey 展示、缓存身份、并发 mint、重定向和 fixture override 拒绝覆盖
+- `vertex-gemini.test.ts` 覆盖原生 Gemini 假传输、旧配置兼容、三模式 secret 路由和混合鉴权拒绝
 - 所有密钥均为测试现场生成的 RSA fixture，所有 HTTP 均为环回假服务；手动令牌/Express 使用内存假传输
 - 未使用真实 Google 账号、服务账号、Key、账单或真实模型；假服务成功不能标为真实厂商验收
-- 2026-10-06 合并后三模式两文件在独立 HOME、内存 secrets 与 local-only-guard 下 19/19 通过；包括并发同名新增、保存后失败回滚和旧配置鉴权隔离
 
-请运行审计后的 `npm run test:local`；不要以包含真实 agent 的旧全量测试替代。
+请使用 [安全测试入口](testing.md)，不要以包含真实 agent 的全量测试替代。
 
 ## 官方依据
 
@@ -55,3 +54,7 @@ token 缓存绑定服务账号 email、私钥和 audience 的内存指纹；同�
 - [避免 Key 进入查询参数](https://docs.cloud.google.com/docs/authentication/api-keys-best-practices)
 
 部分 Vertex 旧链接当前重定向到 Google Gemini Enterprise Agent Platform 文档；不能据旧产品名称推断协议已失效。
+
+## Gemini 思考参数
+
+Gemini 2.5 使用模型允许范围内的 thinkingBudget；Gemini 3 使用具体模型支持的 thinkingLevel。无法识别的模型/档位不发送控制字段，并记录原因；不会同时发送预算与等级。已有有效原生参数保留，只有支持的显式设置才覆盖它。低/中/高映射为 token 预算属于 EasySwitch 的本地策略，不是厂商新增的等级名称。

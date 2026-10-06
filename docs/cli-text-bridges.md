@@ -1,6 +1,6 @@
 # 官方 CLI 纯文字来源：Qoder / CodeBuddy / Droid
 
-核验日期：2026-10-06。这里区分**适配器实现**、**假传输验证**和**真实服务验收**。本次没有安装或执行真实厂商 CLI，没有读取原生登录、创建令牌或调用模型。
+核验日期：2026-10-06。这里区分**适配器实现**、**假传输验证**和**真实服务验收**。验证未安装或执行真实厂商 CLI，没有读取原生登录、创建令牌或调用模型。
 
 ## Qoder：适配器已实现，真实 CLI 未验收
 
@@ -18,7 +18,7 @@
 2. 建立私有临时 HOME、cwd、配置目录及空 hooks/MCP settings；不加载用户项目或原生配置
 3. 用 `shell:false` 启动明确选择的程序；提示词经 stdin，PAT 只进入最小化子进程环境
 4. 禁用内置工具和外部 MCP，关闭会话持久化；单轮、零模型自动重试，不使用 yolo/权限绕过参数
-5. 缓冲文字结果；超时、取消或输出超限终止子进程，结束后删除本次拥有的临时目录
+5. 缓冲文字结果；超时、取消或输出超限终止子进程，结束后删除当前请求拥有的临时目录
 
 边界：这属于 CLI 配置隔离，不是操作系统级沙箱。来源管理员选择的可执行文件必须可信；创建时只读取文件元数据：限制官方程序名、要求存在且可执行的普通文件、拒绝所有人可写的文件；实际执行前重新检查并固定解析路径。这不代表程序签名、版本或身份已经核验。官方文档当前称可执行文件为 `qoder`，用户旧版本可能不同，不能据此声称任意 `qodercli` 版本兼容。
 
@@ -42,7 +42,7 @@
 - [环境变量](https://www.codebuddy.ai/docs/cli/env-vars)：私有 `CODEBUDDY_CONFIG_DIR`、API Key、最大重试数、关闭更新/记忆/内置市场/环境快照等开关
 - [Settings](https://www.codebuddy.ai/docs/cli/settings)：`disableAllHooks:true`；[IAM 权限模式](https://www.codebuddy.ai/docs/cli/iam)的 `dontAsk` 拒绝未经允许的动作
 
-配置要求明确提供 `edition: international | china`，不从 Key 格式或本机登录猜区域。iOA、专享和私有部署缺少本切片的专用支持，配置阶段拒绝。与 Qoder 一样，来源创建默认关闭，创建/开启不执行程序；明确的请求才会调用选择的可信可执行文件。
+配置要求明确提供 `edition: international | china`，不从 Key 格式或本机登录猜区域。iOA、专享和私有部署缺少当前实现的专用支持，配置阶段拒绝。与 Qoder 一样，来源创建默认关闭，创建/开启不执行程序；明确的请求才会调用选择的可信可执行文件。
 
 每个请求创建临时 HOME/cwd/CodeBuddy 配置，加载自己的 user settings，禁用所有 hooks；内置工具为空，MCP 只接收显式空配置。提示词走 stdin，Key 仅注入 `CODEBUDDY_API_KEY`；不继承 `CODEBUDDY_AUTH_TOKEN`、`CODEBUDDY_BASE_URL`、自定义头、插件目录、shell 环境脚本、重放文件或其他进程凭据。不使用权限绕过、自动登录或自动安装。重试数设为零，禁用无限重试、自动更新、自动记忆和内置市场加载；超时/取消/输出上限由共享 runner 处理。
 
@@ -65,12 +65,12 @@
 
 | 条目 | 可行路线与当前缺口 |
 | --- | --- |
-| B68 Grok | [官方 headless 文档](https://docs.x.ai/build/cli/headless-scripting)和[CLI reference](https://docs.x.ai/build/cli/reference)提供 agent CLI 路线，但不证明 `cli-chat-proxy` 的私有身份字段或本机登录导出获得支持。当前没有读取真实原生凭据的授权；不能借实现源码进行读取或仿客户端调用。已有 xAI API Key 来源与订阅来源分开 |
-| B70 CodeBuddy | 官方文字桥已有实现与 fake 验证，真实 CLI、版本和区域账户尚未验收；不能沿用旧 reference 页面互相冲突的示例或认定任意区域账户兼容 |
-| B70 WorkBuddy | [国内定价说明](https://www.codebuddy.cn/docs/ide/Account/pricing)称 CodeBuddy 与 WorkBuddy 同一账号积分共享，所以官方 CodeBuddy 路线可能覆盖该账号的共同权益，仍需实际套餐确认；这不证明原生登录和私有 `/v2/chat/completions` 作为第三方来源获支持。不实施身份仿冒或绕过系统提示限制 |
-| B71 Cursor | [官方 TypeScript SDK](https://cursor.com/docs/sdk/typescript)支持 customTools；[官方 SDK bridge](https://prod.cursor.com/docs/sdk/bridge)和[公开协议](https://github.com/cursor/sdk-bridge/blob/main/docs/protocol.md)属于 `sdk.v1` 的独立 agent 会话接口，不是现有私有 `agent.v1` exec 字段的证据。使用官方路线须明确 API Key、会话/工具回调语义与零运行时依赖取舍；不能悄悄加 SDK、复用原生 OAuth，或捏造原始 exec 消息字段 |
+| Grok | [官方 headless 文档](https://docs.x.ai/build/cli/headless-scripting)和[CLI reference](https://docs.x.ai/build/cli/reference)提供 agent CLI 路线，但不证明 `cli-chat-proxy` 的私有身份字段或本机登录导出获得支持。当前不开放未核实的原生凭据导出或仿客户端调用。已有 xAI API Key 来源与订阅来源分开 |
+| CodeBuddy | 官方文字桥已有实现与 fake 验证，真实 CLI、版本和区域账户尚未验收；不能沿用旧 reference 页面互相冲突的示例或认定任意区域账户兼容 |
+| WorkBuddy | [国内定价说明](https://www.codebuddy.cn/docs/ide/Account/pricing)称 CodeBuddy 与 WorkBuddy 同一账号积分共享，所以官方 CodeBuddy 路线可能覆盖该账号的共同权益，仍需实际套餐确认；这不证明原生登录和私有 `/v2/chat/completions` 作为第三方来源获支持。不实施身份仿冒或绕过系统提示限制 |
+| Cursor | [官方 TypeScript SDK](https://cursor.com/docs/sdk/typescript)支持 customTools；[官方 SDK bridge](https://prod.cursor.com/docs/sdk/bridge)和[公开协议](https://github.com/cursor/sdk-bridge/blob/main/docs/protocol.md)属于 `sdk.v1` 的独立 agent 会话接口，不是现有私有 `agent.v1` exec 字段的证据。使用官方路线须明确 API Key、会话/工具回调语义与零运行时依赖取舍；不能悄悄加 SDK、复用原生 OAuth，或捏造原始 exec 消息字段 |
 
-本切片没有确认上述服务的全部条款或第三方订阅转用许可；公开 CLI/SDK 文档支持某功能，不等于服务条款或真实账户兼容已通过验收。
+当前实现没有确认上述服务的全部条款或第三方订阅转用许可；公开 CLI/SDK 文档支持某功能，不等于服务条款或真实账户兼容已通过验收。
 
 ## 本地可重复验证
 
@@ -86,7 +86,7 @@
 - Droid 的状态、创建和来源调用均保持明确501，假传输仅用于模块测试，不存在 HTTP 参数解锁生产传输的开关。
 - 所有集成回归注入内存执行器；没有运行真实 Qoder、CodeBuddy 或 Droid。真实 CLI 隔离、条款/平台行为和账号验收仍需独立确认。
 
-官方自动化入口不等于订阅转售或账号共享许可。发布/真实使用前须核对 [Qoder Terms](https://qoder.com/product-service)、[CodeBuddy 国际版协议](https://www.codebuddy.ai/document/term)、[CodeBuddy 国内站协议](https://www.codebuddy.cn/document/term)与 [Factory Terms](https://factory.com/legal/terms) 的适用范围；本次没有接受新协议或执行真实账号操作。
+官方自动化入口不等于订阅转售或账号共享许可。发布/真实使用前须核对 [Qoder Terms](https://qoder.com/product-service)、[CodeBuddy 国际版协议](https://www.codebuddy.ai/document/term)、[CodeBuddy 国内站协议](https://www.codebuddy.cn/document/term)与 [Factory Terms](https://factory.com/legal/terms) 的适用范围；验证未接受新协议或执行真实账号操作。
 
 ### 文字桥资源限制
 
