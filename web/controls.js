@@ -53,3 +53,44 @@ function subscriptionSupportCard() {
   return `<details class="card" style="padding:16px;margin-top:12px"><summary>订阅与官方 agent 接入核对（${rows.length} 家）</summary><p class="hint">这里说明官方支持依据。已有 B20 适配器单独保留，新增订阅默认关闭；文档核对和假服务测试不等于真实账号验收。</p>
     ${rows.map(row => `<div class="row"><div class="grow"><div class="title">${esc(row.label)} <span class="chip">${esc(states[row.modelSource.state] ?? row.modelSource.state)}</span></div><p class="sub">${esc(row.modelSource.reason)}</p>${(row.apiRoutes ?? []).map(route => `<p class="hint">${esc(route.label)}：${esc(route.auth)}；${esc(route.billing)}</p>`).join("")}<div class="sub">${row.sources.map(link).filter(Boolean).join(" · ")}</div></div></div>`).join("")}</details>`;
 }
+
+let cliTextFormOpen = false;
+let cliTextBusy = false;
+function cliTextSourceNotice(p) {
+  return p.cliTextBridge?.kind === "qoder"
+    ? "Qoder纯文字桥：拒绝工具定义、工具历史和图片；普通编码agent通常附带工具，不能直接当完整模型API用。多角色仅作文字transcript，流式请求等待完整结果，没有已核验的token用量。真实CLI未验收，开启后显式调用可能消耗Qoder额度。"
+    : "Droid生产来源尚未接通已验证的隔离传输，保持501；假控制器测试不代表可用。";
+}
+function cliTextSourcesCard() {
+  return `<div class="section-head"><h2>CLI文字来源</h2><span class="aside">实验性 · 默认关闭 · 不自动运行程序</span></div><div class="card" style="padding:16px">
+    <p>${esc(cliTextSourceNotice({cliTextBridge:{kind:'qoder'}}))}</p>
+    ${cliTextFormOpen ? `<form class="form" data-cli-text-form>
+      <div class="field"><label>来源名称</label><input name="name" required placeholder="我的Qoder文字来源"></div>
+      <div class="field"><label>已安装Qoder CLI绝对路径（不自动安装或检测）</label><input name="binary" required placeholder="/absolute/path/to/qodercli"></div>
+      <div class="field"><label>你已确认可用的模型ID（不自动查询）</label><input name="model" required></div>
+      <div class="field"><label>用户自行提供的Qoder PAT</label><input name="apiKey" type="password" autocomplete="off" required></div>
+      <label><input name="experimental" type="checkbox" required> 我了解纯文字限制与真实CLI尚未验收，添加后仍需明确开启</label>
+      <div class="controls"><button class="btn" type="submit" ${cliTextBusy ? "disabled" : ""}>${cliTextBusy ? "保存中…" : "添加，保持关闭"}</button><button type="button" class="btn secondary" data-cli-text-close ${cliTextBusy ? "disabled" : ""}>取消</button></div>
+    </form>` : `<button class="btn secondary" data-cli-text-open>添加Qoder纯文字来源</button>`}
+    <p class="hint">Droid：尚未开放，生产返回501。需要先验证无工具权限、私有会话和隔离传输，不能用按钮或设置跳过。</p></div>`;
+}
+document.addEventListener("click", async event => {
+  if (event.target.closest?.("[data-cli-text-open]")) { event.stopImmediatePropagation(); cliTextFormOpen = true; render(); return; }
+  if (event.target.closest?.("[data-cli-text-close]")) { event.stopImmediatePropagation(); if (!cliTextBusy) { cliTextFormOpen = false; render(); } return; }
+  const button = event.target.closest?.("[data-cli-source-switch]");
+  if (!button) return; event.stopImmediatePropagation();
+  if (button.disabled) return; button.disabled = true;
+  try { await call("PUT", `/api/providers/${encodeURIComponent(button.dataset.cliSourceSwitch)}/switch`, { on: button.dataset.on !== "1" }); await refresh(true); }
+  catch (error) { toast(error.message); button.disabled = false; }
+});
+document.addEventListener("submit", async event => {
+  if (!event.target.matches?.("[data-cli-text-form]")) return;
+  event.preventDefault(); event.stopImmediatePropagation(); if (cliTextBusy) return;
+  const form = event.target; const fields = new FormData(form);
+  if (fields.get("experimental") !== "on") { toast("请先确认纯文字限制与未实测状态"); return; }
+  const body = { kind: "qoder", name: String(fields.get("name") ?? "").trim(), binary: String(fields.get("binary") ?? "").trim(), model: String(fields.get("model") ?? "").trim(), apiKey: String(fields.get("apiKey") ?? ""), experimental: true };
+  cliTextBusy = true; form.querySelectorAll("button,input").forEach(el => { el.disabled = true; });
+  try { await call("POST", "/api/cli-text-sources", body); cliTextFormOpen = false; await refresh(true); toast("文字来源已添加，仍处于关闭状态"); }
+  catch (error) { toast(error.message); }
+  finally { cliTextBusy = false; form.querySelectorAll("button,input").forEach(el => { el.disabled = false; }); }
+});

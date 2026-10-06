@@ -153,3 +153,38 @@ test("source and global budget forms dispatch to different endpoints", async () 
   assert.equal(app.run('requests[0].path'), '/api/providers/p/budget');
   assert.equal(app.run('JSON.stringify(requests[0].body)'), '{"monthlyUsd":4.5,"stop":true}');
 });
+
+test("full provider page clearly labels Qoder text limits, default-off switch and blocked Droid", () => {
+  const app = ui();
+  app.run(`state.providers=[{id:'qoder-fixture',name:'Qoder fixture',icon:'letter:Q',baseUrl:'cli://qoder',models:['m'],usedBy:[],hasKey:true,off:true,billing:'subscription',cliTextBridge:{kind:'qoder',binary:'/fixture/qodercli'},supportedProtocols:['chat']}];openProvider='qoder-fixture';planInfo={accounts:[]};page='providers';renderActual();`);
+  const html = app.html();
+  assert.match(html, /CLI文字来源/); assert.match(html, /不自动运行程序/);
+  assert.match(html, /data-cli-source-switch="qoder-fixture" data-on="0"/);
+  assert.match(html, /拒绝工具定义、工具历史和图片/);
+  assert.match(html, /本地CLI标识（不是HTTP接口）/);
+  assert.match(html, /Droid：尚未开放，生产返回501/);
+  assert.doesNotMatch(html, /data-probe|data-protocol-form/);
+  assert.doesNotMatch(html, /OpenAI 兼容地址：.*cli:\/\/qoder/);
+});
+
+test("Qoder creation requires the current limitation acknowledgment and is submitted once", async () => {
+  const app = ui(); await app.dispatch('click',app.target('[data-cli-text-open]'));
+  const controls=[{disabled:false}];
+  const form={matches:(s:string)=>s==='[data-cli-text-form]',querySelectorAll:()=>controls,values:{name:'Qoder',model:'m',binary:'/fixture/qoder',apiKey:'fixture-private-pat',experimental:''}};
+  await app.dispatch('submit',form); assert.equal(app.run('requests.length'),0);
+  form.values.experimental='on';
+  app.run(`call=async(method,path,body)=>{requests.push({method,path,body});return new Promise(resolve=>globalThis.finishCli=resolve)}`);
+  const pending=app.dispatch('submit',form); await app.dispatch('submit',form);
+  assert.equal(app.run('requests.length'),1); assert.equal(controls[0]!.disabled,true);
+  assert.equal(app.run('requests[0].path'),'/api/cli-text-sources');
+  assert.equal(app.run('requests[0].body.kind'),'qoder'); assert.equal(app.run('requests[0].body.experimental'),true);
+  app.run('finishCli({off:true})'); await pending;
+  assert.equal(app.run('cliTextFormOpen'),false); assert.equal(app.storageWrites(),0);
+});
+
+test("Qoder source switch uses the source API and never initiates a sign-in or task", async () => {
+  const app=ui(); await app.dispatch('click',app.target('[data-cli-source-switch]',{cliSourceSwitch:'q',on:'0'}));
+  assert.equal(app.run('requests[0].path'),'/api/providers/q/switch');
+  assert.equal(app.run('JSON.stringify(requests[0].body)'),'{"on":true}');
+  assert.equal(app.run('requests.length'),1);
+});

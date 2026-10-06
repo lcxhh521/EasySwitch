@@ -1,3 +1,4 @@
+import type { QoderExecutor } from "./qoder-text-bridge.ts";
 import type { GatewaySession } from "./gateway-auth.ts";
 import { anthropicModelList } from "./catalog.ts";
 import { applyEffort, type Quirks } from "./quirks.ts";
@@ -18,6 +19,8 @@ export interface GatewayDeps {
   secrets: SecretStore;
   log: (entry: GatewayLogEntry) => void;
   session?: GatewaySession;
+  /** Explicit local-test transport; never read from a request. */
+  qoderExecutor?: QoderExecutor;
 }
 
 /** `<provider id>/<upstream model>`: the provider is everything before the first slash. */

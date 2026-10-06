@@ -1,3 +1,4 @@
+import type { CliTextBridgeConfig } from "./cli-text-source.ts";
 import type { VertexConfig } from "./vertex-config.ts";
 
 // Shared data shapes. The JSON Schemas in contracts/ are the language-neutral
@@ -13,6 +14,8 @@ export type MessagesRoute = "anthropic-native" | "chat-translate";
 export type ApiProtocol = "chat" | "responses" | "messages" | "gemini";
 
 export interface Provider {
+  /** Explicit text-only CLI source. Never an ordinary HTTP endpoint. */
+  cliTextBridge?: CliTextBridgeConfig;
   /** Explicit Vertex auth/protocol mode, or the legacy service-account shape; never contains a credential. */
   vertex?: VertexConfig;
   /** URL-safe slug; exposed model ids are `<id>/<upstream model>`. */

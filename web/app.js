@@ -871,7 +871,7 @@ function providerRow(p) {
   const checks = (p.probe?.checks ?? []).map(c => `
     <div class="check ${c.status}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${c.latencyMs}ms` : ""}</div>`).join("");
   const options = models.map(m => `<option ${m === p.defaultModel ? "selected" : ""}>${esc(m)}</option>`).join("");
-  const fixed = p.plan || p.mimoFree || p.vertex || p.kiro || p.antigravity || p.cursor || p.kimi;
+  const fixed = p.plan || p.mimoFree || p.vertex || p.kiro || p.antigravity || p.cursor || p.kimi || p.cliTextBridge;
   const detail = open ? `
     <div class="detail" data-provider="${esc(p.id)}">
       <div class="controls">
@@ -883,14 +883,14 @@ function providerRow(p) {
         <div class="hint">按来源文档勾选它支持的协议。与客户端相同的协议优先；需要转换时，按这里的显示顺序选择。单个模型可独立设置。</div>
         <div class="controls"><button class="btn secondary" type="submit">保存协议</button><button class="btn secondary" type="button" data-protocol-auto>恢复默认</button></div>
       </form>`}
-      <div class="controls">
+      ${p.cliTextBridge ? `<p class="hint">${esc(cliTextSourceNotice(p))}</p>` : `<div class="controls">
         <label class="hint">测试用模型</label>
         <select class="probe-model">${options || "<option value=''>（没有可选模型）</option>"}</select>
         <button class="btn" data-probe ${((state.budget?.settings.enabled && state.budget.settings.action === "stop") || p.budget?.stop || p.budgetStatus?.configurationInvalid) ? "disabled title=\"暂停预算开启时不允许未完整计费的探测\"" : ""}>一致性测试</button>
         <span class="hint">${p.probe ? `上次测试：${ago(p.probe.at)}` : "还没测过"}</span>
-      </div>
+      </div>`}
       ${checks ? `<div class="checks">${checks}</div>` : ""}
-      <div class="hint">OpenAI 兼容地址：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
+      <div class="hint">${p.cliTextBridge ? "本地CLI标识（不是HTTP接口）" : "OpenAI 兼容地址"}：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
       ${billingBlock(p)}
       ${budgetBlock(p)}
       ${keyList(p)}
@@ -902,6 +902,7 @@ function providerRow(p) {
       <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}${p.quota ? ` · <span class="${p.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(p.quota.text)}</span>` : ""}</div></div>
       ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
       <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
+      ${p.cliTextBridge ? `<button class="switch ${p.off ? "" : "on"}" data-cli-source-switch="${esc(p.id)}" data-on="${p.off ? "0" : "1"}" ${p.cliTextBridge.kind === "qoder" ? "" : "disabled"}>${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button><span class="chip warn">实验性 · 仅文字</span>` : ""}
       <span class="chev">›</span>
     </div>${detail}`;
 }
@@ -1040,6 +1041,7 @@ function poolsCard() {
 function renderProviders() {
   return `
     ${planCard()}
+    ${typeof cliTextSourcesCard === "function" ? cliTextSourcesCard() : ""}
     ${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}
     <div class="section-head"><h2>模型来源</h2><span class="aside">中转站、官方 API、本地模型都可以；加进来先自动测一遍</span></div>
     <div class="card">
@@ -1313,7 +1315,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof cliTextBusy !== "undefined" && cliTextBusy) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {

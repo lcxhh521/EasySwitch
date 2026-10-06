@@ -1,3 +1,4 @@
+import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { existingSubscriptionKind } from "./subscription-compat.ts";
 import { vertexKind, VertexConfigError } from "./vertex-config.ts";
 import type { Provider, ProviderKey } from "./types.ts";
@@ -96,6 +97,7 @@ export function setVertexToken(fn: ((provider: Provider) => Promise<string>) | u
 }
 
 export async function pickKey(secrets: SecretStore, provider: Provider): Promise<{ keyId?: string; apiKey: string | undefined }> {
+  const cliIssue = cliTextSourceIssue(provider); if (cliIssue) throw new Error(cliIssue);
   const exclusiveAuth = [provider.plan, provider.antigravity, provider.kiro, provider.kimi, provider.cursor, provider.vertex].filter(value => value !== undefined).length + (provider.mimoFree ? 1 : 0);
   if (exclusiveAuth > 1) throw new VertexConfigError("一个来源不能同时声明多种专用鉴权。");
   if (provider.cursor !== undefined || provider.kimi !== undefined) existingSubscriptionKind(provider);

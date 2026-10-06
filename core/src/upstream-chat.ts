@@ -20,6 +20,7 @@ const mimoStateDir = (): string => join(dataDir(), "mimo");
  * chunks; the handlers above never need to know the difference.
  */
 export async function sendChat(provider: Provider, apiKey: string | undefined, payload: unknown, signal: AbortSignal): Promise<Response | Error> {
+  if (provider.cliTextBridge !== undefined) return new Error("CLI文字来源必须通过专用出站适配器，不能回退到普通HTTP出口。");
   const chat = payload as ChatRequest;
   if (provider.kiro) return sendKiro(provider, chat, signal);
   if (provider.antigravity) return sendAntigravity(provider, apiKey, chat, signal);

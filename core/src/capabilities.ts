@@ -92,7 +92,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     source: { state: "todo", note: "做得了：读 Grok CLI 本机的登录文件（~/.grok/auth.json），转发到它的 cli-chat-proxy 代理（Responses 风格，要带一组仿 CLI 的头）；令牌每次刷新会轮换，过期了要让 Grok 自己刷新，不能我们刷。风险：仿客户端标识。见 research/subscription-sources-3.md" },
   },
   "qoder-cli": {
-    source: { state: "todo", note: "私有协议（要自己实现加密签名那一套）很难；稳妥的做法是让用户在 Qoder 网页建个人访问令牌，用它启动 qodercli 子进程当桥（只有文字）。还没做，见 research/subscription-sources-3.md" },
+    source: { state: "documented", note: "实验性CLI纯文字来源已接入：显式PAT、私有HOME/cwd、默认关闭；不支持工具/图片，角色只作文字transcript，结果缓冲；仅假程序验证，真实CLI未验收" },
   },
   "gemini-cli": {
     source: { state: "impossible", note: "个人账号的 Google 登录已不再提供给 Gemini CLI 的 Code Assist（只有标准版/企业版账号，且要自备 Cloud 项目）；想用自己的 Gemini 额度，走 API Key（已有 Google 预设）。企业账号走 Code Assist 的路是可做的，但我们没有这类账号可测" },
@@ -228,7 +228,7 @@ function derive(agent: AgentInfo): AgentCaps {
     : !hasLauncher ? { state: "todo", note: "要先有启动方式" }
     : launcherListsModels(l) ? { state: l!.verified ? "verified" : "documented", note: "所有可用的模型都写进了它的私有配置，EasySwitch 里选的只是默认" + (l!.verified ? "" : "；还没在真实程序上确认它的菜单真的列出来") }
     : { state: "todo", note: l!.pickerNote ?? "它的配置一次只能指定一个模型，还没查它启动后能不能列出或切换到别的模型" });
-  const source: Cap = SUBSCRIPTION_VENDOR[agent.id] ? subscriptionSourceCapability(SUBSCRIPTION_VENDOR[agent.id]!) : d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
+  const source: Cap = agent.id === "qoder-cli" ? d.source! : agent.id === "droid" ? { state: "todo", note: "Droid纯文字控制器仅有假传输测试；生产传输和隔离尚未核实，创建与请求返回501" } : SUBSCRIPTION_VENDOR[agent.id] ? subscriptionSourceCapability(SUBSCRIPTION_VENDOR[agent.id]!) : d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
 
   return { launch, task, mcp, effort, tiers, picker, source };
 }

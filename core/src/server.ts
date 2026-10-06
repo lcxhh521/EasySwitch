@@ -1,3 +1,6 @@
+import { cliTextSourceIssue } from "./cli-text-source.ts";
+import { qoderTextBridgeIssue, type QoderExecutor } from "./qoder-text-bridge.ts";
+import { DROID_TEXT_BRIDGE_BLOCKER } from "./droid-text-bridge.ts";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -80,6 +83,8 @@ export interface ServerDeps {
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
+  /** In-process fake executor for bridge integration tests; not a production switch. */
+  qoderExecutor?: QoderExecutor;
   /** In-process test seam; never configurable over HTTP or environment variables. */
   interactiveRuntime?: {
     findBinary: (id: string) => Promise<string | undefined>;
@@ -122,11 +127,12 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 /** Stamps an estimated cost on a finished call, using the price in force right now. */
 export function priceEntry(store: Store, entry: GatewayLogEntry): void {
   const provider = entry.providerId ? store.provider(entry.providerId) : undefined;
-  if (!provider || entry.inputTokens === undefined || entry.outputTokens === undefined) return;
+  if (!provider) return;
   if (provider.billing === "subscription") {
     entry.costNote = "subscription";
     return;
   }
+  if (entry.inputTokens === undefined || entry.outputTokens === undefined) return;
   const model = entry.model.slice(entry.model.indexOf("/") + 1);
   const priced = ratesFor(provider, model);
   if (!priced) {
@@ -1308,7 +1314,29 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
+    if (path === "/api/cli-text-sources" && method === "GET") {
+      json(res, 200, { qoder: { state: "documented", textOnly: true, defaultOff: true, realCliVerified: false }, droid: { state: "blocked", status: 501, message: DROID_TEXT_BRIDGE_BLOCKER } }); return;
+    }
+    if (path === "/api/cli-text-sources" && method === "POST") {
+      if (body.kind === "droid") { json(res, 501, { error: DROID_TEXT_BRIDGE_BLOCKER }); return; }
+      const allowed = ["kind", "name", "model", "binary", "apiKey", "timeoutMs", "maxOutputBytes", "experimental"];
+      if (body.kind !== "qoder" || Object.keys(body).some(k => !allowed.includes(k))) { json(res, 400, { error: "无效的CLI文字来源配置" }); return; }
+      if (body.experimental !== true) { json(res, 409, { error: "请确认纯文字桥限制与真实CLI尚未验收；添加时不会执行程序" }); return; }
+      const config = { binary: body.binary, ...(body.timeoutMs !== undefined ? { timeoutMs: body.timeoutMs } : {}), ...(body.maxOutputBytes !== undefined ? { maxOutputBytes: body.maxOutputBytes } : {}) };
+      const issue = qoderTextBridgeIssue(config);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const model = typeof body.model === "string" ? body.model.trim() : "";
+      const key = typeof body.apiKey === "string" ? body.apiKey : "";
+      if (issue || !name || !/^[a-z0-9][a-z0-9._:/-]{0,191}$/i.test(model) || !key || /[\r\n\0]/.test(key)) { json(res, 400, { error: issue ?? "需要名称、明确模型ID和用户提供的PAT" }); return; }
+      const id = `qoder-${randomUUID().replace(/-/g, "")}`;
+      const provider: Provider = { id, name, baseUrl: "cli://qoder", defaultModel: model, models: [model], route: "chat-translate", routePinned: true, protocols: ["chat"], streamUsage: false, billing: "subscription", off: true, cliTextBridge: { kind: "qoder", binary: config.binary as string, ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs as number } : {}), ...(config.maxOutputBytes !== undefined ? { maxOutputBytes: config.maxOutputBytes as number } : {}) }, icon: "qoder", createdAt: new Date().toISOString() };
+      try { await secrets.set(id, key); store.upsertProvider(provider); }
+      catch { try { store.removeProvider(id); } catch {} await secrets.delete(id).catch(() => {}); json(res, 500, { error: "未能保存CLI文字来源，请检查本地存储" }); return; }
+      json(res, 201, { ...publicProvider(provider, true), notice: "默认关闭；仅文字，不能调用工具/图片，不等同原生模型API。未运行CLI或探测。" }); return;
+    }
+
     if (method === "POST" && path === "/api/providers") {
+      if (Object.hasOwn(body, "cliTextBridge")) { json(res, 400, { error: "CLI文字来源请使用专用创建入口" }); return; }
       const issue = subscriptionSourceIssue(body);
       if (issue) { json(res, issue.status, { error: issue.message, code: issue.code }); return; }
       const name = String(body.name ?? "").trim();
@@ -1452,7 +1480,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { quota: { text: describeQuota(quotaOf(provider.id)) ?? "", ...(exhaustedUntil(provider.id) ? { exhaustedUntil: exhaustedUntil(provider.id)! } : {}) } });
       return;
     }
-    const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route|protocols))?$/.exec(path);
+    const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route|protocols|switch))?$/.exec(path);
     if (providerMatch) {
       const provider = store.provider(providerMatch[1] ?? "");
       if (!provider) {
@@ -1460,6 +1488,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const action = providerMatch[2];
+      if (action === "switch" && method === "PUT") {
+        if (!provider.cliTextBridge || typeof body.on !== "boolean" || Object.keys(body).some(k => k !== "on")) { json(res, 400, { error: "需要CLI文字来源及明确开关" }); return; }
+        const issue = cliTextSourceIssue(provider); if (issue) { json(res, 400, { error: issue }); return; }
+        if (provider.cliTextBridge.kind === "droid") { json(res, 501, { error: DROID_TEXT_BRIDGE_BLOCKER }); return; }
+        if (body.on) delete provider.off; else provider.off = true;
+        store.upsertProvider(provider); json(res, 200, { on: !provider.off }); return;
+      }
+      if (provider.cliTextBridge && action) { json(res, 409, { error: "CLI文字来源不能用通用API探测或改协议；请通过已鉴权会话显式调用" }); return; }
       const issue = subscriptionSourceIssue(provider);
       if (action && issue) { json(res, issue.status, { error: issue.message, code: issue.code }); return; }
       if (method === "DELETE" && !action) {
@@ -1676,7 +1712,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor }));
         return;
       }
       if (path === "/mcp") {
@@ -1695,13 +1731,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx), session });
+          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -1715,7 +1751,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
