@@ -62,8 +62,8 @@ commit, license and how far the code was changed.
 
 | 项 | 来源 | 现状 | 公开前要做 | 状态 |
 |---|---|---|---|---|
-| `web/icons/` 中 lobe-icons 的 SVG（约 23 个） | LobeHub lobe-icons（MIT） | 原样拷贝，声明在 third_party/lobe-icons | 自绘或字母头像；品牌 logo 还有商标问题 | 待办 |
-| `web/icons/` 中 opencodex 供应商图标集（约 40 个） | opencodex（MIT；集内部分图标另有出处，SOURCES.md 记着，许可未核实） | 原样拷贝 | 自绘或字母头像（优先，来源最杂） | 待办 |
+| `web/icons/` 中原 lobe-icons SVG | LobeHub lobe-icons（MIT，历史来源） | 当前80个服务/agent资产统一换成独立生成的字母头像；文件名与映射保留，历史许可记录不删 | 已替换当前图形，不代表其他公开前项完成 | 完成 |
+| `web/icons/` 中原供应商图标集 | opencodex及其记录的其他来源（历史声明保留） | 当前全部服务图标为独立文本/圆角矩形字母头像，无原logo几何、字体包或外部资源 | 已替换当前图形，旧历史和第三方许可仍保持私有记录 | 完成 |
 | `core/src/pricing/prices.json` | opencodex 模型元数据（MIT） | 由脚本从其数据生成 | 价格是事实；换成自己整理的来源重新生成 | 待办 |
 | `core/src/presets.ts` 预设表 | opencodex 供应商注册表（MIT） | 手工删改过 | 对照各家官方文档逐条核实后重写 | 待办 |
 | `web/style.css` 设计变量 | （原先取自 Magpie） | 2026-10-06 已整套换成自己的色板（暖纸色底 + 青绿强调色） | 无需再处理 | 完成 |

@@ -2,9 +2,10 @@
 // currentColor and are drawn through a mask so they follow the theme) and which
 // carry their own colours (drawn as images). The file content decides, not the name.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const dir = new URL("../web/icons/", import.meta.url).pathname;
+const dir = fileURLToPath(new URL("../web/icons/", import.meta.url));
 /** Perceived brightness 0..1 of a CSS colour, or null when it is not a plain colour. */
 function brightness(value) {
   const v = value.trim().toLowerCase();
@@ -26,7 +27,7 @@ function brightness(value) {
  * fill is currentColor, unset, or a dark colour, and nothing is light, since a
  * light shape on a dark tile would turn into a solid block through a mask.
  */
-function isMono(svg) {
+export function isMono(svg) {
   if (/<(linear|radial)Gradient/i.test(svg)) return false;
   const fills = [...svg.matchAll(/fill\s*[=:]\s*["']?\s*([^"';\s>]+)/gi)].map(m => m[1]);
   return fills.every(f => {
@@ -36,10 +37,24 @@ function isMono(svg) {
   });
 }
 
-const mono = readdirSync(dir)
-  .filter(f => f.endsWith(".svg"))
-  .filter(f => isMono(readFileSync(join(dir, f), "utf8")))
-  .map(f => f.slice(0, -4))
-  .sort();
-writeFileSync(join(dir, "manifest.json"), `${JSON.stringify({ mono }, null, 1)}\n`);
-console.log(`${mono.length} single-colour icons`);
+/** Pure content classification, also used by the checked-in asset tests. */
+export function iconManifest(icons) {
+  return { mono: Object.entries(icons)
+    .filter(([name, svg]) => name.endsWith(".svg") && isMono(svg))
+    .map(([name]) => name.slice(0, -4))
+    .sort() };
+}
+
+export function writeIconManifest(directory = dir) {
+  const icons = Object.fromEntries(readdirSync(directory)
+    .filter(name => name.endsWith(".svg"))
+    .map(name => [name, readFileSync(join(directory, name), "utf8")]));
+  const manifest = iconManifest(icons);
+  writeFileSync(join(directory, "manifest.json"), `${JSON.stringify(manifest, null, 1)}\n`);
+  return manifest;
+}
+
+// Importing this module is read/write-free; only its explicit CLI regenerates files.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  console.log(`${writeIconManifest().mono.length} single-colour icons`);
+}

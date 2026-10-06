@@ -159,3 +159,15 @@ test("reset is scoped, suppresses duplicate clicks, and drops the draft only aft
   app.run("finishReset({})"); await pending;
   assert.equal(app.run("protocolDrafts.has('source')"), false); assert.equal(button.disabled, false);
 });
+
+
+test("provider icon metadata cannot inject image attributes or CSS URLs", () => {
+  const app = ui();
+  for (const value of ['bad" onerror="alert(1)', "../external", "https://attacker.invalid/mark", null, 42]) {
+    const markup = app.run(`icon(${JSON.stringify(value)}, 'sm')`) as string;
+    assert.match(markup, /class="ic letter sm"/);
+    assert.ok(!markup.includes("onerror") && !markup.includes("attacker") && !markup.includes("<img"));
+  }
+  const letter = app.run(`icon('letter:<script>', '" onmouseover="alert(1)')`) as string;
+  assert.ok(letter.includes("&lt;script&gt;")); assert.ok(!letter.includes("onmouseover"));
+});

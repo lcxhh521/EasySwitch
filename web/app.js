@@ -113,6 +113,9 @@ async function call(method, path, body, options = {}) {
 let monoIcons = null; // Set of single-colour icon names, once icons/manifest.json is loaded
 
 function icon(name, cls = "") {
+  // Source metadata must never become an attribute, CSS URL, or event handler.
+  if (typeof name !== "string" || (!name.startsWith("letter:") && !/^[a-z0-9][a-z0-9-]*$/.test(name))) name = "letter:?";
+  if (typeof cls !== "string" || !/^[a-z0-9 -]*$/i.test(cls)) cls = "";
   if (name.startsWith("letter:")) {
     const letter = name.slice(7);
     // Same letter, same colour; different letters land on different hues.
