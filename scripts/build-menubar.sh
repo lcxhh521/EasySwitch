@@ -7,7 +7,7 @@ node_bin=${EASYSWITCH_NODE:-$(command -v node)}
 app="$repo/menubar/build/EasySwitch.app"
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 swiftc -O -o "$app/Contents/MacOS/EasySwitch" "$repo/menubar/main.swift" -framework AppKit -framework WebKit
 
 cat > "$app/Contents/Info.plist" <<PLIST
@@ -19,6 +19,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>EasySwitch</string>
   <key>CFBundleIdentifier</key><string>dev.easyswitch.menubar</string>
   <key>CFBundleExecutable</key><string>EasySwitch</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.0.1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -30,5 +31,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# The icons come from assets/*.svg through scripts/build-icons.sh (the result is committed in menubar/Resources).
+cp "$repo"/menubar/Resources/* "$app/Contents/Resources/" 2>/dev/null || true
 codesign --force --sign - "$app" >/dev/null 2>&1 || true
 echo "built $app"

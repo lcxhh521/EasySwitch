@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/easyswitch.svg" alt="EasySwitch" width="128" height="128"></p>
+
 # EasySwitch
 
 把用户授权的模型来源用进熟悉的 agent，通过明确开启的增强会话工作，尽量保留日常原生配置。

@@ -58,10 +58,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }.resume()
   }
 
+  /// MenubarOn / MenubarOff (with an @2x) from the app's Resources; nil when the app was built without them.
+  private static func menubarImage(running: Bool) -> NSImage? {
+    let name = running ? "MenubarOn" : "MenubarOff"
+    guard let path = Bundle.main.path(forResource: name, ofType: "png"), let image = NSImage(contentsOfFile: path) else { return nil }
+    if let big = Bundle.main.path(forResource: "\(name)@2x", ofType: "png"), let rep = NSImageRep(contentsOfFile: big) { image.addRepresentation(rep) }
+    image.size = NSSize(width: 18, height: 18)
+    image.isTemplate = true
+    return image
+  }
+
   // MARK: Menu
 
   private func rebuildMenu() {
-    statusItem.button?.title = healthy ? "⇄ ●" : "⇄ ○"
+    // The mark: an S-shaped track with a knob; the knob is filled while the core service runs, hollow when it does not.
+    // A template image, so the system colours it for light, dark and highlighted menu bars. The text is only a fallback.
+    if let image = Self.menubarImage(running: healthy) {
+      statusItem.button?.image = image
+      statusItem.button?.title = ""
+    } else {
+      statusItem.button?.title = healthy ? "⇄ ●" : "⇄ ○"
+    }
     statusItem.button?.toolTip = healthy ? "EasySwitch 运行中" : "EasySwitch 核心服务未运行"
     let menu = NSMenu()
     let status = NSMenuItem(title: healthy ? "核心服务：运行中（端口 \(corePort)）" : "核心服务：未运行", action: nil, keyEquivalent: "")
