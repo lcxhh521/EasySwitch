@@ -37,6 +37,12 @@ export interface Provider {
   mimoFree?: boolean;
   probe?: ProbeReport;
 
+  /**
+   * The user has switched this subscription off: it is kept (login and settings stay) but used nowhere: not in
+   * model menus, pools or dispatch, and a request that names it is refused with a plain reason. New
+   * subscriptions start switched off.
+   */
+  off?: boolean;
   /** This provider is a ChatGPT plan reached through "Sign in with ChatGPT": the key is a renewed OAuth token, not a stored key. */
   plan?: { kind: "chatgpt" | "codex" | "copilot"; accountId: string };
   /** How the user pays: per token (default) or a flat subscription, where per-call cost is not meaningful. */

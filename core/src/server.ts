@@ -235,7 +235,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // Claude Code keeps the user's own login when it has one: Claude's own models stay in the menu, and with no model chosen it starts on its usual default.
     const keepLogin = id === "claude" && store.settings().claudeNative && await claudeLoggedIn();
     const model = opts.model ?? (b ? `${b.providerId}/${b.model}` : keepLogin ? "" : first ? `${first.providerId}/${first.model}` : "");
-    if (keepLogin ? (model !== "" && !resolveModel(store, model)) : (!model || !resolveModel(store, model))) return { status: 409, error: "还没有可用的模型：先在「模型来源」里添加一个" };
+    if (keepLogin ? (model !== "" && !resolveModel(store, model)) : (!model || !resolveModel(store, model))) {
+      const off = model ? store.provider(model.slice(0, Math.max(0, model.indexOf("/")))) : undefined;
+      return { status: 409, error: off?.off ? `「${off.name}」这个订阅现在是关着的：先在「模型来源」里把它打开` : "还没有可用的模型：先在「模型来源」里添加一个" };
+    }
     const wanted = opts.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model || undefined)).includes(wanted) ? wanted : undefined;
     const tiers = tiersFor(id);
@@ -286,6 +289,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         streamUsage: kind === "copilot", billing: "subscription", plan: { kind, accountId: account.id },
         ...(kind === "copilot" ? { wire: { headers: copilotHeaders() } } : {}),
         icon: kind === "copilot" ? "github-copilot-color" : "openai", createdAt: new Date().toISOString(),
+        // A new subscription starts switched off: the user decides when it is used.
+        off: true,
       };
     }
     provider.name = name;
@@ -490,9 +495,20 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- ChatGPT plan: Continue with ChatGPT --------------------------------
     if (path === "/api/plan" && method === "GET") {
       json(res, 200, {
-        accounts: siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, ...planQuota(a.id) })),
+        accounts: siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...planQuota(a.id) })),
         signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.userCode ? { userCode: planSignIn.userCode } : {}), ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
       });
+      return;
+    }
+    // The switch on a subscription: on or off, the user decides. Off keeps the login and the settings.
+    const planSwitch = /^\/api\/plan\/([A-Za-z0-9_-]+)\/switch$/.exec(path);
+    if (planSwitch && method === "PUT") {
+      const mine = store.providers().filter(p => p.plan?.accountId === planSwitch[1]);
+      if (!mine.length) { json(res, 404, { error: "没有这个订阅" }); return; }
+      if (typeof body.on !== "boolean") { json(res, 400, { error: "需要 on: true 或 false" }); return; }
+      for (const p of mine) { if (body.on) delete p.off; else p.off = true; store.upsertProvider(p); }
+      agentCache = undefined;
+      json(res, 200, { ok: true, on: body.on });
       return;
     }
     if (path === "/api/plan/signin" && method === "POST") {

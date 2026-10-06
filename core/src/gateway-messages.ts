@@ -7,7 +7,7 @@ import { fromClaudeModelId } from "./catalog.ts";
 import { createHash } from "node:crypto";
 import { withKey } from "./keypool.ts";
 import { quirksFor, reasoningDelta, reasoningMemory, shapeChat, upstreamModelId } from "./quirks.ts";
-import { applyThinking, resolveModel } from "./gateway.ts";
+import { applyThinking, noModelMessage, resolveModel } from "./gateway.ts";
 import { sendChat } from "./upstream-chat.ts";
 import { forwardNative, isNativeClaude } from "./claude-native.ts";
 import { agentOf } from "./gateway-chat.ts";
@@ -54,7 +54,7 @@ export async function handleMessages(req: IncomingMessage, res: ServerResponse, 
     return;
   }
   if (!resolved) {
-    anthropicError(res, 404, "not_found_error", `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`);
+    anthropicError(res, 404, "not_found_error", noModelMessage(deps.store, exposed));
     return;
   }
   const { provider, model } = resolved;

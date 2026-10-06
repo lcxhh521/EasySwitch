@@ -27,7 +27,8 @@ export interface CatalogModel {
 }
 
 export function catalogModels(providers: readonly Provider[]): CatalogModel[] {
-  return providers.flatMap(p => {
+  // A subscription the user switched off is used nowhere.
+  return providers.filter(p => !p.off).flatMap(p => {
     const models = p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : [];
     return models.map(model => ({ providerId: p.id, providerName: p.name, model, efforts: modelEfforts(p, model) }));
   });

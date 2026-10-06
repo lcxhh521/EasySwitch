@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { catalogModels } from "./catalog.ts";
 import { agentFromAuth } from "./gateway-chat.ts";
 import { sendChat } from "./upstream-chat.ts";
-import { applyThinking, resolveModel, type GatewayDeps } from "./gateway.ts";
+import { applyThinking, noModelMessage, resolveModel, type GatewayDeps } from "./gateway.ts";
 import { chatToGemini, GeminiStream, geminiToChat } from "./gemini.ts";
 import { withKey } from "./keypool.ts";
 import { quirksFor, reasoningDelta, reasoningMemory, shapeChat } from "./quirks.ts";
@@ -60,7 +60,7 @@ export async function handleGemini(req: IncomingMessage, res: ServerResponse, ma
   }
   const resolved = resolveModel(deps.store, exposed);
   if (!resolved) {
-    geminiError(res, 404, `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`, "NOT_FOUND");
+    geminiError(res, 404, noModelMessage(deps.store, exposed), "NOT_FOUND");
     return;
   }
   const { provider, model } = resolved;

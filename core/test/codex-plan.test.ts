@@ -116,6 +116,8 @@ test("end to end: the console signs in as Codex, the models are the account's, a
     assert.equal(provider.plan!.kind, "codex");
     assert.deepEqual(provider.models, ["gpt-codex-fake"]);
     assert.deepEqual(provider.modelEfforts, { "gpt-codex-fake": ["low", "medium", "high", "xhigh"] });
+    assert.equal(provider.off, true, "a new subscription starts switched off");
+    assert.equal((await api("PUT", `/api/plan/${state.accounts[0].id}/switch`, { on: true })).status, 200);
     fake.codexRequests.length = 0;
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-opencode-x" },

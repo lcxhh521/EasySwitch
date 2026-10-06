@@ -63,6 +63,45 @@ test("Continue with ChatGPT turns a signed-in plan into a model source with the 
   assert.equal(provider.billing, "subscription", "a plan is not priced per token");
   assert.equal(provider.route, "responses-native");
   assert.deepEqual(provider.modelEfforts, { "gpt-fake": ["low", "high", "ultra"] }, "the model's own levels, as OpenAI lists them");
+
+  // A new subscription starts switched off: its models are nowhere, and asking for one says why.
+  assert.equal(provider.off, true);
+  assert.equal(state.accounts[0].on, false);
+  assert.ok(!store.catalog().some(m => m.providerId === pid), "a switched-off subscription is not in the model catalog");
+  const refused = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(refused.status, 404);
+  assert.match(((await refused.json()) as Json).error.message, /switched off/);
+  assert.equal(fake.responsesRequests.length, 0, "nothing was sent to the plan");
+
+  // The switch turns it on, and the account's login and settings were there all along.
+  assert.equal((await api("PUT", `/api/plan/${accountId}/switch`, { on: true })).status, 200);
+  assert.equal(((await (await api("GET", "/api/plan")).json()) as Json).accounts[0].on, true);
+  assert.ok(store.catalog().some(m => m.providerId === pid && m.model === "gpt-fake"));
+  assert.equal((await api("PUT", `/api/plan/${accountId}/switch`, { on: "yes" })).status, 400, "the switch is on or off, nothing else");
+  assert.equal((await api("PUT", "/api/plan/no-such-account/switch", { on: true })).status, 404);
+});
+
+test("switching a subscription off keeps the login but takes it out of menus, pools and requests, and switching it on brings it all back", async () => {
+  assert.equal((await api("PUT", `/api/plan/${accountId}/switch`, { on: false })).status, 200);
+  assert.equal(store.providers().find(p => p.id === pid)!.off, true);
+  assert.ok(store.siwcStorage().accounts().some(a => a.id === accountId), "the login stays");
+  assert.ok(!store.catalog().some(m => m.providerId === pid));
+  const before = fake.responsesRequests.length;
+  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(res.status, 404);
+  assert.equal(fake.responsesRequests.length, before, "a switched-off plan is never asked");
+  assert.equal((await api("PUT", `/api/plan/${accountId}/switch`, { on: true })).status, 200);
+  assert.equal(store.providers().find(p => p.id === pid)!.off, undefined);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
+  })).status, 200, "back in use");
 });
 
 test("a Chat Completions agent uses the plan: converted to Responses, bearer is the account's token, refused fields never leave", async () => {

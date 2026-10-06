@@ -97,6 +97,8 @@ test("end to end: Copilot becomes a model source; an agent's Chat request goes o
     assert.deepEqual(provider.models, ["gpt-copilot-fake"], "chat models the picker shows, not embeddings or hidden ones");
     assert.deepEqual(provider.modelEfforts, { "gpt-copilot-fake": ["low", "medium", "high"] });
     assert.equal(provider.route, "chat-translate");
+    assert.equal(provider.off, true, "a new subscription starts switched off");
+    assert.equal((await api("PUT", `/api/plan/${state.accounts[0].id}/switch`, { on: true })).status, 200);
     gh.chatRequests.length = 0;
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-opencode-x" },

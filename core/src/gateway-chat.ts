@@ -6,7 +6,7 @@ import { applyThinking } from "./gateway.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { GatewayLogEntry } from "./types.ts";
 import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
-import { resolveModel, type GatewayDeps } from "./gateway.ts";
+import { noModelMessage, resolveModel, type GatewayDeps } from "./gateway.ts";
 import { sendChat } from "./upstream-chat.ts";
 
 /**
@@ -73,7 +73,7 @@ export async function handleChatCompletions(req: IncomingMessage, res: ServerRes
   const exposed = String(body.model ?? "");
   const resolved = resolveModel(deps.store, exposed);
   if (!resolved) {
-    sendJson(res, 404, openaiError(`EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`, "not_found_error", "model_not_found"));
+    sendJson(res, 404, openaiError(noModelMessage(deps.store, exposed), "not_found_error", "model_not_found"));
     return;
   }
   const { provider, model } = resolved;

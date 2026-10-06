@@ -33,7 +33,14 @@ export function resolveModel(store: Store, exposed: string): { provider: Provide
   if (slash <= 0) return undefined;
   const provider = store.provider(exposed.slice(0, slash));
   const model = exposed.slice(slash + 1);
-  return provider && model ? { provider, model } : undefined;
+  return provider && !provider.off && model ? { provider, model } : undefined;
+}
+
+/** Why a name resolves to nothing, in words for the agent: a switched-off subscription says so. */
+export function noModelMessage(store: Store, exposed: string): string {
+  const provider = store.provider(exposed.slice(0, Math.max(0, exposed.indexOf("/"))));
+  if (provider?.off) return `The subscription "${provider.name}" is switched off in EasySwitch. Switch it on in the console (Model sources) to use "${exposed}".`;
+  return `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -77,7 +84,7 @@ export async function handleResponses(req: IncomingMessage, res: ServerResponse,
   const exposed = String(body.model ?? "");
   const resolved = resolveModel(deps.store, exposed);
   if (!resolved) {
-    sendJson(res, 404, errorBody(`EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`, "model_not_found"));
+    sendJson(res, 404, errorBody(noModelMessage(deps.store, exposed), "model_not_found"));
     return;
   }
   const { provider, model } = resolved;
