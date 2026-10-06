@@ -132,6 +132,10 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     task: { state: "impossible", note: "闭源，没有自定义端点" },
     source: { state: "todo", note: "还没调研它的订阅怎么接" },
   },
+  dsh: {
+    mcp: { state: "verified", note: "用真实 dsh 验证过：模型拿到了 EasySwitch 的三个 MCP 工具。前提：MCP 插件不在 dsh 的安装包里，要你自己的 dsh 里装过它（我们从你放插件的位置找到它，链接进这次启动的私有目录），没装就挂不上" },
+    tiers: { state: "verified", note: "用真实 dsh 验证过：起会话标题这类小任务走了配的小任务模型；子 agent 的模型只写进了配置，没有触发过" },
+  },
   amp: {
     launch: { state: "impossible", note: "请求走它自己的 ampcode.com 并要求账号登录，没有 OpenAI 兼容的自定义端点；只能检测并打开" },
     task: { state: "impossible", note: "它只认自己的账号服务，没法把别的模型接进它" },
@@ -160,9 +164,6 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   },
   pi: {
     mcp: { state: "impossible", note: "核心没有内置 MCP（靠扩展包）" },
-  },
-  dsh: {
-    mcp: { state: "todo", note: "做得了：在 patch 里加 dsh-mcp-client 插件（每个服务一个实例），但这个插件不在默认配置里，要先让私有 DSH_HOME 找得到它（预置符号链接）；还没实做，要先 --dump-config 校验再实跑" },
   },
   aider: {
     mcp: { state: "impossible", note: "原版 Aider 没有 MCP 客户端" },

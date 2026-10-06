@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "../src/agent-launch.ts";
+import { commandLine, dshMcpPlugin, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "../src/agent-launch.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -43,7 +43,7 @@ after(() => {
 });
 
 test("each launcher says what it can do, and which forms were run against the real program", () => {
-  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true, efforts: [], anyEffort: true, tiers: [] });
+  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true, efforts: [], anyEffort: true, tiers: [{ id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" }, { id: "small", label: "后台小任务", hint: "起会话标题、压缩对话这类轻量工作用这个模型" }] });
   assert.deepEqual(hasLauncher("claude")?.efforts, ["low", "medium", "high", "xhigh", "max"], "agents with their own setting use their own words");
   assert.equal(hasLauncher("qwen-code")?.verified, false, "documented but not yet run here");
   assert.equal(hasLauncher("doubao"), undefined);
@@ -69,13 +69,23 @@ test("a dsh patch is written under the private session directory, not under ~/.d
   assert.equal(spec.env.DSH_HOME, join(dir, "dsh-home"), "a private DSH_HOME, so ~/.dsh is untouched");
 });
 
-test("the real DeepSeek Harness, handed a task headlessly, answers through the gateway", async t => {
+test("the real DeepSeek Harness, handed a task headlessly, answers through the gateway, with its levels, small-job models and (when its plugin is there) our MCP tools", async t => {
   if (!existsSync(DSH)) { t.skip("DeepSeek Harness not installed"); return; }
   const before = relay.requests.length;
-  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, models: [`${providerId}/mock-coder`, `${providerId}/mock-mini`], task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000 });
+  const mini = `${providerId}/mock-mini`;
+  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, models: [`${providerId}/mock-coder`, mini], effort: "high", tiers: { subagent: mini, small: mini }, task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000 });
   assert.equal(result.timedOut, false);
-  assert.match(result.output, /Hello from the mock relay|pong/i);
+  assert.match(result.output, /Hello from the mock relay|pong/i, `a patch with levels and small-job models is accepted: ${result.output.slice(0, 300)}`);
   assert.ok(relay.requests.length > before, "the request went through the gateway to the provider");
+  // dsh's MCP client is a plugin of the person's own dsh: when it is there, our tools reach the model.
+  if (dshMcpPlugin()) {
+    // The last request may be a small job (the session title) with no tools: look at every request of this run.
+    const asked = relay.requests.slice(before) as Array<{ tools?: Array<{ function?: { name?: string } }>; model?: string }>;
+    const names = asked.flatMap(r => (r.tools ?? []).map(x => x.function?.name ?? "?"));
+    assert.ok(names.some(n => /easyswitch/i.test(n)), `the model was offered EasySwitch's MCP tools: ${names.join(", ") || "(no tools at all)"}`);
+    // The small-job tier is used: the session title is asked of the other model.
+    assert.ok(asked.some(r => r.model === "mock-mini"), `a small job ran on the small-job model: ${asked.map(r => r.model).join(", ")}`);
+  }
 });
 
 test("the task endpoint refuses without a task, and never touches an agent that is not installed", async () => {

@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { sessionToken } from "./gateway-chat.ts";
 import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
@@ -62,6 +62,8 @@ export interface LaunchSpec {
   unset?: string[];
   /** Files to write under sessionDir before starting (relative path → content). */
   files?: Record<string, string>;
+  /** Symbolic links to make before starting (absolute link path → what it points to). */
+  links?: Record<string, string>;
 }
 
 export interface AgentLauncher {
@@ -86,9 +88,35 @@ const openaiEnv = (i: LaunchInput): Record<string, string> => ({ OPENAI_BASE_URL
 /** A YAML-safe quoted string (JSON strings are valid YAML). */
 const q = (s: string) => JSON.stringify(s);
 
+/** The levels dsh's configuration knows (it has no "ultra"); a saved level outside them is still applied by the gateway. */
+const DSH_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * dsh's MCP client is a plugin that is not part of the app: it lives where the user's own dsh keeps its plugins.
+ * It is found there and linked into this launch's private home (nothing is installed, nothing of the user's changes).
+ */
+export function dshMcpPlugin(): string | undefined {
+  // A test (or a person with the plugin somewhere else) can point at it directly.
+  const given = process.env.EASYSWITCH_DSH_MCP_PLUGIN;
+  if (given) return given;
+  const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
+  try { return realpathSync(join(home, "profiles", "node_modules", "@deepseek-ai", "dsh-mcp-client")); } catch { return undefined; }
+}
+const dshHome = (i: LaunchInput) => join(i.sessionDir, "dsh-home");
+const dshPluginLink = (i: LaunchInput) => join(dshHome(i), "profiles", "node_modules", "@deepseek-ai", "dsh-mcp-client");
+
 /** dsh: a patch overlay adds the gateway as a provider and makes it the default for this launch. */
-function dshPatch(i: LaunchInput): string {
+function dshPatch(i: LaunchInput, mcpPlugin?: string): string {
+  const levels = DSH_LEVELS.filter(l => l !== "minimal");
+  const effort = i.effort && DSH_LEVELS.includes(i.effort) ? i.effort : undefined;
   return [
+    // The sub-agent and the small jobs (the session title, compaction) can run on models of their own.
+    ...(i.tiers?.subagent ? ["- id: tool-subagent", "  config:", "    provider: spawn", "    toolName: subagent", "    backgroundMode: continuable", "    agentOptions:", "      provider: easyswitch", `      model: ${q(i.tiers.subagent)}`] : []),
+    ...(i.tiers?.small ? [
+      "- id: session-title-llm", "  config:", "    targetWords: 5", "    targetCjkCharacters: 10", "    maxInputBytes: 4096", "    maxOutputTokens: 64", "    timeoutMs: 60000",
+      "    provider: easyswitch", `    model: ${q(i.tiers.small)}`,
+      "- id: compaction-basic", "  config:", "    summarizationProvider: easyswitch", `    summarizationModel: ${q(i.tiers.small)}`,
+    ] : []),
     "- id: llm-pi-ai",
     "  config:",
     "    providers:",
@@ -99,11 +127,23 @@ function dshPatch(i: LaunchInput): string {
     "        headers:",
     `          Authorization: ${q(`Bearer ${i.token}`)}`,
     "        models:",
-    ...allModels(i).flatMap(m => [`          - id: ${q(m)}`, `            name: ${q(m.slice(m.indexOf("/") + 1))}`, "            input: [text]"]),
+    ...allModels(i).flatMap(m => [`          - id: ${q(m)}`, `            name: ${q(m.slice(m.indexOf("/") + 1))}`, "            input: [text]", "            reasoningEfforts:", ...levels.map(l => `              ${l}: ${l}`)]),
     "- id: agent-default-model",
     "  config:",
     "    provider: easyswitch",
     `    model: ${q(i.model)}`,
+    ...(effort ? [`    reasoningEffort: ${effort}`] : []),
+    ...(i.mcp && mcpPlugin ? [
+      "- insert:",
+      "    - id: mcp-easyswitch",
+      "      name: '@deepseek-ai/dsh-mcp-client'",
+      "      config:",
+      "        serverName: easyswitch",
+      "        transport: streamable-http",
+      `        url: ${q(i.mcp.url)}`,
+      "        headers:",
+      ...Object.entries(i.mcp.headers).map(([k, v]) => `          ${q(k)}: ${q(v)}`),
+    ] : []),
     "",
   ].join("\n");
 }
@@ -137,7 +177,18 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   // Run here against the real programs.
   dsh: {
     verified: true,
-    headless: i => ({ command: i.bin, args: ["headless", "--patch", join(i.sessionDir, "patch.yml"), i.task ?? ""], env: { DSH_HOME: join(i.sessionDir, "dsh-home") }, files: { "patch.yml": dshPatch(i) } }),
+    tiers: [
+      { id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" },
+      { id: "small", label: "后台小任务", hint: "起会话标题、压缩对话这类轻量工作用这个模型" },
+    ],
+    mcpCaveat: "MCP 插件不在 dsh 的安装包里：从你自己的 dsh 放插件的位置找到它再链接进这次启动的私有目录；你的 dsh 里没装它就挂不上",
+    headless: i => {
+      const plugin = i.mcp ? dshMcpPlugin() : undefined;
+      return {
+        command: i.bin, args: ["headless", "--patch", join(i.sessionDir, "patch.yml"), i.task ?? ""], env: { DSH_HOME: dshHome(i) },
+        files: { "patch.yml": dshPatch(i, plugin) }, ...(plugin ? { links: { [dshPluginLink(i)]: plugin } } : {}),
+      };
+    },
   },
 
   // Hermes: a private HERMES_HOME holds a one-provider config, so ~/.hermes is never read or written.
@@ -324,6 +375,11 @@ export function materialize(spec: LaunchSpec, sessionDir: string): void {
     const path = isAbsolute(rel) ? rel : join(sessionDir, rel);
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, content, { mode: 0o600 });
+  }
+  for (const [link, target] of Object.entries(spec.links ?? {})) {
+    const path = isAbsolute(link) ? link : join(sessionDir, link);
+    mkdirSync(join(path, ".."), { recursive: true });
+    symlinkSync(target, path);
   }
 }
 

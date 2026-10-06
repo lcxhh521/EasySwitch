@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { tmpdir } from "node:os";
 import { AGENTS } from "../src/agents.ts";
 import { LAUNCHERS, type AgentLauncher } from "../src/agent-launch.ts";
 import { capabilityMatrix, coverage, FEATURES, launcherCarriesMcp, launcherHasOwnEffort, launcherListsModels, type CapState } from "../src/capabilities.ts";
 
 const STATES: CapState[] = ["verified", "documented", "manual", "impossible", "todo", "na"];
+// dsh's MCP plugin is whatever the person's own dsh has; the table must not depend on that, so it is pinned here.
+process.env.EASYSWITCH_DSH_MCP_PLUGIN = tmpdir();
 const matrix = capabilityMatrix();
 
 test("every agent has an explicit state for every feature: nothing is left unsaid", () => {
@@ -52,11 +55,12 @@ test("closed apps are never claimed to launch, and a launcher implies launch or 
 test("MCP and thinking-level support are read off what the launchers really do", () => {
   // The launchers that carry the MCP server today; a new one has to be added here on purpose.
   const carrying = AGENTS.filter(a => launcherCarriesMcp(LAUNCHERS[a.id])).map(a => a.id).sort();
-  assert.deepEqual(carrying, ["claude", "cline", "codex", "copilot-cli", "crush", "droid", "gemini-cli", "goose", "grok-build", "hermes", "openclaw", "opencode", "qoder-cli", "qwen-code"], "update the matrix expectation when another launcher learns to carry MCP");
+  assert.deepEqual(carrying, ["claude", "cline", "codex", "copilot-cli", "crush", "droid", "dsh", "gemini-cli", "goose", "grok-build", "hermes", "openclaw", "opencode", "qoder-cli", "qwen-code"], "update the matrix expectation when another launcher learns to carry MCP");
   assert.equal(matrix.codex!.mcp.state, "verified");
   assert.equal(matrix.claude!.mcp.state, "verified");
   assert.equal(matrix.hermes!.mcp.state, "documented");
-  assert.equal(matrix.dsh!.mcp.state, "todo", "dsh can take an MCP plugin through its patch; not done yet");
+  assert.equal(matrix.dsh!.mcp.state, "verified", "dsh takes an MCP plugin through its patch, checked against the real program");
+  assert.match(matrix.dsh!.mcp.note ?? "", /插件不在 dsh 的安装包里/);
   assert.equal(matrix.aider!.mcp.state, "impossible");
   // A launcher that grows an MCP argument is noticed without anyone editing a table.
   const fake: AgentLauncher = { verified: false, headless: i => ({ command: i.bin, args: i.mcp ? ["--mcp", i.mcp.url] : [], env: {} }) };
@@ -94,8 +98,8 @@ test("the coverage summary adds up, and says plainly how much is still to do", t
 
 import { materialize, type LaunchInput } from "../src/agent-launch.ts";
 import { EXTRA_LAUNCHERS } from "../src/launchers-extra.ts";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 function input(sessionDir: string, over: Partial<LaunchInput> = {}): LaunchInput {
@@ -103,7 +107,12 @@ function input(sessionDir: string, over: Partial<LaunchInput> = {}): LaunchInput
 }
 
 function walk(dir: string): string[] {
-  return readdirSync(dir).flatMap(n => (statSync(join(dir, n)).isDirectory() ? walk(join(dir, n)) : [join(dir, n)]));
+  // Symbolic links are listed by what they are and never followed (dsh's plugin link points outside the directory).
+  return readdirSync(dir).flatMap(n => {
+    const full = join(dir, n);
+    const info = lstatSync(full);
+    return info.isSymbolicLink() ? [] : info.isDirectory() ? walk(full) : [full];
+  });
 }
 
 test("every private-directory launcher keeps everything under its own session directory and never touches the user's home", () => {

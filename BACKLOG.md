@@ -12,8 +12,8 @@
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
 
 - [~] B2 · 所有 CLI 的启动方式和后台任务：代码都写好了（launchers-extra.ts 等），**剩下的是在真实程序上实测**（B57 给你命令；B5 是已有的那几个）— 来源：「前面让你实现的功能你也只是在一两个agent上实现了」（10-06）· 备注：事实表在 research/；每个启动器的 caveat 写明哪部分是猜的
-- [ ] B3 · MCP 挂载还差的：dsh（做得了：patch 里加 dsh-mcp-client 插件，但要先给私有 DSH_HOME 预置插件的符号链接，见 research/agent-facts-4.md）、Trae Agent（只认 stdio，要一个 HTTP 转 stdio 的小桥）、Kimi / OMP / AtomCode（还没查到写法）；已挂的有 Codex、Claude Code、Hermes、OpenCode、Gemini、Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw — 来源：「agents calling agents」产品定义（10-05）
-- [ ] B4 · 档位和子 agent / 小任务模型还差的：dsh（patch 里写 reasoningEffort 和 tool-subagent 等，见 research/agent-facts-4.md）、Gemini CLI（只能写 thinkingConfig，把握不大）、Copilot（effortLevel）；其余已在启动器里 — 来源：「每个agent都应该有自己的推理程度、子模型、小任务模型」（10-05）
+- [ ] B3 · MCP 挂载还差的：Trae Agent（只认 stdio，要一个 HTTP 转 stdio 的小桥）、Kimi / OMP / AtomCode（还没查到写法）；已挂的有 Codex、Claude Code、Hermes、OpenCode、Gemini、Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw，**dsh 也做完了并用真程序验证**（模型拿到 mcp__easyswitch__ 三个工具；前提是用户自己的 dsh 里装了 MCP 插件）— 来源：「agents calling agents」产品定义（10-05）
+- [ ] B4 · 档位和子 agent / 小任务模型还差的：Gemini CLI（只能写 thinkingConfig，把握不大）、Copilot（effortLevel）；dsh 已做并验证（档位和子 agent / 小任务模型都写进 patch，真程序里小任务确实走了小任务模型）；其余已在启动器里 — 来源：「每个agent都应该有自己的推理程度、子模型、小任务模型」（10-05）
 - [ ] B5 · 把「按文档写的、没实测」的 Gemini CLI、Qwen Code、OpenCode、Copilot CLI、Aider 逐个实测（用独立目录临时安装，不动系统环境）；与 B57 的本机验证命令合并做 — 来源：盘点发现 Gemini CLI 被多报为已接入（10-06）
 - [ ] B7 · 其余各 agent 的订阅当模型来源（Gemini CLI、Qoder、CodeBuddy、Trae、Amp、豆包、Grok、MiniMax、Kimi、Droid）逐个调研：能接就接，不能接写明原因 — 来源：「订阅额度给其他harness用」产品定义（10-05）
 
