@@ -22,7 +22,7 @@ SECRETS = [
     ("Slack token", re.compile(r"\bxox[bpas]-[A-Za-z0-9-]{20,}")),
 ]
 PERSONAL = re.compile(r"/Users/alexyoung|alexyoung")
-FORBIDDEN_FILES = {"PROVENANCE.md", "SOURCES.md", "BACKLOG.md", "HANDOVER.md"}
+FORBIDDEN_FILES = {"PROVENANCE.md", "SOURCES.md", "BACKLOG.md", "BACKLOG-DONE.md", "HANDOVER.md"}
 SKIP_DIRS = {".git", "node_modules"}
 MAX_BYTES = 2_000_000
 

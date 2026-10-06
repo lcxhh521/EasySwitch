@@ -21,7 +21,7 @@ repo="${ES_REPO:-$(cd "$here/../.." && pwd)}"
 mkdir -p "$out"
 git -C "$repo" archive "$ref" | tar -x -C "$out"
 
-rm -f "$out/PROVENANCE.md" "$out/BACKLOG.md" "$out/HANDOVER.md"
+rm -f "$out/PROVENANCE.md" "$out/BACKLOG.md" "$out/BACKLOG-DONE.md" "$out/HANDOVER.md"
 rm -rf "$out/research" "$out/.claude" "$out/tools/release"
 python3 - "$out" <<'EOF'
 import os, re, sys
