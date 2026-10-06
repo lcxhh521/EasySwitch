@@ -406,8 +406,8 @@ export async function runHeadless(
       child.on("error", error => { cleanup(); resolve({ exitCode: null, output: output + String(error.message), timedOut, ...(spec.warnings?.length ? { warnings: spec.warnings } : {}) }); });
     });
   } finally {
-    if (token) authority.revoke(token);
-    rmSync(sessionDir, { recursive: true, force: true });
+    try { if (token) authority.revoke(token); }
+    finally { rmSync(sessionDir, { recursive: true, force: true }); }
   }
 }
 

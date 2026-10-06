@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { GatewayTokenAuthority } from "./gateway-auth.ts";
 import { gatewayPort } from "./paths.ts";
 import { Ledger } from "./ledger.ts";
 import { ensureKeychainHelper } from "./native-keychain.ts";
@@ -7,7 +9,9 @@ import { Store } from "./store.ts";
 
 const port = gatewayPort();
 if (process.env.EASYSWITCH_SECRETS !== "memory" && !ensureKeychainHelper()) console.error("[easyswitch] 钥匙串小程序没有编译成功（需要 Xcode 命令行工具）：读不到已保存的 Key。可手动运行 scripts/build-keychain.sh 看原因。");
-const server = createEasySwitchServer({ store: new Store(), secrets: createSecretStore(), port, ledger: new Ledger() });
+const store = new Store();
+const gatewayAuth = new GatewayTokenAuthority({ stateFile: join(store.dir, "gateway-sessions.jsonl") });
+const server = createEasySwitchServer({ store, secrets: createSecretStore(), port, ledger: new Ledger(store.dir), gatewayAuth });
 
 server.on("error", (error: NodeJS.ErrnoException) => {
   console.error(error.code === "EADDRINUSE" ? `port ${port} is already in use; is EasySwitch already running?` : error);

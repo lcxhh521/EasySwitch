@@ -22,6 +22,7 @@ import { gatewayTokens, type GatewayTokenAuthority } from "./gateway-auth.ts";
 
 export type ClaudeDesktopPlatform = "darwin" | "linux";
 export const CLAUDE_DESKTOP_ISOLATION_BLOCKER = "官方签名版 Claude 2.19675.1 会忽略 CLAUDE_USER_DATA_DIR；真实应用的独立目录方案尚未验证，已暂停真实启动";
+const REVOCATION_FAILURE = "会话令牌未能持久撤销；请检查本地存储，未确认撤销成功";
 export interface ClaudeDesktopModel { id: string; label?: string }
 export interface ClaudeDesktopOptions {
   /** Absolute executable, not `open`, a shell command, or a macOS .app directory. */
@@ -53,6 +54,7 @@ export interface ClaudeDesktopStatus {
   exitCode?: number | null;
   cleaned: boolean;
   error?: string;
+  revocationError?: string;
 }
 
 function supported(platform: NodeJS.Platform): ClaudeDesktopPlatform {
@@ -127,6 +129,7 @@ export class ClaudeDesktopSession {
   #spawnFixture?: typeof spawn;
   #gatewayAuth: Pick<GatewayTokenAuthority, "issue" | "revoke">;
   #token?: string;
+  #revocationError?: string;
   #finished: Promise<void> = Promise.resolve();
   #resolveFinished?: () => void;
   #stopping?: Promise<void>;
@@ -184,11 +187,17 @@ export class ClaudeDesktopSession {
     } catch (error) {
       this.#revokeToken();
       this.cleanup();
+      if (this.#revocationError) throw new AggregateError([error], `独立会话准备失败；${this.#revocationError}`);
       throw error;
     }
   }
 
-  status(): ClaudeDesktopStatus { return { ...this.#state }; }
+  status(): ClaudeDesktopStatus {
+    return { ...this.#state, ...(this.#revocationError ? {
+      revocationError: this.#revocationError,
+      error: [this.#state.error, this.#revocationError].filter(Boolean).join("；"),
+    } : {}) };
+  }
 
   async start(): Promise<ClaudeDesktopStatus> {
     if (this.#state.state !== "prepared" || this.#state.cleaned) throw new Error("这个独立会话不能重复启动，请新建会话");
@@ -233,7 +242,7 @@ export class ClaudeDesktopSession {
           this.#revokeToken();
           try { if (!this.#groupAlive()) this.cleanup(); }
           catch { this.#state.state = "cleanup-blocked"; this.#state.error = "进程启动失败且私有目录状态异常，未自动清理"; }
-          reject(new Error(this.#state.error));
+          reject(new Error(this.status().error));
         });
       });
       return this.status();
@@ -246,6 +255,7 @@ export class ClaudeDesktopSession {
         catch { this.#state.state = "cleanup-blocked"; this.#state.error = "进程启动失败且私有目录状态异常，未自动清理"; }
       }
       this.#resolveFinished?.();
+      if (this.#revocationError) throw new AggregateError([error], `独立窗口未能启动；${this.#revocationError}`);
       throw error;
     }
   }
@@ -255,8 +265,15 @@ export class ClaudeDesktopSession {
 
   #revokeToken(): void {
     if (!this.#token) return;
-    this.#gatewayAuth.revoke(this.#token);
-    this.#token = undefined;
+    try {
+      this.#gatewayAuth.revoke(this.#token);
+      this.#token = undefined;
+      this.#revocationError = undefined;
+    } catch {
+      // EventEmitter callbacks must never throw a storage failure or skip process/file cleanup.
+      // Keep the token only in memory so a later explicit cleanup/stop can retry revocation.
+      this.#revocationError = REVOCATION_FAILURE;
+    }
   }
 
   #groupAlive(): boolean {
@@ -279,7 +296,11 @@ export class ClaudeDesktopSession {
 
   /** Stop only our detached process group; keep files if exit cannot be proven. */
   async stop(graceMs = 3000): Promise<void> {
-    if (this.#state.cleaned) return;
+    if (this.#state.cleaned) {
+      this.#revokeToken();
+      if (this.#revocationError) throw new Error(this.#revocationError);
+      return;
+    }
     if (this.#stopping) return this.#stopping;
     if (!Number.isFinite(graceMs) || graceMs < 0 || graceMs > 30_000) throw new Error("无效的退出等待时间");
     // Even if an orphan cannot safely be signalled, a stop request must end its
@@ -299,6 +320,7 @@ export class ClaudeDesktopSession {
       }
       this.#state.state = "stopped";
       this.cleanup();
+      if (this.#revocationError) throw new Error(this.#revocationError);
     })();
     try { await this.#stopping; } finally { this.#stopping = undefined; }
   }
@@ -310,7 +332,7 @@ export class ClaudeDesktopSession {
    * another process with our UID could also race inside the private quarantine.
    */
   cleanup(): void {
-    if (this.#state.cleaned) return;
+    if (this.#state.cleaned) { this.#revokeToken(); return; }
     if (this.#state.state === "starting" || this.#groupAlive()) throw new Error("独立会话仍在运行，不能清理目录");
     // Files may be preserved after a failed identity check; their old token
     // must nevertheless be unusable once this session has ended.
@@ -345,6 +367,7 @@ export class ClaudeDesktopSession {
       throw error;
     }
     this.#state.cleaned = true;
+    if (this.#revocationError) this.#state.state = "failed";
   }
 }
 

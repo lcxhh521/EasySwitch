@@ -49,7 +49,7 @@ import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
 import { TaskBook, type Task } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
-import { GatewayTokenAuthority, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
+import { GatewayTokenAuthority, GatewayIssuanceLimitError, GatewaySessionStoreError, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
 import { BudgetController, BudgetExceededError } from "./global-budget.ts";
 import { gatewayError } from "./gateway-route.ts";
 import { vertexConfigIssue, vertexKind as vertexMode, type VertexConfig } from "./vertex-config.ts";
@@ -325,8 +325,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
     const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
     materialize(spec, sessionDir);
-    return { spec, sessionDir, model, name: known.name, cleanup: async () => { if (token) auth.revoke(token); await rm(sessionDir, { recursive: true, force: true }); } };
-    } catch (error) { if (token) auth.revoke(token); await rm(sessionDir, { recursive: true, force: true }); throw error; }
+    return { spec, sessionDir, model, name: known.name, cleanup: async () => { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
+    } catch (error) { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
   }
 
   // ---- ChatGPT plan ("Continue with ChatGPT"): accounts, sign-in in progress, the provider each account becomes
@@ -587,14 +587,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         if (typeof body.agentId !== "string" || !AGENTS.some(a => a.id === body.agentId)) { json(res, 400, { error: "请选择已登记的 agent" }); return; }
         if (body.allowNativeClaude === true && body.agentId !== "claude") { json(res, 400, { error: "只有 Claude Code 会话可请求保留原生登录" }); return; }
         try {
-          const made = auth.issue(body.agentId, { allowMcp: body.allowMcp === true, allowNativeClaude: body.allowNativeClaude === true, ...(typeof body.ttlMs === "number" ? { ttlMs: body.ttlMs } : {}) });
+          const made = auth.issueManual(body.agentId, { allowMcp: body.allowMcp === true, allowNativeClaude: body.allowNativeClaude === true, ...(typeof body.ttlMs === "number" ? { ttlMs: body.ttlMs } : {}) });
           json(res, 201, made);
-        } catch { json(res, 400, { error: "会话设置无效或已达到数量上限" }); }
+        } catch (error) {
+          if (error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError) json(res, error.status, { error: error.message, code: error.code });
+          else json(res, 400, { error: "会话设置无效" });
+        }
         return;
       }
     }
     const revokeSession = /^\/api\/gateway\/sessions\/([a-f0-9-]+)$/.exec(path);
-    if (revokeSession && method === "DELETE") { json(res, auth.revokeId(revokeSession[1]!) ? 200 : 404, { ok: true }); return; }
+    if (revokeSession && method === "DELETE") { const revoked = auth.revokeId(revokeSession[1]!); json(res, revoked ? 200 : 404, revoked ? { ok: true } : { ok: false, error: "没有找到可撤销的会话" }); return; }
     if (path === "/api/budget") {
       if (method === "GET") { json(res, 200, budget.status()); return; }
       if (method === "PUT") {
@@ -1164,10 +1167,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const first = store.catalog()[0];
       const main = binding ? `${binding.providerId}/${binding.model}` : first ? `${first.providerId}/${first.model}` : "";
       if (!(GUIDE_IDS as readonly string[]).includes(guideMatch[1]!)) { json(res, 404, { error: "这个应用没有配置向导" }); return; }
-      const issued = auth.issue(guideMatch[1]!, { allowMcp: false, allowNativeClaude: false });
+      const issued = auth.issueManual(guideMatch[1]!, { allowMcp: false, allowNativeClaude: false });
       const guide = setupGuide(guideMatch[1]!, { port: (server.address() as { port: number } | null)?.port ?? port, models: modelsFor(main), token: issued.token });
       if (!guide) { json(res, 404, { error: "这个应用没有配置向导" }); return; }
-      json(res, 200, { ...guide, session: { id: issued.id, expiresAt: issued.expiresAt }, caveat: `${guide.caveat} 此令牌 24 小时后或 EasySwitch 重启后失效，可在会话令牌列表中撤销。` });
+      json(res, 200, { ...guide, session: { id: issued.id, expiresAt: issued.expiresAt }, caveat: `${guide.caveat} 此令牌24小时后失效，可在会话令牌列表中撤销；生产服务重启会保留原到期时间，不自动续期。` });
       return;
     }
     const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|command)$/.exec(path);
@@ -1797,7 +1800,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       json(res, 404, { error: "not found" });
     } catch (error) {
-      if (!res.headersSent) json(res, 500, { error: String((error as Error).message ?? error) });
+      if (!res.headersSent) {
+        const authError = error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError;
+        json(res, authError ? error.status : 500, { error: String((error as Error).message ?? error), ...(authError ? { code: error.code } : {}) });
+      }
       else res.end();
     }
   });
