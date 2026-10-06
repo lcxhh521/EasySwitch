@@ -209,8 +209,9 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   // Documented overrides, not yet run against the real programs.
   "gemini-cli": {
     verified: false,
+    efforts: ["low", "medium", "high"],
     pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自定义地址下能不能列出别的模型",
-    caveat: "环境变量来自它的文档；无界面的 `-p` 默认拿不到工具权限（要 --yolo，我们没开）",
+    caveat: "环境变量来自它的文档；思考档位写成系统设置里的 thinkingConfig（写法凭记忆，把握不大）；无界面的 `-p` 默认拿不到工具权限（要 --yolo，我们没开）",
     mcpCaveat: "MCP 通过「系统设置文件」环境变量挂上，变量名和格式是凭记忆写的，要核实",
     interactive: i => ({ command: i.bin, args: [], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
     headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
@@ -245,11 +246,12 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   },
   "copilot-cli": {
     verified: false,
+    efforts: ["low", "medium", "high", "xhigh"],
     pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自带模型（BYOK）下能不能列出别的模型",
-    caveat: "BYOK 环境变量凭记忆；无界面的 `-p` 默认拿不到工具权限（要 --allow-all-tools，我们没开）",
+    caveat: "BYOK 环境变量凭记忆；思考档位写在私有目录的 settings.json 里（effortLevel，文件位置和键名来自资料、没有实测）；无界面的 `-p` 默认拿不到工具权限（要 --allow-all-tools，我们没开）",
     mcpCaveat: "`--additional-mcp-config` 是凭记忆写的，要核实",
-    interactive: i => ({ command: i.bin, args: copilotMcp(i), env: copilotEnv(i) }),
-    headless: i => ({ command: i.bin, args: ["-p", i.task ?? "", ...copilotMcp(i)], env: copilotEnv(i) }),
+    interactive: i => copilotSpec(i, copilotMcp(i)),
+    headless: i => copilotSpec(i, ["-p", i.task ?? "", ...copilotMcp(i)]),
   },
 
   // Each on a private directory for this launch only (see launchers-extra.ts).
@@ -339,10 +341,23 @@ function geminiSystemSettings(i: LaunchInput, qwen = false): Record<string, stri
   return { GEMINI_CLI_SYSTEM_SETTINGS_PATH: path, ...(qwen ? { QWEN_CODE_SYSTEM_SETTINGS_PATH: path } : {}) };
 }
 function geminiSettingsFiles(i: LaunchInput): Record<string, string> {
+  const level = i.effort && ["low", "medium", "high"].includes(i.effort) ? i.effort.toUpperCase() : undefined;
   return { [GEMINI_SETTINGS]: JSON.stringify({
     security: { auth: { selectedType: "gemini-api-key" } },
+    ...(level ? { modelConfigs: { overrides: [{ match: { model: i.model }, modelConfig: { generateContentConfig: { thinkingConfig: { thinkingLevel: level } } } }] } } : {}),
     ...(i.mcp ? { mcpServers: { easyswitch: { httpUrl: i.mcp.url, headers: i.mcp.headers, trust: true } } } : {}),
   }) };
+}
+
+/**
+ * Copilot takes its thinking level as a setting (`effortLevel`), not a flag: it goes into a settings file of a private
+ * home that is used only when a level is asked for (BYOK needs no login there). Without a level the person's own home stays in use.
+ */
+function copilotSpec(i: LaunchInput, args: string[]): LaunchSpec {
+  const env = copilotEnv(i);
+  if (!i.effort) return { command: i.bin, args, env };
+  const home = join(i.sessionDir, "copilot-home");
+  return { command: i.bin, args, env: { ...env, COPILOT_HOME: home }, files: { [join(home, "settings.json")]: JSON.stringify({ effortLevel: i.effort }) } };
 }
 
 function copilotMcp(i: LaunchInput): string[] {

@@ -76,3 +76,7 @@
 ## 归档 2026-10-06
 
 - [x] B31 · 钥匙串写入不再把密钥放在进程参数里 — 来源：第一版 demo 后我列的公开前加固项（10-05）· 验证：写入改成 `security -i` 从标准输入读命令，值转成 b64: 开头的纯 ASCII 文本再存（因为 security -w 读回含中文等字符的值会打印成十六进制），读时解回、旧的没前缀的值照原样读；secrets.test.ts 3 个用例，其中真钥匙串那条（EASYSWITCH_TEST_KEYCHAIN=1 才跑）在这台机器上用临时账号跑过：特殊字符、2.4KB 长值、原位更新、删除都对，用完已删 · 备注：没有走「原生钥匙串接口」（Node 没有，得另做个 Swift 小程序），但「密钥短暂出现在参数里」这个实际问题已解决
+
+## 归档 2026-10-06
+
+- [x] B4 · 每个 agent 的思考档位和子 agent / 小任务模型：能设的都设，不能设的写明原因 — 来源：「每个agent都应该有自己的推理程度、子模型、小任务模型」（10-05）+ 盘点（10-06）· 验证：dsh 已用真程序验证（档位、小任务模型确实走了小任务模型）；Copilot 把 effortLevel 写进私有 COPILOT_HOME 的 settings.json、Gemini 写成系统设置里的 thinkingConfig（这两个的写法凭记忆，已在启动器 caveat 里写明，capabilities.test.ts 检查了生成的文件）；其余在各启动器里；没有这些设置的在能力表里标明 · 备注：Copilot 和 Gemini 要用户在本机用 verify-launchers 和亲自启动确认

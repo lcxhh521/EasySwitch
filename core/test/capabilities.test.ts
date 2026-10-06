@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { AGENTS } from "../src/agents.ts";
 import { LAUNCHERS, type AgentLauncher } from "../src/agent-launch.ts";
 import { capabilityMatrix, coverage, FEATURES, launcherCarriesMcp, launcherHasOwnEffort, launcherListsModels, type CapState } from "../src/capabilities.ts";
@@ -55,7 +56,7 @@ test("closed apps are never claimed to launch, and a launcher implies launch or 
 test("MCP and thinking-level support are read off what the launchers really do", () => {
   // The launchers that carry the MCP server today; a new one has to be added here on purpose.
   const carrying = AGENTS.filter(a => launcherCarriesMcp(LAUNCHERS[a.id])).map(a => a.id).sort();
-  assert.deepEqual(carrying, ["claude", "cline", "codex", "copilot-cli", "crush", "droid", "dsh", "gemini-cli", "goose", "grok-build", "hermes", "openclaw", "opencode", "qoder-cli", "qwen-code"], "update the matrix expectation when another launcher learns to carry MCP");
+  assert.deepEqual(carrying, ["claude", "cline", "codex", "copilot-cli", "crush", "droid", "dsh", "gemini-cli", "goose", "grok-build", "hermes", "openclaw", "opencode", "qoder-cli", "qwen-code", "trae-agent"], "update the matrix expectation when another launcher learns to carry MCP");
   assert.equal(matrix.codex!.mcp.state, "verified");
   assert.equal(matrix.claude!.mcp.state, "verified");
   assert.equal(matrix.hermes!.mcp.state, "documented");
@@ -129,7 +130,9 @@ test("every private-directory launcher keeps everything under its own session di
         for (const f of walk(dir)) assert.ok(f.startsWith(dir) && !f.startsWith(homedir()) || f.startsWith(dir), `${id}: ${f}`);
         // Everything that mentions the gateway token also names the gateway, and nothing contains a real-looking home path.
         const all = walk(dir).map(f => readFileSync(f, "utf8")).join("\n") + JSON.stringify(spec.args);
-        assert.ok(!all.includes(homedir()), `${id}.${form} mentions the user's home`);
+        // The program that runs the bridge and the repository the bridge script is in may well be under the home directory: they are ours, not the user's.
+        const repoRoot = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
+        assert.ok(!all.replaceAll(process.execPath, "").replaceAll(repoRoot, "").includes(homedir()), `${id}.${form} mentions the user's home`);
         assert.ok(all.includes("127.0.0.1:18999"), `${id}.${form} never names the gateway`);
         assert.ok(all.includes("es-session-x-123") || Object.values(spec.env).includes("es-session-x-123"), `${id}.${form} carries no token`);
         if (form === "headless") assert.ok(spec.args.includes("say hi"), `${id}: the task text is not passed on`);
@@ -221,4 +224,28 @@ test("every launcher that has a model list in its own configuration gets all the
   assert.equal(matrix.aider!.picker.state, "todo");
   assert.match(matrix.aider!.picker.note!, /\/model/);
   assert.equal(matrix["trae-agent"]!.picker.state, "impossible");
+});
+
+test("Copilot's level is a settings file in a private home used only when a level is asked for, Gemini's a thinking setting in the launch's own settings file, and Trae Agent reaches the MCP server through the stdio bridge", async () => {
+  const base = { bin: "/bin/x", port: 18765, model: "prov/m", token: "es-session-x-1", sessionDir: "/tmp/es-s", task: "t" };
+  const none = LAUNCHERS["copilot-cli"]!.headless!(base);
+  assert.equal(none.env.COPILOT_HOME, undefined, "no level asked: the person's own home is left in use");
+  assert.equal(none.files, undefined);
+  const high = LAUNCHERS["copilot-cli"]!.headless!({ ...base, effort: "high" });
+  assert.equal(high.env.COPILOT_HOME, "/tmp/es-s/copilot-home");
+  assert.deepEqual(JSON.parse(Object.values(high.files!)[0]!), { effortLevel: "high" });
+  const gem = LAUNCHERS["gemini-cli"]!.headless!({ ...base, effort: "low" });
+  const settings = JSON.parse(Object.values(gem.files!)[0]!) as Record<string, any>;
+  assert.equal(settings.modelConfigs.overrides[0].modelConfig.generateContentConfig.thinkingConfig.thinkingLevel, "LOW");
+  assert.equal(settings.security.auth.selectedType, "gemini-api-key");
+  assert.equal(JSON.parse(Object.values(LAUNCHERS["gemini-cli"]!.headless!(base).files!)[0]!).modelConfigs, undefined, "no level, no override");
+  const trae = LAUNCHERS["trae-agent"]!.headless!({ ...base, mcp: { url: "http://127.0.0.1:18765/mcp", headers: { Authorization: "Bearer es-session-x-1" } } });
+  const yaml = Object.values(trae.files!)[0]!;
+  assert.match(yaml, /mcp_servers:\n  easyswitch:\n    command: /);
+  assert.match(yaml, /es-mcp-stdio\.ts/);
+  assert.ok(yaml.includes("--header") && yaml.includes("allow_mcp_servers: [easyswitch]"));
+  assert.ok(!Object.values(LAUNCHERS["trae-agent"]!.headless!(base).files!)[0]!.includes("mcp_servers"), "no MCP attached, none configured");
+  assert.equal(matrix["trae-agent"]!.mcp.state, "documented");
+  assert.equal(matrix["copilot-cli"]!.effort.state, "documented");
+  assert.equal(matrix["gemini-cli"]!.effort.state, "documented");
 });

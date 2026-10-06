@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { AgentLauncher, LaunchInput, LaunchSpec } from "./agent-launch.ts";
 
@@ -230,6 +231,23 @@ function atomcodeToml(i: LaunchInput): string {
   ].join("\n");
 }
 
+/** The bridge for agents that can only start an MCP server as a child process on stdio (see bin/es-mcp-stdio.ts). */
+const MCP_STDIO_BRIDGE = fileURLToPath(new URL("../../bin/es-mcp-stdio.ts", import.meta.url));
+
+function traeYaml(i: LaunchInput): string {
+  return [
+    "agents:", "  trae_agent:", "    model: es_model", "    max_steps: 100", "    tools: [bash, str_replace_based_edit_tool, sequentialthinking, task_done]",
+    "model_providers:", "  gw:", "    provider: openai", `    api_key: ${q(i.token)}`, `    base_url: ${q(`${gateway(i)}/v1`)}`,
+    "models:", "  es_model:", "    model_provider: gw", `    model: ${q(i.model)}`, "    max_tokens: 8192", "    temperature: 0.5", "    top_p: 1", "    top_k: 0", "    max_retries: 3", "    parallel_tool_calls: true",
+    ...(i.mcp ? [
+      "mcp_servers:", "  easyswitch:", `    command: ${q(process.execPath)}`,
+      `    args: [${[MCP_STDIO_BRIDGE, i.mcp.url, ...Object.entries(i.mcp.headers).flatMap(([k, v]) => ["--header", `${k}: ${v}`])].map(q).join(", ")}]`,
+      "allow_mcp_servers: [easyswitch]",
+    ] : []),
+    "",
+  ].join("\n");
+}
+
 export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
   "kimi-cli": {
     verified: false,
@@ -316,11 +334,13 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
   },
   "trae-agent": {
     verified: false,
-    caveat: "命令行参数是推测的（没有官方文档可对）；它的 openai 通道可能走 Responses 而不是 Chat，要实测",
+    caveat: "命令行参数和配置文件的写法都是凭记忆的（没有官方文档可对）；它的 openai 通道可能走 Responses 而不是 Chat，要实测",
+    mcpCaveat: "它只认 stdio 形式的 MCP：用 bin/es-mcp-stdio.ts 这个小桥把它转到 EasySwitch 的 HTTP MCP（桥本身测过）；配置文件里 mcp_servers 的写法是凭记忆的",
     ...forms((i, h) => ({
       command: i.bin,
-      args: [...(h ? ["run", i.task ?? ""] : ["interactive"]), "--provider", "openai", "--model", i.model, "--model-base-url", `${gateway(i)}/v1`, "--api-key", i.token],
+      args: [...(h ? ["run", i.task ?? ""] : ["interactive"]), "--config-file", join(i.sessionDir, "trae_config.yaml"), "--provider", "openai", "--model", i.model, "--model-base-url", `${gateway(i)}/v1`, "--api-key", i.token],
       env: {},
+      files: { "trae_config.yaml": traeYaml(i) },
     })),
   },
   atomcode: {

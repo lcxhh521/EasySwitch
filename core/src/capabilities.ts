@@ -170,7 +170,6 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   },
   "trae-agent": {
     picker: { state: "impossible", note: "它没有模型菜单，每次只能用命令行参数指定一个模型" },
-    mcp: { state: "todo", note: "它只认 stdio 形式的 MCP；要加一个把 HTTP 转成 stdio 的小桥才能挂" },
   },
   "claude-desktop": {
     picker: { state: "todo", note: "第三方网关模式下它会读网关的模型列表，还没做" },
