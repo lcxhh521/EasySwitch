@@ -35,6 +35,7 @@
     unsupported_platform: "capability_unavailable", protocol_unsupported: "capability_unavailable",
     helper_missing: "keychain_unavailable", helper_not_executable: "keychain_unavailable", helper_signature_invalid: "keychain_unavailable", helper_timeout: "keychain_unavailable",
     no_default_keychain: "keychain_unavailable", keychain_error: "keychain_unavailable", keychain_access_required: "keychain_unavailable",
+    feedback_unavailable: "storage_unavailable", readonly_unavailable: "capability_unavailable", fixture_only: "capability_unavailable", task_capacity: "request_busy", invalid_depth: "permission_denied",
     gateway_session_storage_unavailable: "storage_unavailable", ENOSPC: "storage_unavailable", EROFS: "storage_unavailable", EIO: "storage_unavailable",
     invalid_gateway_session: "session_invalid", gateway_auth_required: "session_invalid", session_expired: "session_invalid", session_revoked: "session_invalid",
     gateway_session_issuance_limited: "request_busy", cli_concurrency_limit: "request_busy", task_concurrency_limit: "request_busy",

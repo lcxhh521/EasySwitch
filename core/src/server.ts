@@ -1,3 +1,4 @@
+import { ParallelTaskCoordinator, ParallelTaskError, TaskCapacity, type ReadonlyRelayFixtureAdapter } from "./parallel-tasks.ts";
 import { buildDoctorReport, runDoctorChecks, DoctorCheckRequestError, type DoctorInput, type DoctorAgent, type DoctorCheckRunners } from "./doctor.ts";
 import { verifyLauncher, type Verdict } from "./verify-launchers.ts";
 import { humanError, type UserErrorContext } from "./user-errors.ts";
@@ -88,6 +89,9 @@ export interface ServerDeps {
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
+  taskRunner?: typeof runHeadless;
+  /** Opaque Node-test-only relay fixtures; the production registry is empty. */
+  readonlyFixtures?: readonly ReadonlyRelayFixtureAdapter[];
   /** Explicit metadata/runner seams for fake diagnostics. Never configurable through HTTP. */
   doctor?: { agents?: () => DoctorAgent[]; runners?: DoctorCheckRunners };
   /** In-process fake executor for bridge integration tests; not a production switch. */
@@ -214,8 +218,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   /** The log writer for one try: inside a pool it also says which pool and which try this is. */
   const logFor = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) =>
     pushLog(ctx ? { ...entry, pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : entry);
-  const pushLog = (entry: GatewayLogEntry) => {
-    priceEntry(store, entry);
+  const pushLog = (entry: GatewayLogEntry, price = true) => {
+    if (price) priceEntry(store, entry);
     log.unshift(entry);
     log.length = Math.min(log.length, 100);
     ledger?.append(entry);
@@ -231,6 +235,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   const tasks = new TaskBook(store.dir);
+  const taskCapacity = new TaskCapacity();
+  const taskGroups = new ParallelTaskCoordinator({book:tasks,adapters:deps.readonlyFixtures,limiter:taskCapacity,
+    assertBudget: ({model}) => {budget.assertAllowed();if(!resolveModel(store,model))throw new ParallelTaskError("model_unavailable","所选来源或模型暂不可用。",409);},
+    recordUsage: entry => {pushLog({at:new Date().toISOString(),taskId:entry.taskId,taskGroupId:entry.groupId,taskPhase:entry.phase,model:entry.model,providerId:entry.model.split("/")[0],harness:entry.agent,route:"chat-translate",inboundProtocol:"chat",outboundProtocol:"chat",adapter:"readonly-relay-fixture",status:entry.status,ms:entry.ms,inputTokens:entry.inputTokens,outputTokens:entry.outputTokens,costUsd:entry.costUsd,costNote:entry.costNote,note:"只读模拟通道；未运行真实agent"},false);},
+  });
 
   /** Whether an agent can take a task right now: installed, and it has a headless form. */
   async function canTake(id: string): Promise<boolean> {
@@ -262,6 +271,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
   /** Hands a task to an agent ("auto": the dispatch rules choose): records it, runs it headlessly in the background, records how it ended. */
   async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
+    if(!Number.isInteger(input.depth)||input.depth<1||input.depth>2)throw new ParallelTaskError("invalid_depth","任务深度不能超过两层。",403);
+    const release=taskCapacity.reserve(1);
+    try {
+    budget.assertAllowed();
     let id = requested;
     let why: string | undefined;
     if (requested === AUTO_AGENT) {
@@ -281,10 +294,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const wanted = input.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
     const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) });
-    const done = runHeadless(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: auth, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const done = (deps.taskRunner ?? runHeadless)(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: auth, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
-      .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
+      .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!).finally(release);
     return { task, done };
+    } catch(error) {release();throw error;}
   }
 
   /** The levels the installed program itself reports (asked once, remembered), else the launcher's fallback. */
@@ -1077,6 +1091,23 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (method === "DELETE") { store.removeRule(id); json(res, 200, { ok: true }); return; }
     }
 
+    if (path === "/api/task-groups" || path.startsWith("/api/task-groups/")) {
+      if(req.headers["x-easyswitch"]!=="1"){json(res,403,{error:"missing x-easyswitch header"});return;}
+      try {
+        if(path==="/api/task-groups"&&method==="GET"){json(res,200,{groups:taskGroups.list(),capabilities:taskGroups.capabilities([...AGENTS.map(a=>a.id),...(deps.readonlyFixtures??[]).map(a=>a.agent)]),running:taskCapacity.running,limit:3,productionEnabled:false});return;}
+        if(path==="/api/task-groups"&&method==="POST"){
+          if(Object.keys(body).some(k=>!["task","kind","selections"].includes(k)))throw new ParallelTaskError("invalid_input","只读并行不接受工作目录、执行权限或额外选项。");
+          const made=await taskGroups.start({task:body.task as string,kind:body.kind as "explain",selections:body.selections as Array<{agent:string;model:string}>,depth:1,from:"console"});
+          void made.done.catch(()=>{});json(res,202,{group:made.group});return;
+        }
+        const review=/^\/api\/task-groups\/([a-zA-Z0-9-]+)\/review\/(t-[a-z0-9]+)$/.exec(path);
+        if(review&&method==="POST"){if(Object.keys(body).length)throw new ParallelTaskError("invalid_input","审查只使用已选结果，不接受额外权限。");const made=await taskGroups.review(review[1]!,review[2]!,{from:"console"});void made.done.catch(()=>{});json(res,202,{task:made.task});return;}
+        const stop=/^\/api\/task-groups\/([a-zA-Z0-9-]+)\/stop$/.exec(path);
+        if(stop&&method==="POST"){const stopped=taskGroups.stop(stop[1]!);json(res,stopped?200:404,{ok:stopped,...(!stopped?{error:"没有可停止的并行任务"}:{})});return;}
+        json(res,404,{error:"没有这个并行任务操作"});return;
+      }catch(error){if(error instanceof ParallelTaskError||error instanceof BudgetExceededError){json(res,error.status,{error:error.message,code:error.code});return;}throw error;}
+    }
+
     // --- tasks: hand work to an agent, watch it, read what came back ---------
     if (path === "/api/tasks" && method === "GET") {
       json(res, 200, { tasks: tasks.list(), running: tasks.running() });
@@ -1100,7 +1131,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         });
         json(res, 202, { task });
       } catch (error) {
-        json(res, 409, { error: String((error as Error).message ?? error) });
+        json(res, error instanceof ParallelTaskError || error instanceof BudgetExceededError ? error.status : 409, { error: String((error as Error).message ?? error), ...((error instanceof ParallelTaskError || error instanceof BudgetExceededError) ? {code:error.code} : {}) });
       }
       return;
     }

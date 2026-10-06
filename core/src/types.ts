@@ -214,6 +214,10 @@ export interface HarnessBinding {
 
 export interface GatewayLogEntry {
   at: string;
+  /** Exact server-owned task attribution; never accepted from inference request bodies. */
+  taskId?: string;
+  taskGroupId?: string;
+  taskPhase?: "task" | "review";
   /** The exposed model id, `<provider>/<model>`. */
   model: string;
   providerId?: string;
