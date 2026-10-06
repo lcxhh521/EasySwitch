@@ -101,6 +101,26 @@ test("dsh's explicit plugin override validates its package and never falls back 
   }
 });
 
+test("a missing dsh MCP plugin degrades only the MCP attachment and explains the task limitation", () => {
+  const root = mkdtempSync(join(tmpdir(), "es-dsh-missing-"));
+  const home = process.env.DSH_HOME, override = process.env.EASYSWITCH_DSH_MCP_PLUGIN;
+  try {
+    process.env.DSH_HOME = join(root, "absent-home"); delete process.env.EASYSWITCH_DSH_MCP_PLUGIN;
+    const session = join(root, "session"); mkdirSync(session);
+    const spec = LAUNCHERS.dsh!.headless!(input({ sessionDir: session, mcp, tiers: { small: "p/tiny" } }));
+    materialize(spec, session);
+    assert.match(spec.warnings?.[0] ?? "", /任务继续执行但不能调用其他 agent/);
+    const patch = readFileSync(join(session, "patch.yml"), "utf8");
+    assert.doesNotMatch(patch, /mcp-easyswitch|Bearer test-mcp-token/);
+    assert.match(patch, /model: "p\/main"/); assert.match(patch, /summarizationModel: "p\/tiny"/);
+    assert.ok(!existsSync(join(root, "absent-home")), "no global/profile directory was created");
+  } finally {
+    if (home === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = home;
+    if (override === undefined) delete process.env.EASYSWITCH_DSH_MCP_PLUGIN; else process.env.EASYSWITCH_DSH_MCP_PLUGIN = override;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Kimi, OMP and AtomCode attach HTTP MCP in their private documented files", () => {
   for (const [agent, home] of [["kimi-cli", "kimi-home"], ["omp", "omp-agent"], ["atomcode", "atomcode"]]) {
     const spec = LAUNCHERS[agent!]!.headless!(input({ mcp }));
@@ -174,6 +194,8 @@ test("Trae gets a complete private config, Responses provider, explicit MCP stdi
   assert.equal(config.mcp_servers.easyswitch.env.EASYSWITCH_MCP_URL, mcp.url);
   assert.ok(spec.args.includes(join(input().sessionDir, "trae-config.yaml")));
   assert.ok(spec.args.includes(join(input().sessionDir, "trae-trajectory.json")));
+  assert.ok(!spec.args.includes("--api-key")); assert.ok(!spec.args.includes(input().token));
+  assert.equal(spec.env.OPENAI_API_KEY, input().token);
   const plain = JSON.parse(LAUNCHERS["trae-agent"]!.headless!(input()).files!["trae-config.yaml"]!);
   assert.equal(plain.mcp_servers, undefined);
   assert.equal(plain.agents.trae_agent.enable_lakeview, false);

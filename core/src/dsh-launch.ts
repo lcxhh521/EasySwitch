@@ -11,6 +11,8 @@ import { allModels } from "./launchers-extra.ts";
 export const DSH_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const PLUGIN = "@deepseek-ai/dsh-mcp-client";
 const q = JSON.stringify;
+export class DshMcpUnavailableError extends Error {}
+export const DSH_MCP_UNAVAILABLE_NOTICE = "未找到已安装的 dsh MCP 插件，本次任务继续执行但不能调用其他 agent；未安装插件或修改原配置。";
 
 /** Only declare levels supported by this model; an agent-wide list is not a capability claim. */
 function modelEfforts(i: LaunchInput, model: string): Record<string, string> | false | undefined {
@@ -63,7 +65,7 @@ export function dshPatch(i: LaunchInput): string {
 export function dshLaunch(i: LaunchInput): LaunchSpec {
   return { command: i.bin, args: ["headless", "--patch", join(i.sessionDir, "patch.yml"), i.task ?? ""],
     env: { DSH_HOME: join(i.sessionDir, "dsh-home") }, files: { "patch.yml": dshPatch(i) },
-    ...(i.mcp ? { dshMcpPlugin: { bin: i.bin } } : {}) };
+    ...(i.mcp ? { dshMcpPlugin: { bin: i.bin, fallbackPatch: dshPatch({ ...i, mcp: undefined }) } } : {}) };
 }
 
 /** Read package metadata only. Never runs dsh, installs a plugin, or writes its existing profile. */
@@ -88,6 +90,9 @@ function isDshMcpPlugin(path: string): boolean {
 
 export function prepareDshMcpPlugin(bin: string, sessionDir: string, packageDir?: string): void {
   const source = packageDir ?? findDshMcpPlugin(bin);
+  if (!source && packageDir === undefined && process.env.EASYSWITCH_DSH_MCP_PLUGIN === undefined) {
+    throw new DshMcpUnavailableError(DSH_MCP_UNAVAILABLE_NOTICE);
+  }
   if (!source || !isAbsolute(source) || !isDshMcpPlugin(source)) {
     throw new Error("找不到已安装的 dsh MCP 插件；请先关闭此会话的 agent 互调，或准备官方 @deepseek-ai/dsh-mcp-client。EasySwitch 不会运行 plugin add 或修改 ~/.dsh");
   }

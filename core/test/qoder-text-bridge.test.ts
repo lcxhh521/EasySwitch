@@ -33,8 +33,10 @@ test("Qoder isolates HOME/cwd/settings, sends PAT only in the child environment,
       assert.equal(request.args[request.args.indexOf("--max-turns") + 1], "1");
       assert.equal(request.args[request.args.indexOf("--max-model-request-retries") + 1], "0");
       assert.ok(!request.args.some(a => /yolo|bypass|dangerously/.test(a)));
+      assert.ok(!request.args.includes("--config-dir"));
+      assert.equal(request.env.QODER_CONFIG_DIR, join(request.env.HOME!, ".qoder"));
       const settings = request.args[request.args.indexOf("--settings") + 1]!;
-      assert.deepEqual(JSON.parse(await readFile(settings, "utf8")), { hooks: {}, mcpServers: {} });
+      assert.deepEqual(JSON.parse(await readFile(settings, "utf8")), { hooks: {}, mcpServers: {}, autoMemoryEnabled: false, general: { enableAutoUpdate: false, enableNotifications: false } });
       return { exitCode: 0, stdout: "fixture answer" };
     });
     const response = await prepared.send("fixture-pat", new AbortController().signal);
@@ -43,6 +45,26 @@ test("Qoder isolates HOME/cwd/settings, sends PAT only in the child environment,
     assert.equal(prepared.passthrough, false);
     await assert.rejects(access(dirname(job!.cwd)), "the entire owned temporary directory was removed");
   } finally { if (sentinel === undefined) delete process.env.QODER_TEST_AMBIENT_SECRET; else process.env.QODER_TEST_AMBIENT_SECRET = sentinel; }
+});
+
+test("Qoder's fake text-only contract offers no file tools and forwards only approved proxy settings", async () => {
+  const env = { HTTPS_PROXY: "http://fixture-proxy.invalid:3128", no_proxy: "localhost,127.0.0.1", NODE_OPTIONS: "--require=/forbidden", QODER_CONFIG_DIR: "/original/config" };
+  const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]])); Object.assign(process.env, env);
+  try {
+    const request = input(); request.body.messages = [{ role: "user", content: "Read /original/private.txt with a file tool" }];
+    // This fixture verifies the offered CLI contract, not a real vendor or OS sandbox.
+    const prepared = prepareQoderTextBridge(config, request, async job => {
+      assert.equal(job.args[job.args.indexOf("--tools") + 1], "");
+      assert.ok(job.args.includes("--strict-mcp-config"));
+      assert.equal(job.args[job.args.indexOf("--setting-sources") + 1], "");
+      assert.ok(!job.args.includes("/original/private.txt"));
+      assert.equal(job.env.HTTPS_PROXY, env.HTTPS_PROXY); assert.equal(job.env.no_proxy, env.no_proxy);
+      assert.equal(job.env.NODE_OPTIONS, undefined); assert.notEqual(job.env.QODER_CONFIG_DIR, env.QODER_CONFIG_DIR);
+      return { exitCode: 0, stdout: "No file tools are available" };
+    });
+    const response = await prepared.send("fixture-pat", new AbortController().signal);
+    assert.ok(response instanceof Response); assert.match(await response.text(), /No file tools/);
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 });
 
 test("Qoder handles all text protocol inputs without fabricating usage or streaming", async () => {

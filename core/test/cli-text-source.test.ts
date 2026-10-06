@@ -11,6 +11,7 @@ import { sendChat } from "../src/upstream-chat.ts";
 import { prepareOutbound, sourceProtocols } from "../src/outbound.ts";
 import type { Provider } from "../src/types.ts";
 import type { QoderProcessInput } from "../src/qoder-text-bridge.ts";
+import type { CliTextBinaryInspector } from "../src/cli-text-process.ts";
 
 async function call(base: string, path: string, method = "GET", body?: unknown, token?: string) {
   return new Promise<{ status: number; text: string; body: any }>((resolve, reject) => {
@@ -19,11 +20,11 @@ async function call(base: string, path: string, method = "GET", body?: unknown, 
     }); req.on("error", reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, inspect: CliTextBinaryInspector = async binary => ({ realPath: binary, isFile: true, mode: 0o755, executable: true })) {
   const dir = mkdtempSync(join(tmpdir(), "es-cli-source-")); const store = new Store(dir);
   const values = new Map<string, string>(); const secretCalls: string[] = []; const jobs: QoderProcessInput[] = [];
   const auth = new GatewayTokenAuthority();
-  const server: Server = createEasySwitchServer({ store, port: 0, gatewayAuth: auth,
+  const server: Server = createEasySwitchServer({ store, port: 0, gatewayAuth: auth, cliTextBinaryInspector: inspect,
     secrets: { async get(id) { secretCalls.push("get:" + id); return values.get(id); }, async set(id, value) { secretCalls.push("set:" + id); values.set(id, value); }, async delete(id) { secretCalls.push("delete:" + id); values.delete(id); } },
     qoderExecutor: async job => { jobs.push(job); return { exitCode: 0, stdout: "fixture text answer" }; },
     codeBuddyExecutor: async job => { jobs.push(job); return { exitCode: 0, stdout: "fixture CodeBuddy answer" }; },
@@ -144,4 +145,15 @@ test("CodeBuddy creation rejects absent or invented regions and source auth over
   }
   assert.equal((await call(f.base, "/api/cli-text-sources", "POST", { ...config, edition: "china" })).status, 400, "Qoder does not accept a CodeBuddy region");
   assert.deepEqual(f.secretCalls, []); assert.equal(f.jobs.length, 0); assert.equal(f.store.providers().length, 0);
+});
+
+
+test("CLI source creation checks read-only executable metadata before storing credentials", async t => {
+  for (const mode of ["missing", "not-file", "not-executable", "world-writable"] as const) {
+    let inspections = 0;
+    const f = await fixture(t, async binary => { inspections++; if (mode === "missing") throw new Error("fixture absence"); return { realPath: binary, isFile: mode !== "not-file", mode: mode === "world-writable" ? 0o777 : 0o755, executable: mode !== "not-executable" }; });
+    const response = await call(f.base, "/api/cli-text-sources", "POST", config);
+    assert.equal(response.status, 400, mode); assert.equal(inspections, 1);
+    assert.deepEqual(f.secretCalls, []); assert.equal(f.store.providers().length, 0); assert.equal(f.jobs.length, 0);
+  }
 });

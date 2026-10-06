@@ -68,7 +68,7 @@ function cliTextSourcesCard() {
     <p>${esc(cliTextSourceNotice({cliTextBridge:{kind:cliTextKind}}))}</p>
     ${cliTextFormOpen ? `<form class="form" data-cli-text-form>
       <div class="field"><label>来源名称</label><input name="name" required placeholder="我的${label}文字来源"></div>
-      <div class="field"><label>已安装${label} CLI绝对路径（不自动安装或检测）</label><input name="binary" required placeholder="/absolute/path/to/${cliTextKind === "codebuddy" ? "codebuddy" : "qoder"}"></div>
+      <div class="field"><label>已安装${label} CLI绝对路径（只检查文件，不执行或安装）</label><input name="binary" required placeholder="/absolute/path/to/${cliTextKind === "codebuddy" ? "codebuddy" : "qoder"}"></div>
       ${cliTextKind === "codebuddy" ? `<div class="field"><label>凭据所属区域（必须明确选择，不自动切换）</label><select name="edition" required><option value="">请选择</option><option value="international">国际版</option><option value="china">国内版</option></select></div><p class="hint">这是让CodeBuddy提供纯文字结果的来源，不是把EasySwitch模型接入CodeBuddy的启动器；不继承本地网关地址。</p>` : ""}
       <div class="field"><label>你已确认可用的模型ID（不自动查询）</label><input name="model" required></div>
       <div class="field"><label>用户自行提供的${cliTextKind === "codebuddy" ? "CodeBuddy API Key" : "Qoder 个人访问令牌"}</label><input name="apiKey" type="password" autocomplete="off" required></div>

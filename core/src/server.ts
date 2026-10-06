@@ -1,3 +1,4 @@
+import { cliTextBinaryIssue, type CliTextBinaryInspector } from "./cli-text-process.ts";
 import { codeBuddyTextBridgeIssue, type CodeBuddyTextBridgeConfig } from "./codebuddy-text-bridge.ts";
 import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { qoderTextBridgeIssue, type QoderExecutor } from "./qoder-text-bridge.ts";
@@ -87,6 +88,8 @@ export interface ServerDeps {
   /** In-process fake executor for bridge integration tests; not a production switch. */
   qoderExecutor?: QoderExecutor;
   codeBuddyExecutor?: QoderExecutor;
+  /** Metadata-only test seam; never controlled by an HTTP request. */
+  cliTextBinaryInspector?: CliTextBinaryInspector;
   /** In-process test seam; never configurable over HTTP or environment variables. */
   interactiveRuntime?: {
     findBinary: (id: string) => Promise<string | undefined>;
@@ -1331,6 +1334,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const model = typeof body.model === "string" ? body.model.trim() : "";
       const key = typeof body.apiKey === "string" ? body.apiKey : "";
       if (issue || !name || !/^[a-z0-9][a-z0-9._:/-]{0,191}$/i.test(model) || !key || /[\r\n\0]/.test(key)) { json(res, 400, { error: issue ?? "需要名称、明确模型ID和用户提供的凭据" }); return; }
+      const binaryIssue = await cliTextBinaryIssue(config.binary as string, body.kind === "codebuddy" ? "CodeBuddy" : "Qoder", deps.cliTextBinaryInspector);
+      if (binaryIssue) { json(res, 400, { error: binaryIssue }); return; }
       const id = `${body.kind}-${randomUUID().replace(/-/g, "")}`;
       const provider: Provider = { id, name, baseUrl: `cli://${body.kind}`, defaultModel: model, models: [model], route: "chat-translate", routePinned: true, protocols: ["chat"], streamUsage: false, billing: "subscription", off: true, cliTextBridge: body.kind === "codebuddy" ? { kind: "codebuddy", ...config as CodeBuddyTextBridgeConfig } : { kind: "qoder", binary: config.binary as string, ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs as number } : {}), ...(config.maxOutputBytes !== undefined ? { maxOutputBytes: config.maxOutputBytes as number } : {}) }, icon: body.kind, createdAt: new Date().toISOString() };
       try { await secrets.set(id, key); store.upsertProvider(provider); }

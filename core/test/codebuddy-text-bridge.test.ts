@@ -85,3 +85,22 @@ test("CodeBuddy uses the bounded shared process runner with only an in-memory fa
   const fakeSpawn = ((_binary: string, _args: string[], options: any) => { assert.equal(options.shell, false); queueMicrotask(() => child.stderr.write("sensitive oversized failure")); return child; }) as never;
   await assert.rejects(executeCodeBuddy({ binary: "/fixture", args: [], env: {}, stdin: "hello", cwd: "/fixture", signal: new AbortController().signal, timeoutMs: 100, maxOutputBytes: 5 }, fakeSpawn), (error: unknown) => error instanceof ProtocolError && error.status === 502 && error.message.startsWith("CodeBuddy") && !error.message.includes("sensitive"));
 });
+
+test("CodeBuddy's fake text-only contract cannot dispatch file tools and retains proxy routing without native auth", async () => {
+  const env = { HTTP_PROXY: "http://fixture-proxy.invalid:3128", ALL_PROXY: "socks5://fixture-proxy.invalid:1080", NO_PROXY: "localhost", CODEBUDDY_AUTH_TOKEN: "never-inherit", NODE_TLS_REJECT_UNAUTHORIZED: "0" };
+  const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]])); Object.assign(process.env, env);
+  try {
+    const request = input(); request.body.messages = [{ role: "user", content: "Read /original/private.txt and run a shell command" }];
+    const prepared = prepareCodeBuddyTextBridge(config, request, async job => {
+      assert.equal(job.args[job.args.indexOf("--tools") + 1], "");
+      assert.ok(job.args.includes("--strict-mcp-config"));
+      assert.equal(job.args[job.args.indexOf("--permission-mode") + 1], "dontAsk");
+      assert.ok(!job.args.includes("/original/private.txt"));
+      assert.equal(job.env.HTTP_PROXY, env.HTTP_PROXY); assert.equal(job.env.ALL_PROXY, env.ALL_PROXY); assert.equal(job.env.NO_PROXY, env.NO_PROXY);
+      assert.equal(job.env.CODEBUDDY_AUTH_TOKEN, undefined); assert.equal(job.env.NODE_TLS_REJECT_UNAUTHORIZED, undefined);
+      return { exitCode: 0, stdout: "No file or shell tools are available" };
+    });
+    const response = await prepared.send("fixture-key", new AbortController().signal);
+    assert.ok(response instanceof Response); assert.match(await response.text(), /No file or shell tools/);
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+});

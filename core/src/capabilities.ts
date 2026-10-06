@@ -175,7 +175,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     mcp: { state: "impossible", note: "核心没有内置 MCP（靠扩展包）" },
   },
   dsh: {
-    mcp: { state: "documented", note: "私有 DSH_HOME 只链接已安装的 dsh-mcp-client，缺失即拒绝；配置和假调用已测试；Claude 历史版本实测过 MCP 工具可见，本次插件隔离合并尚未真机验收" },
+    mcp: { state: "documented", note: "私有 DSH_HOME 只链接已安装的 dsh-mcp-client；缺失时继续任务但不挂MCP并说明原因，错误路径或不安全链接仍拒绝；配置和假调用已测试；Claude 历史版本实测过 MCP 工具可见，本次插件隔离合并尚未真机验收" },
     effort: { state: "documented", note: "按模型提供的档位生成 dsh 映射，不自造档位；仅配置测试，真实 CLI 未实测" },
     tiers: { state: "documented", note: "子 agent、小任务、标题和压缩模型写入私有 patch；Claude 历史版本实测标题走小模型，未触发子 agent；本次合并仅配置测试，真实 CLI 未实测" },
   },

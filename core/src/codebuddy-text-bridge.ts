@@ -10,7 +10,7 @@ import type { PreparedOutbound } from "./outbound.ts";
 import { ProtocolError, type InboundRequest } from "./protocol.ts";
 import { readOutput } from "./upstream-events.ts";
 import { cliTextRequest } from "./cli-text-request.ts";
-import { cliTextProcessIssue, executeCliTextProcess, type CliTextProcessConfig, type CliTextProcessInput, type CliTextProcessResult, type CliTextExecutor } from "./cli-text-process.ts";
+import { cliTextProcessIssue, cliTextProxyEnv, executeCliTextProcess, type CliTextProcessConfig, type CliTextProcessInput, type CliTextProcessResult, type CliTextExecutor } from "./cli-text-process.ts";
 
 export interface CodeBuddyTextBridgeConfig extends CliTextProcessConfig { edition: "international" | "china" }
 export type CodeBuddyExecutor = CliTextExecutor;
@@ -44,6 +44,7 @@ export function prepareCodeBuddyTextBridge(config: CodeBuddyTextBridgeConfig, in
         await writeFile(mcp, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
         const args = ["--tools", "", "--strict-mcp-config", "--mcp-config", mcp, "--no-session-persistence", "--permission-mode", "dontAsk", "--settings", settings, "--setting-sources", "user", "--max-turns", "1", "--model", input.model, "--output-format", "text", "--input-format", "text", "--print"];
         const env: Record<string, string> = {
+          ...cliTextProxyEnv(),
           HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), TMPDIR: root,
           CODEBUDDY_CONFIG_DIR: configDir, CODEBUDDY_CODE_DEBUG_LOGS_DIR: join(root, "logs"), CODEBUDDY_API_KEY: key,
           CODEBUDDY_MAX_RETRIES: "0", CODEBUDDY_RETRY_WATCHDOG: "0", DISABLE_AUTOUPDATER: "1",

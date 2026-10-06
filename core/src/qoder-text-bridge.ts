@@ -11,7 +11,7 @@ import type { PreparedOutbound } from "./outbound.ts";
 import { ProtocolError, type InboundRequest } from "./protocol.ts";
 import { readOutput } from "./upstream-events.ts";
 import { cliTextRequest } from "./cli-text-request.ts";
-import { cliTextProcessIssue, executeCliTextProcess, type CliTextProcessConfig, type CliTextProcessInput, type CliTextProcessResult, type CliTextExecutor } from "./cli-text-process.ts";
+import { cliTextProcessIssue, cliTextProxyEnv, executeCliTextProcess, type CliTextProcessConfig, type CliTextProcessInput, type CliTextProcessResult, type CliTextExecutor } from "./cli-text-process.ts";
 
 export type QoderTextBridgeConfig = CliTextProcessConfig;
 export type QoderProcessInput = CliTextProcessInput;
@@ -37,10 +37,12 @@ export function prepareQoderTextBridge(config: QoderTextBridgeConfig, input: Inb
         const home = join(root, "home"), cwd = join(root, "work"), configDir = join(home, ".qoder");
         await mkdir(configDir, { recursive: true, mode: 0o700 }); await mkdir(cwd, { mode: 0o700 });
         const settings = join(root, "settings.json");
-        await writeFile(settings, JSON.stringify({ hooks: {}, mcpServers: {} }), { mode: 0o600 });
-        const args = ["--config-dir", configDir, "--cwd", cwd, "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "default", "--settings", settings, "--setting-sources", "", "--max-turns", "1", "--max-model-request-retries", "0", "--model", input.model, "--output-format", "text", "--input-format", "text", "--print"];
+        await writeFile(settings, JSON.stringify({ hooks: {}, mcpServers: {}, autoMemoryEnabled: false, general: { enableAutoUpdate: false, enableNotifications: false } }), { mode: 0o600 });
+        // Official settings/authentication docs specify QODER_CONFIG_DIR, not a --config-dir flag.
+        // https://docs.qoder.com/cli/settings-reference
+        const args = ["--cwd", cwd, "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "default", "--settings", settings, "--setting-sources", "", "--max-turns", "1", "--max-model-request-retries", "0", "--model", input.model, "--output-format", "text", "--input-format", "text", "--print"];
         if (request.maxTokens) args.push("--max-output-tokens", String(request.maxTokens));
-        const env: Record<string, string> = { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), TMPDIR: root, QODER_PERSONAL_ACCESS_TOKEN: key };
+        const env: Record<string, string> = { ...cliTextProxyEnv(), HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), TMPDIR: root, QODER_CONFIG_DIR: configDir, QODER_PERSONAL_ACCESS_TOKEN: key };
         if (process.env.PATH) env.PATH = process.env.PATH;
         if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
         const result = await execute({ binary: options.binary, args, env, stdin: request.prompt, cwd, signal, timeoutMs: options.timeoutMs ?? 120_000, maxOutputBytes: options.maxOutputBytes ?? 2 * 1024 * 1024 });

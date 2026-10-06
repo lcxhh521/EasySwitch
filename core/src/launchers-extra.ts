@@ -408,8 +408,9 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
       command: i.bin,
       args: [...(h ? ["run", i.task ?? ""] : ["interactive"]), "--config-file", join(i.sessionDir, "trae-config.yaml"),
         "--trajectory-file", join(i.sessionDir, "trae-trajectory.json"), "--provider", "easyswitch", "--model", i.model,
-        "--model-base-url", `${gateway(i)}/v1`, "--api-key", i.token],
-      env: {}, unset: ["OPENAI_API_KEY", "OPENAI_BASE_URL"], files: traeFiles(i),
+        "--model-base-url", `${gateway(i)}/v1`],
+      // Explicit env beats a project's .env without exposing the session token on argv.
+      env: { OPENAI_API_KEY: i.token }, unset: ["OPENAI_BASE_URL"], files: traeFiles(i),
     })),
   },
   atomcode: {

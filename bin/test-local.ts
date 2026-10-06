@@ -12,7 +12,7 @@ const files = [
   "gateway-chat", "gateway-gemini", "source-adapters", "protocol-safety", "wire", "pool", "keypool",
   "plan-provider", "codex-plan", "copilot", "mimo-free", "subscription-support", "subscription-routes",
   "claude-native", "capabilities", "dispatch", "claude-desktop-ui", "protocol-ui", "console-controls",
-  "gateway-auth", "gateway-upgrade", "chatgpt-boundary", "budget", "global-budget", "secrets", "native-keychain", "server-security", "provider-presets", "provider-contract", "qoder-text-bridge", "codebuddy-text-bridge", "droid-text-bridge", "cli-text-source", "vertex", "vertex-gemini", "backlog", "verify-launchers", "setup-guides", "quota", "kiro", "antigravity", "cursor", "kimi", "plan-usage", "agent-config-gaps", "mcp-stdio-bridge", "mcp-stdio",
+  "gateway-auth", "gateway-upgrade", "chatgpt-boundary", "budget", "global-budget", "secrets", "native-keychain", "server-security", "provider-presets", "provider-contract", "qoder-text-bridge", "codebuddy-text-bridge", "droid-text-bridge", "cli-text-source", "cli-text-process", "vertex", "vertex-gemini", "backlog", "verify-launchers", "setup-guides", "quota", "kiro", "antigravity", "cursor", "kimi", "plan-usage", "agent-config-gaps", "mcp-stdio-bridge", "mcp-stdio",
 ];
 try {
   const env = { PATH: process.env.PATH ?? "", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), HOME: home, USERPROFILE: home, EASYSWITCH_HOME: join(home, "state"), EASYSWITCH_SECRETS: "memory" };

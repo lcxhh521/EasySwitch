@@ -8,7 +8,7 @@ import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
 import { mcpEndpoint } from "./mcp.ts";
 import { knownEfforts } from "./efforts.ts";
 import { allModels, EXTRA_LAUNCHERS } from "./launchers-extra.ts";
-import { DSH_EFFORTS, dshLaunch, prepareDshMcpPlugin } from "./dsh-launch.ts";
+import { DSH_EFFORTS, DSH_MCP_UNAVAILABLE_NOTICE, DshMcpUnavailableError, dshLaunch, prepareDshMcpPlugin } from "./dsh-launch.ts";
 export { findDshMcpPlugin as dshMcpPlugin } from "./dsh-launch.ts";
 
 const run = promisify(execFile);
@@ -67,7 +67,9 @@ export interface LaunchSpec {
   /** Files to write under sessionDir before starting (relative path → content). */
   files?: Record<string, string>;
   /** Resolve an already-installed official plugin, then link it only into the private dsh home. */
-  dshMcpPlugin?: { bin: string; packageDir?: string };
+  dshMcpPlugin?: { bin: string; packageDir?: string; fallbackPatch?: string };
+  /** Non-fatal launch limitations shown in the task result. */
+  warnings?: string[];
 }
 
 export interface AgentLauncher {
@@ -129,7 +131,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
       { id: "compaction", label: "压缩对话", hint: "覆盖后台小任务模型，只用于对话压缩" },
     ],
     caveat: "基础启动及此前小模型标题调用有实测记录；子 agent 仅验证过配置。当前逐模型档位、独立标题/压缩设置和隔离组合尚未在真实客户端验收",
-    mcpCaveat: "此前真实 dsh 已看见 MCP 工具；当前组合尚未实测。插件不在 dsh 的安装包里，须预先安装；只在私有 DSH_HOME 建经过校验的链接，缺失即拒绝，不运行 plugin add",
+    mcpCaveat: "此前真实 dsh 已看见 MCP 工具；当前组合尚未实测。插件不在 dsh 的安装包里，缺失时任务继续但不挂 MCP，并显示原因；只建经过校验的私有链接，不运行 plugin add",
     headless: dshLaunch,
   },
 
@@ -327,7 +329,14 @@ export function newSessionDir(): string {
 
 /** Writes the spec's files under the session dir. */
 export function materialize(spec: LaunchSpec, sessionDir: string): void {
-  if (spec.dshMcpPlugin) prepareDshMcpPlugin(spec.dshMcpPlugin.bin, sessionDir, spec.dshMcpPlugin.packageDir);
+  if (spec.dshMcpPlugin) {
+    try { prepareDshMcpPlugin(spec.dshMcpPlugin.bin, sessionDir, spec.dshMcpPlugin.packageDir); }
+    catch (error) {
+      if (!(error instanceof DshMcpUnavailableError) || spec.dshMcpPlugin.fallbackPatch === undefined) throw error;
+      spec.files = { ...spec.files, "patch.yml": spec.dshMcpPlugin.fallbackPatch };
+      spec.warnings = [...spec.warnings ?? [], DSH_MCP_UNAVAILABLE_NOTICE];
+    }
+  }
   for (const [rel, content] of Object.entries(spec.files ?? {})) {
     const path = isAbsolute(rel) ? rel : join(sessionDir, rel);
     mkdirSync(join(path, ".."), { recursive: true });
@@ -350,6 +359,7 @@ export interface RunResult {
   exitCode: number | null;
   output: string;
   timedOut: boolean;
+  warnings?: string[];
 }
 
 /**
@@ -378,9 +388,9 @@ export async function runHeadless(
     if (opts.signal?.aborted) return { exitCode: null, output: "任务已取消", timedOut: false };
     return await new Promise<RunResult>(resolve => {
       const child = spawn(spec.command, spec.args, { cwd: opts.cwd ?? sessionDir, env, stdio: ["ignore", "pipe", "pipe"] });
-      let output = "";
+      let output = spec.warnings?.map(warning => `[EasySwitch] ${warning}\n`).join("") ?? "";
       let timedOut = false;
-      let bytes = 0;
+      let bytes = Buffer.byteLength(output);
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       const add = (d: Buffer) => { const take = Math.min(d.length, Math.max(0, max - bytes)); output += d.subarray(0, take).toString("utf8"); bytes += take; };
       child.stdout.on("data", add);
@@ -392,8 +402,8 @@ export async function runHeadless(
       const timer = setTimeout(() => { timedOut = true; stop(); }, opts.timeoutMs ?? 300_000);
       opts.signal?.addEventListener("abort", stop, { once: true });
       const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); opts.signal?.removeEventListener("abort", stop); };
-      child.on("close", code => { cleanup(); resolve({ exitCode: code, output: output.trim(), timedOut }); });
-      child.on("error", error => { cleanup(); resolve({ exitCode: null, output: String(error.message), timedOut }); });
+      child.on("close", code => { cleanup(); resolve({ exitCode: code, output: output.trim(), timedOut, ...(spec.warnings?.length ? { warnings: spec.warnings } : {}) }); });
+      child.on("error", error => { cleanup(); resolve({ exitCode: null, output: output + String(error.message), timedOut, ...(spec.warnings?.length ? { warnings: spec.warnings } : {}) }); });
     });
   } finally {
     if (token) authority.revoke(token);

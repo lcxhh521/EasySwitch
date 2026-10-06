@@ -56,7 +56,7 @@
 - [ ] B78 · 【Dot】钥匙串：helper 用稳定身份签名；既有条目（旧版 security 命令创建的）读写和更新是否会弹授权、launchd 后台无人点击会不会 15 秒超时，用一次性测试条目在 macOS 上验证（EASYSWITCH_TEST_KEYCHAIN=1，不碰真 key），并把回退路径写进文档；helper 缺失要在 /health 报告；native-keychain.test 的「不回退 argv」要扫 native-keychain.ts 而不只是 secrets.ts；helper 在没有默认钥匙串的环境（用户 Mac 上曾弹「找不到用于储存的钥匙串」）要有可读的失败，而不是弹窗循环 — 来源：Claude 评审与用户 Mac 上的弹窗
 - [ ] B79 · 【Dot】预算性能与可靠：global-budget 每次请求都全量解析账本（20 万行约 376 毫秒，会阻塞事件循环），改成内存累计加文件偏移增量读取；账本末尾半行要容忍，accountingFailed 一次短暂写盘失败就永久置位要能自愈；没有 providerId 的旧账本条目不应把本月所有 stop 来源一起封掉；monthlyUsd 为 0 的旧语义（等于没有预算）要迁移而不是 fail-closed；budget.json 损坏且预算关着时不应阻断推理 — 来源：Claude 评审
 - [ ] B80 · 【Dot】会话令牌只在内存、24 小时：任何重启（崩溃、launchd、部署）会让所有运行中的 agent 会话永久 401，交互窗口超过 24 小时会中途失效；把令牌的 sha256 和过期时间存进权限 0600 的文件使重启后仍有效；手动签发的令牌设数量上限和每 agent 限频（现在能占满 2048 个会话让正常启动失败）；revoke 找不到时回 404 的 body 别写 ok:true — 来源：Claude 评审
-- [ ] B81 · 【Dot】文字桥（Qoder、CodeBuddy）：加全局并发上限（2 到 3 个）；孙进程握着管道时 close 不触发的兜底超时；stderr 与 stdout 分开计字节；控制台创建时 binary 要限制 basename、存在、可执行且不是所有人可写；子进程要带代理环境变量；首次真机验证要在无网或假上游下确认「让它读文件，它读不了」；Qoder 用的 --config-dir 与 research 里记的 QODER_CONFIG_DIR 对账 — 来源：Claude 评审
+- [~] B81 · 【Dot】文字桥（Qoder、CodeBuddy）：加全局并发上限（2 到 3 个）；孙进程握着管道时 close 不触发的兜底超时；stderr 与 stdout 分开计字节；控制台创建时 binary 要限制 basename、存在、可执行且不是所有人可写；子进程要带代理环境变量；首次真机验证要在无网或假上游下确认「让它读文件，它读不了」；Qoder 用的 --config-dir 与 research 里记的 QODER_CONFIG_DIR 对账 — 来源：Claude 评审
 - [ ] B82 · 【Dot】docs/ 改成面向用户的公开文档：去掉 B 编号、提交号、人名和「用户明确批准」这类内部话，differentiation-review.md 挪进 research/；README 里指向 docs 的链接要保持有效（公开快照现在整体排除 docs/，要么发布脚本把清理后的 docs 带上，要么 README 去掉这些链接）；release-check 加一条：公开内容里不得出现 B 编号、dot、gpt-wip — 来源：Claude 评审
 - [ ] B83 · 【Dot】界面：协议多选默认折叠并写「通常不用动」，加「检测一下」；Claude 桌面端永久禁用的卡片折叠进「实验功能」；controls.js 里 b.unknownCostCalls 转义；native-keychain.md 与 gateway-budget-keychain.md 重复的合并 — 来源：Claude 评审
 - [ ] B84 · 【Dot】`npm test` 和 `test:local` 白名单的关系写清楚；白名单漏掉的文件（chatgpt-e2e、claude-e2e、codex-e2e、es-cli、agent-launch 等）这次在 macOS 上暴露了 16 个失败，今后改了 gateway-auth、路径、启动接口就要同步改这些测试（Claude 会在 macOS 上定期跑完整 `npm test`）；mac 路径敏感的新测试用 realpathSync(tmpdir()) — 来源：Claude 评审与测试结果
@@ -89,3 +89,7 @@ B70推进独立于入站启动器的官方CLI文字来源，没有关闭整个B7
 ### 966a5de 后的 ChatGPT 权限修正（2026-10-06）
 
 B86的Mac端结果保留为原作者验收记录，不等于Dot在Mac复验。云端静态复查确认ChatGPT前缀可匿名调用已存外部Key，现改为外部模型/合并本地目录必须有有效本地capability；调用方厂商凭据只授权固定官方目标的原生HTTP转发。原生WS因持续预算/会话约束未建立而返回409，增强启动也保持待验收。18项原始HTTP/loopback安全回归通过，类型与差异检查通过；chatgpt-e2e测试源码已同步新权限边界但没有执行真实Codex路径。其他B74–84独立推进，不把416历史白名单数字套到本次并行工作树。
+
+### B76 / B81 启动器与文字桥加固（2026-10-06）
+
+已补dsh缺少未安装插件时显式降级、Trae令牌不经argv，以及文字桥全局3并发、管道不关闭兜底、分离输出配额、代理变量白名单与创建前文件元数据校验。错误插件覆盖/不安全链接仍拒绝。隔离候选基于8c9886d加本批文件，类型检查及71项受控测试通过。全部只使用注入元数据与fake进程；真实CLI文件访问隔离、代理行为和平台验收仍未完成，因此B81保持部分完成。
