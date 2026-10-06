@@ -37,21 +37,9 @@
 
 预算通过 `Ledger.budgetSummary()` 按文件偏移增量读取并缓存统计窗口，不使用控制台“最近50,000行”视图，也不在每次请求重复解析历史。完整坏行仍使停止预算拒绝新请求；末尾未完成的半行暂存并显示警告，补齐后只计算一次。新增写入带版本和行ID，失败写入放入私有待写日志，成功恢复后自动去重补记，无需依赖重启。旧账本原字节不重写。全局设置采用版本化文件，另保留可信启停记录；已明确关闭的预算文件损坏不会误停，但未知或曾开启的损坏状态仍拒绝，须显式修复。
 
-## 原生 Keychain 桥（B31）
+## 原生 Keychain 桥
 
-生产 SecretStore 已改为 `NativeKeychainStore`，通过自己的 Swift helper 调用 Security.framework 的 `SecItemCopyMatching`、`SecItemUpdate`、`SecItemAdd` 和 `SecItemDelete`。服务名仍是 `EasySwitch`，账号名不变，不做密钥迁移。
-
-请求通过 stdin、结果通过 stdout 传递。Key 不在 argv、shell 命令、临时文件或错误信息中。没有回退到 `security -w <secret>` 的分支；缺少 helper 会明确报错，不会悄悄把“钥匙串不可读”当成“没有 Key”。进程错误、超时、输出大小和 JSON 返回值都经过限制，helper 的 stderr 不会进入应用错误信息。
-
-在有 Xcode Command Line Tools 的 macOS 上构建：
-
-```sh
-sh scripts/build-keychain.sh
-```
-
-只生成 `core/native/build/easyswitch-keychain`，构建本身不会访问钥匙串。测试和云端演示继续使用 `EASYSWITCH_SECRETS=memory`，不会调用 helper。macOS 钥匙串的访问提示和授权由用户自行处理，EasySwitch 不改变钥匙串权限或系统安全设置。
-
-当前已在 Linux 云端通过 TypeScript 传输/存储接口的 mock 测试，检查了不走 argv、精确保存换行/NUL/Unicode、缺失与拒绝的区分、错误脱敏、响应限长和超时。**Swift helper 尚未在 macOS 编译或运行，真实 Keychain 和已有条目兼容性尚未验收。** 不能把 mock 通过写成原生系统实测。
+原生存储、已有编码/条目兼容、稳定签名构建和错误恢复统一见 [Keychain 构建与验收](native-keychain.md)，不在两页维护重复步骤。旧未签名/ad-hoc helper现在明确拒绝，需要用户在Mac前台用已有签名身份重建；不会自动创建证书或改变系统信任。`/health.secretStore`提供不读取Key的状态。当前云端只验证源码/假传输，旧条目ACL、launchd及真实Mac验收仍未完成。
 
 ## 局部验证
 

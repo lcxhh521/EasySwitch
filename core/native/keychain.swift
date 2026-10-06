@@ -30,7 +30,16 @@ guard let request = try? JSONDecoder().decode(Request.self, from: input),
 }
 
 // Keep the same service/account keys as the demo's security CLI implementation.
-// Existing EasySwitch entries remain readable; no credentials are migrated or duplicated.
+// Matching identifiers preserve lookup compatibility, but legacy ACL approval still belongs
+// to the user. Background/launchd requests must fail promptly rather than opening UI.
+let interaction = SecKeychainSetUserInteractionAllowed(false)
+guard interaction == errSecSuccess else { reply(["ok": false, "code": Int(interaction)]) }
+var defaultKeychain: SecKeychain?
+let defaultStatus = SecKeychainCopyDefault(&defaultKeychain)
+guard defaultStatus == errSecSuccess, defaultKeychain != nil else {
+    reply(["ok": false, "code": Int(defaultStatus == errSecSuccess ? errSecNoDefaultKeychain : defaultStatus)])
+}
+// No default-keychain creation, unlock, ACL change, or fallback is attempted here.
 let query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: "EasySwitch",

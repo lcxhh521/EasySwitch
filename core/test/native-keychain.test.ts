@@ -4,7 +4,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { createKeychainTransport, NativeKeychainStore, type KeychainRequest, type KeychainSpawn } from "../src/native-keychain.ts";
+import { createKeychainTransport, keychainHelperHealth, keychainSigningRequirement, keychainOperationError, KEYCHAIN_RETRY_DELAY_MS, NativeKeychainError, NativeKeychainStore, type KeychainRequest, type KeychainSpawn } from "../src/native-keychain.ts";
 
 function fakeSpawn(response: string, code: number | null = 0, options: { error?: boolean; neverFinish?: boolean } = {}) {
   const captured: { file?: string; argv?: string[]; options?: unknown; input: string; killed: boolean } = { input: "", killed: false };
@@ -82,4 +82,103 @@ test("native helper source uses Security.framework and production never falls ba
   const bridge = readFileSync(new URL("../src/secrets.ts", import.meta.url), "utf8");
   assert.match(bridge, /new NativeKeychainStore/);
   assert.doesNotMatch(bridge, /node:child_process|\b(?:execFile|exec|spawn)(?:Sync)?\s*\(|find-generic-password/);
+  const transport = readFileSync(new URL("../src/native-keychain.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(transport, /find-generic-password|add-generic-password|delete-generic-password|["']-w["']/);
+  assert.doesNotMatch(transport, /(?:execFile|spawn)(?:Sync)?\s*\(\s*["'](?:\/usr\/bin\/)?security["']/);
+  assert.match(transport, /spawnChild\(helper, \[\],/);
+  assert.match(transport, /child\.stdin\.end\(input\)/);
+});
+
+test("health reports helper absence, permissions and signing without touching Keychain", () => {
+  let verified = 0;
+  const file = () => ({ executable: true, stamp: "fixture" });
+  const verify = () => { verified++; return true; };
+  const absent = keychainHelperHealth("/fixture/helper", { platform: "darwin", file: () => undefined, verify });
+  assert.equal(absent.status, "helper_missing"); assert.equal(absent.ready, false); assert.equal(verified, 0);
+  assert.equal(keychainHelperHealth("/fixture/helper", { platform: "darwin", file: () => ({ executable: false, stamp: "fixture" }), verify }).status, "helper_not_executable");
+  assert.equal(verified, 0);
+  assert.equal(keychainHelperHealth("/fixture/helper", { platform: "darwin", file, verify: () => false }).status, "helper_signature_invalid");
+  const ready = keychainHelperHealth("/fixture/helper", { platform: "darwin", file, verify });
+  assert.equal(ready.ready, true); assert.equal(ready.status, "helper_ready"); assert.equal(ready.keychainChecked, false);
+  assert.equal(verified, 1);
+  assert.equal(keychainHelperHealth("/fixture/helper", { platform: "linux", file: () => { throw new Error("must not read filesystem"); } }).status, "unsupported_platform");
+});
+
+test("missing default Keychain and denied legacy access have actionable secret-free failures", async () => {
+  for (const [status, expected] of [[-25307, "no_default_keychain"], [-25294, "keychain_unavailable"], [-25291, "keychain_unavailable"], [-25308, "keychain_access_required"], [-25293, "keychain_access_required"], [-128, "keychain_access_required"]] as const) {
+    const failure = keychainOperationError(status);
+    assert.equal(failure.code, expected); assert.equal(failure.osStatus, status);
+    assert.match(failure.message, new RegExp(`OSStatus ${status}`));
+    const store = new NativeKeychainStore(async () => ({ ok: false, code: status }));
+    await assert.rejects(store.get("private-account-name"), e => e instanceof NativeKeychainError && e.code === expected && !e.message.includes("private-account-name"));
+  }
+});
+
+test("failed background operations cool down once, including concurrent reads, and recover after retry", async () => {
+  let now = 0, calls = 0, blocked = true;
+  const inspect = () => ({ backend: "native-keychain" as const, ready: true, status: "helper_ready", keychainChecked: false });
+  const store = new NativeKeychainStore(async () => {
+    calls++;
+    return blocked ? { ok: false, code: -25307 } : { ok: true, found: true, value: "fake-recovered" };
+  }, { now: () => now, inspect });
+  const failures = await Promise.allSettled([store.get("a"), store.get("b"), store.set("c", "fake-secret")]);
+  assert.ok(failures.every(f => f.status === "rejected")); assert.equal(calls, 1, "one failure must not spawn a helper for every catalog entry");
+  const health = store.health();
+  assert.equal(health.ready, false); assert.equal(health.status, "no_default_keychain"); assert.equal(health.keychainChecked, true);
+  assert.ok(!JSON.stringify(health).includes("fake-secret"));
+  blocked = false;
+  await assert.rejects(store.get("a")); assert.equal(calls, 1);
+  now = KEYCHAIN_RETRY_DELAY_MS;
+  assert.equal(await store.get("a"), "fake-recovered"); assert.equal(calls, 2);
+  assert.equal(store.health().ready, true); assert.equal(store.health().osStatus, undefined);
+});
+
+test("timeouts and unexpected transport failures are sanitized, cooled down and visible in health", async () => {
+  let calls = 0;
+  const inspect = () => ({ backend: "native-keychain" as const, ready: true, status: "helper_ready", keychainChecked: false });
+  const store = new NativeKeychainStore(async () => { calls++; throw new Error("fake-secret-echo"); }, { inspect });
+  for (let i = 0; i < 2; i++) await assert.rejects(store.get("sensitive-account"), e => e instanceof NativeKeychainError && e.code === "helper_failed" && !e.message.includes("fake-secret-echo"));
+  assert.equal(calls, 1); assert.equal(store.health().keychainChecked, false);
+  assert.equal(JSON.stringify(store.health()).includes("sensitive-account"), false);
+  const stalled = fakeSpawn("", 0, { neverFinish: true });
+  const timed = new NativeKeychainStore(createKeychainTransport("/fixture/helper", stalled.spawn, 5), { inspect });
+  await assert.rejects(timed.get("x"), e => e instanceof NativeKeychainError && e.code === "helper_timeout");
+  assert.equal(timed.health().status, "helper_timeout");
+});
+
+test("native source fails noninteractively before accessing absent default Keychains", () => {
+  const source = readFileSync(new URL("../native/keychain.swift", import.meta.url), "utf8");
+  assert.match(source, /SecKeychainSetUserInteractionAllowed\(false\)/);
+  assert.match(source, /SecKeychainCopyDefault\(&defaultKeychain\)/);
+  assert.ok(source.indexOf("SecKeychainSetUserInteractionAllowed(false)") < source.indexOf("SecKeychainCopyDefault(&defaultKeychain)"));
+  assert.ok(source.indexOf("SecKeychainCopyDefault(&defaultKeychain)") < source.indexOf("SecItemCopyMatching("));
+  assert.doesNotMatch(source, /SecKeychain(?:Create|Unlock|SetDefault)|SecKeychainItemSetAccess|SecAccessCreate/);
+});
+
+test("helper build pins an existing certificate identity and never signs at background startup", () => {
+  const script = readFileSync(new URL("../../scripts/build-keychain.sh", import.meta.url), "utf8");
+  assert.match(script, /EASYSWITCH_KEYCHAIN_SIGN_IDENTITY/);
+  assert.match(script, /IDENTIFIER=com\.easyswitch\.keychain/);
+  assert.match(script, /certificate leaf = H/);
+  assert.match(script, /codesign --force --sign "\$IDENTITY"/);
+  assert.match(script, /codesign --verify --strict -R "\$REQUIREMENT"/);
+  assert.doesNotMatch(script, /--sign\s+(?:-\s|["']-["'])|\|\|\s*true|security\s+(?:import|create-keychain|set-key-partition-list)/);
+  assert.ok(script.indexOf("codesign --verify") < script.indexOf('mv -f "$HELPER"'), "a failed signature must not replace the working helper");
+  const bridge = readFileSync(new URL("../src/native-keychain.ts", import.meta.url), "utf8");
+  const ensure = bridge.slice(bridge.indexOf("export function ensureKeychainHelper"), bridge.indexOf("export function keychainOperationError"));
+  assert.doesNotMatch(ensure, /exec|spawn|build-keychain/);
+});
+
+
+test("stable signing requirement parsing rejects ad-hoc, wrong identifiers and weakened alternatives", () => {
+  const fingerprint = "a".repeat(40);
+  const expected = `identifier "com.easyswitch.keychain" and certificate leaf = H"${fingerprint}"`;
+  assert.equal(keychainSigningRequirement(`Executable=/fixture/helper\ndesignated => ${expected}\n`), expected);
+  assert.equal(keychainSigningRequirement(`designated => certificate 0 = H"${fingerprint}" and identifier "com.easyswitch.keychain"`), expected);
+  for (const text of [
+    `designated => cdhash H"${fingerprint}"`,
+    `designated => identifier "other.app" and certificate leaf = H"${fingerprint}"`,
+    `designated => ${expected} or always`,
+    `designated => identifier "com.easyswitch.keychain"`,
+  ]) assert.equal(keychainSigningRequirement(text), undefined);
 });

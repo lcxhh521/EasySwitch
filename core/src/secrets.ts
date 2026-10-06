@@ -1,10 +1,21 @@
 import { NativeKeychainStore } from "./native-keychain.ts";
 
+export interface SecretStoreHealth {
+  backend: "memory" | "native-keychain";
+  ready: boolean;
+  status: string;
+  /** Presence/signature checks never prove that existing entries are readable. */
+  keychainChecked: boolean;
+  message?: string;
+  osStatus?: number;
+}
+
 /** Provider API keys live in the macOS Keychain, never in our JSON files. */
 export interface SecretStore {
   get(account: string): Promise<string | undefined>;
   set(account: string, value: string): Promise<void>;
   delete(account: string): Promise<void>;
+  health?(): SecretStoreHealth;
 }
 
 const PREFIX = "b64:";
@@ -40,6 +51,7 @@ export class EncodedSecretStore implements SecretStore {
   }
   async set(account: string, value: string): Promise<void> { await this.#raw.set(account, encodeSecret(value)); }
   async delete(account: string): Promise<void> { await this.#raw.delete(account); }
+  health(): SecretStoreHealth { return this.#raw.health?.() ?? { backend: "native-keychain", ready: false, status: "unknown", keychainChecked: false }; }
 }
 
 /** Tests and CI: nothing touches the user's Keychain. */
@@ -48,6 +60,7 @@ class MemoryStore implements SecretStore {
   async get(account: string) { return this.values.get(account); }
   async set(account: string, value: string) { this.values.set(account, value); }
   async delete(account: string) { this.values.delete(account); }
+  health(): SecretStoreHealth { return { backend: "memory", ready: true, status: "ready", keychainChecked: false }; }
 }
 
 export function createSecretStore(): SecretStore {

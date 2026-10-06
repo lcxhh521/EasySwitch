@@ -1696,7 +1696,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       if (path === "/health") {
-        json(res, 200, { ok: true, service: "easyswitch", version: VERSION, port });
+        json(res, 200, { ok: true, service: "easyswitch", version: VERSION, port, secretStore: secrets.health?.() ?? { backend: "custom", ready: null, status: "unknown", keychainChecked: false } });
         return;
       }
       const gemini = GEMINI_PATH.exec(path);

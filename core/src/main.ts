@@ -8,7 +8,7 @@ import { createEasySwitchServer, stopClaudeDesktopSessions } from "./server.ts";
 import { Store } from "./store.ts";
 
 const port = gatewayPort();
-if (process.env.EASYSWITCH_SECRETS !== "memory" && !ensureKeychainHelper()) console.error("[easyswitch] 钥匙串小程序没有编译成功（需要 Xcode 命令行工具）：读不到已保存的 Key。可手动运行 scripts/build-keychain.sh 看原因。");
+if (process.env.EASYSWITCH_SECRETS !== "memory" && !ensureKeychainHelper()) console.error("[easyswitch] 钥匙串 helper 不可用或稳定签名未通过。请在 Mac 前台使用已有签名身份运行 scripts/build-keychain.sh；后台不会自动编译、签名或请求授权。");
 const store = new Store();
 const gatewayAuth = new GatewayTokenAuthority({ stateFile: join(store.dir, "gateway-sessions.jsonl") });
 const server = createEasySwitchServer({ store, secrets: createSecretStore(), port, ledger: new Ledger(store.dir), gatewayAuth });
