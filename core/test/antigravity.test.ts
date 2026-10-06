@@ -7,12 +7,14 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { ANTIGRAVITY_CLIENT_ID } from "../src/antigravity-client.ts";
 import { clearAntigravityCache } from "../src/antigravity.ts";
-import { chatToGemini, geminiSchema, geminiToChatResponse, THOUGHT_SIGNATURE_BYPASS } from "../src/gemini-upstream.ts";
+import { conversationToGemini, geminiSchema, geminiToChatResponse, THOUGHT_SIGNATURE_BYPASS } from "../src/gemini-upstream.ts";
 import { clearQuota, isExhausted } from "../src/quota.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import type { ChatRequest } from "../src/translate.ts";
+import { decodeRequest } from "../src/inbound.ts";
+const buildGemini = (chat: ChatRequest) => { const request = { protocol: "chat" as const, body: chat, model: chat.model, stream: chat.stream }; return conversationToGemini(decodeRequest(request), request); };
 import { authorizeUrl, startFakeGoogle, type FakeGoogle } from "./fake-google.ts";
 
 process.env.EASYSWITCH_SECRETS = "memory";
@@ -23,7 +25,7 @@ const chat = (over: Partial<ChatRequest> & { messages: ChatRequest["messages"] }
 // ---------------------------------------------------------------- Chat <-> Gemini
 
 test("a Chat conversation becomes Gemini contents: system apart, tool calls and results paired by name, same-role turns merged, the first call signed", () => {
-  const { body, restoreName } = chatToGemini(chat({
+  const { body, restoreName } = buildGemini(chat({
     tools: [{ type: "function", function: { name: "ns__a_name_that_is_far_too_long_for_gemini_because_it_goes_on_and_on_over_sixty_four", description: "d", parameters: { type: "object", additionalProperties: false, properties: { x: { type: ["string", "null"] }, mode: { const: "fast" } } } } }],
     messages: [
       { role: "system", content: "Be brief." },
@@ -46,7 +48,7 @@ test("a Chat conversation becomes Gemini contents: system apart, tool calls and 
   assert.equal(calls[0].thoughtSignature, THOUGHT_SIGNATURE_BYPASS, "the first call of a model turn carries the signature stand-in");
   assert.equal(calls[1].thoughtSignature, undefined, "and only the first");
   assert.equal(body.contents[2].parts.length, 2);
-  assert.deepEqual(body.contents[2].parts[0].functionResponse, { name: calls[0].functionCall.name, response: { result: "r1" } });
+  assert.deepEqual(body.contents[2].parts[0].functionResponse, { id: "call_1", name: calls[0].functionCall.name, response: { output: "r1" } });
   const decl = body.tools[0].functionDeclarations[0];
   assert.equal(decl.name, calls[0].functionCall.name);
   assert.deepEqual(decl.parameters.properties.x, { type: "string", nullable: true });
@@ -56,16 +58,16 @@ test("a Chat conversation becomes Gemini contents: system apart, tool calls and 
 
 test("tool choice, images and sampling are carried, and what cannot be is refused or listed", () => {
   const tool = { type: "function", function: { name: "f", parameters: {} } };
-  assert.equal(chatToGemini(chat({ tool_choice: "none", tools: [tool], messages: [{ role: "user", content: "x" }] })).body.tools, undefined);
-  assert.deepEqual(chatToGemini(chat({ tool_choice: "required", tools: [tool], messages: [{ role: "user", content: "x" }] })).body.toolConfig, { functionCallingConfig: { mode: "ANY" } });
-  assert.deepEqual(chatToGemini(chat({ tool_choice: { type: "function", function: { name: "f" } }, tools: [tool], messages: [{ role: "user", content: "x" }] })).body.toolConfig, { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["f"] } });
-  const img = chatToGemini(chat({ messages: [{ role: "user", content: [{ type: "text", text: "see" }, { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } }] }] }));
+  assert.equal(buildGemini(chat({ tool_choice: "none", tools: [tool], messages: [{ role: "user", content: "x" }] })).body.tools, undefined);
+  assert.deepEqual(buildGemini(chat({ tool_choice: "required", tools: [tool], messages: [{ role: "user", content: "x" }] })).body.toolConfig, { functionCallingConfig: { mode: "ANY" } });
+  assert.deepEqual(buildGemini(chat({ tool_choice: { type: "function", function: { name: "f" } }, tools: [tool], messages: [{ role: "user", content: "x" }] })).body.toolConfig, { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["f"] } });
+  const img = buildGemini(chat({ messages: [{ role: "user", content: [{ type: "text", text: "see" }, { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } }] }] }));
   assert.deepEqual(img.body.contents[0].parts[1], { inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } });
-  assert.throws(() => chatToGemini(chat({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] })), /data URL/);
-  const tuned = chatToGemini(chat({ messages: [{ role: "user", content: "x" }], max_tokens: 5, temperature: 0.1, top_p: 0.9, parallel_tool_calls: false }));
+  assert.throws(() => buildGemini(chat({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] })), /data URL|base64/);
+  const tuned = buildGemini(chat({ messages: [{ role: "user", content: "x" }], max_tokens: 5, temperature: 0.1, top_p: 0.9, parallel_tool_calls: false }));
   assert.deepEqual(tuned.body.generationConfig, { maxOutputTokens: 5, temperature: 0.1, topP: 0.9 });
   assert.deepEqual(tuned.dropped, ["parallel_tool_calls"]);
-  assert.equal(chatToGemini(chat({ model: "claude-fake", tools: [tool], messages: [{ role: "user", content: "x" }, { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "f", arguments: "{}" } }] }] })).body.contents[1].parts[0].thoughtSignature, undefined, "the stand-in is for Gemini models only");
+  assert.equal(buildGemini(chat({ model: "claude-fake", tools: [tool], messages: [{ role: "user", content: "x" }, { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "f", arguments: "{}" } }] }] })).body.contents[1].parts[0].thoughtSignature, undefined, "the stand-in is for Gemini models only");
   assert.deepEqual(geminiSchema(undefined), { type: "object", properties: {} });
 });
 

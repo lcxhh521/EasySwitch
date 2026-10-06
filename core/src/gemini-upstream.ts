@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage, ChatRequest } from "./translate.ts";
 import { packState, type Conversation, type InboundRequest } from "./protocol.ts";
 import { encodeRequest } from "./outbound-format.ts";
 import { repairConversation } from "./subscription-input.ts";
 import { applyGeminiThinking } from "./vertex-gemini.ts";
 
 /**
- * A Chat Completions request as a Gemini `GenerateContent` body, and Gemini's event stream as Chat chunks.
- * Used for upstreams that speak Gemini (Antigravity's Cloud Code Assist wraps the same body in an envelope).
+ * Neutral Conversation as Antigravity's Gemini GenerateContent envelope, with its existing
+ * Gemini-to-Chat response boundary. General Gemini/Vertex traffic uses the neutral event decoder.
  * What Gemini has no equivalent for is dropped and listed, never reinterpreted.
  */
 
@@ -100,79 +99,6 @@ export function conversationToGemini(value: Conversation, request: InboundReques
   if (c.parallelTools !== undefined) c.dropped.push("parallel_tool_calls");
   applyGeminiThinking(body, request.model, request.effort ?? (request.protocol === "gemini" ? undefined : c.effort), c.dropped);
   return { body, restoreName: names.restore, dropped: c.dropped };
-}
-
-function textOf(content: ChatMessage["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
-}
-
-export function chatToGemini(chat: ChatRequest): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
-  const choice = chat.tool_choice;
-  const specs = choice === "none" ? [] : (chat.tools ?? []).filter(t => t.type === "function").map(t => t.function as Json);
-  const calls = chat.messages.flatMap(m => m.tool_calls ?? []);
-  const names = nameAliases([...specs.map(t => String(t.name)), ...calls.map(c => c.function.name)]);
-  // A tool result names the function it answers; Chat only has the call id.
-  const nameOfCall = new Map(calls.map(c => [c.id, c.function.name]));
-  const signs = /^gemini[-.\d]/i.test(chat.model);
-  const contents: Array<{ role: "user" | "model"; parts: Json[] }> = [];
-  const push = (role: "user" | "model", parts: Json[]) => {
-    if (!parts.length) return;
-    const last = contents.at(-1);
-    if (last && last.role === role) last.parts.push(...parts); else contents.push({ role, parts });
-  };
-  const system: string[] = [];
-  for (const m of chat.messages) {
-    if (m.role === "system") { const t = textOf(m.content); if (t) system.push(t); continue; }
-    if (m.role === "tool") {
-      const name = nameOfCall.get(String(m.tool_call_id ?? "")) ?? "unknown";
-      push("user", [{ functionResponse: { name: names.get(name), response: { result: textOf(m.content) } } }]);
-      continue;
-    }
-    if (m.role === "assistant") {
-      const parts: Json[] = [];
-      const text = textOf(m.content);
-      if (text) parts.push({ text });
-      let first = true;
-      for (const call of m.tool_calls ?? []) {
-        let args: Json;
-        try { args = JSON.parse(call.function.arguments || "{}"); } catch { throw new GeminiUpstreamError("工具调用历史中的参数不是有效 JSON。", 400); }
-        parts.push({ functionCall: { name: names.get(call.function.name), args }, ...(signs && first ? { thoughtSignature: THOUGHT_SIGNATURE_BYPASS } : {}) });
-        first = false;
-      }
-      push("model", parts);
-      continue;
-    }
-    const parts: Json[] = [];
-    if (typeof m.content === "string") { if (m.content) parts.push({ text: m.content }); }
-    else for (const part of m.content ?? []) {
-      if (part.type === "text") { if (part.text) parts.push({ text: part.text }); continue; }
-      const image = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=\s]+)$/.exec(part.image_url.url);
-      if (!image) throw new GeminiUpstreamError("图片需要 PNG/JPEG/GIF/WebP 的 base64 data URL。", 400);
-      parts.push({ inlineData: { mimeType: image[1], data: image[2]!.replace(/\s/g, "") } });
-    }
-    push("user", parts);
-  }
-  // Gemini starts a conversation with the user.
-  if (contents[0]?.role === "model") contents.unshift({ role: "user", parts: [{ text: "Continue." }] });
-  const body: Json = { contents };
-  if (system.length) body.systemInstruction = { role: "user", parts: [{ text: system.join("\n\n") }] };
-  if (specs.length) {
-    body.tools = [{ functionDeclarations: specs.map(t => ({ name: names.get(String(t.name)), description: String(t.description ?? t.name).slice(0, 1024), parameters: geminiSchema(t.parameters) })) }];
-    if (choice === "required") body.toolConfig = { functionCallingConfig: { mode: "ANY" } };
-    else if (choice && typeof choice === "object") {
-      const forced = String(((choice as Json).function as Json | undefined)?.name ?? "");
-      if (forced) body.toolConfig = { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [names.get(forced)] } };
-    }
-  }
-  const generation: Json = {};
-  if (chat.max_tokens !== undefined) generation.maxOutputTokens = chat.max_tokens;
-  if (chat.temperature !== undefined) generation.temperature = chat.temperature;
-  if (chat.top_p !== undefined) generation.topP = chat.top_p;
-  if (Object.keys(generation).length) body.generationConfig = generation;
-  const dropped = chat.parallel_tool_calls !== undefined ? ["parallel_tool_calls"] : [];
-  return { body, restoreName: names.restore, dropped };
 }
 
 interface Usage { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details?: { cached_tokens: number } }

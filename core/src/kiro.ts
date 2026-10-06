@@ -5,17 +5,15 @@ import { randomUUID } from "node:crypto";
 import { decodeEventStream } from "./aws-eventstream.ts";
 import { KiroError, readKiroLogin, type KiroLogin } from "./kiro-login.ts";
 import { kiroToolSchema } from "./kiro-schema.ts";
-import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
-import { decodeRequest } from "./inbound.ts";
 import type { Conversation, InboundRequest } from "./protocol.ts";
 import { repairConversation, resultText } from "./subscription-input.ts";
 
 /**
  * Kiro (Amazon's coding agent) as a model source. The user's own Kiro CLI login is read from its local
  * database for each request and sent only to Kiro's fixed hosts: nothing is copied, refreshed or written.
- * A Chat Completions request goes in; Kiro's AWS event stream comes back and is turned into Chat chunks,
- * so every inbound protocol the gateway speaks works with it.
+ * Neutral Conversation content goes directly into Kiro's conversation state. Its existing AWS event
+ * parser returns Chat-shaped response chunks for the downstream event boundary.
  */
 
 type Json = Record<string, any>;
@@ -82,12 +80,6 @@ function aliases(originals: string[]) {
     forward.set(original, wire); reverse.set(wire, original);
   }
   return { get: (name: string) => forward.get(name) ?? name, restore: (name: string) => reverse.get(name) ?? name };
-}
-
-/** Legacy callers decode their native input once; production receives Conversation directly. */
-export function chatToKiro(chat: ChatRequest, login: KiroLogin): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
-  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
-  return conversationToKiro(decodeRequest(request), request, login);
 }
 
 export function conversationToKiro(value: Conversation, request: InboundRequest, login: KiroLogin): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
@@ -243,11 +235,6 @@ export function kiroToChatResponse(upstream: Response, opts: { stream: boolean; 
   })();
 }
 
-/** One Chat request to Kiro. Failures come back as a Response with the status and a plain reason. */
-export async function sendKiro(provider: Provider, chat: ChatRequest, signal: AbortSignal): Promise<Response> {
-  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
-  return sendKiroConversation(provider, decodeRequest(request), request, signal);
-}
 export async function sendKiroConversation(provider: Provider, conversation: Conversation, request: InboundRequest, signal: AbortSignal): Promise<Response> {
   const fail = (error: unknown) => {
     const e = error instanceof KiroError ? error : new KiroError("Kiro 请求失败，请检查网络或稍后重试。");

@@ -31,15 +31,15 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 | `gateway-chat.ts` | `/v1/chat/completions`（通用 agent）；`agentOf`/`agentFromAuth` 从会话令牌识别调用方 |
 | `gateway-messages.ts` | `/v1/messages`（Claude Code）；原生 Claude 请求经 `claude-native.ts` 原样转发 |
 | `gateway-gemini.ts` + `gemini.ts` | Gemini 协议入口（Gemini CLI 等） |
-| `translate.ts` | Responses ↔ Chat 翻译；Codex 的 namespace 工具压平/还原 |
-| `anthropic.ts` | Messages ↔ Chat 翻译 |
+| `translate.ts` | 保留Chat类型；实际四协议转换由inbound/outbound-format/downstream负责 |
+| `anthropic.ts` | 本地token估算；Messages转换走中立协议层 |
 | `quirks.ts` | 各厂商的怪癖与 `reasoning_effort`/`thinking` 开关的映射；`shapeChat` |
 | `model-efforts.ts` | 档位是**模型的属性**；agent 只提供「模型有的 ∩ 它说得出的」 |
 | `efforts.ts` | 从安装的程序读真实档位（`--help`、`codex debug models`） |
 | `pools.ts` | 模型池：`pool/<id>` 多来源故障切换/轮流；`runWithPool` 包住四个协议入口 |
 | `siwc.ts` | 订阅登录：ChatGPT（Codex 客户端设备码，默认）+ Copilot（GitHub 设备码）+ 官方开放通道 |
-| `upstream-chat.ts` | `sendChat`：Chat 请求出站的唯一出口（plan/mimoFree/普通三分支） |
-| `responses-upstream.ts` | Chat → Responses 请求与返回流的翻译（订阅通道用） |
+| `outbound.ts` / `gateway-route.ts` | 按来源/模型选择出站适配器，中立Conversation转换或同协议直通；统一取消、Key重试和日志 |
+| `responses-upstream.ts` | 保留订阅Responses请求整形；生产输出解析走upstream-events |
 | `mimo-free.ts` | 小米 MiMo Free 免 key 适配（bootstrap JWT + 系统标记） |
 | `kiro.ts` + `kiro-login.ts` / `kiro-schema.ts` / `aws-eventstream.ts` | Kiro 订阅：每次请求只读 Kiro CLI 的本机登录库，Chat → Kiro 对话状态，AWS 事件流 → Chat 分片；新来源默认关 |
 | `antigravity.ts` + `antigravity-client.ts` + `gemini-upstream.ts` | Antigravity 订阅：浏览器里 Google 登录（刷新令牌存钥匙串）、Cloud Code Assist 信封、Chat ↔ Gemini 互转；客户端密钥暂时写在 `antigravity-client.ts`（见私有段） |

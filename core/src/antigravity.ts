@@ -11,10 +11,8 @@ import {
 import { conversationToGemini, GeminiUpstreamError, geminiToChatResponse } from "./gemini-upstream.ts";
 import { isUsageLimit, recordLimitReached } from "./quota.ts";
 import type { SecretStore } from "./secrets.ts";
-import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
 import type { Conversation, InboundRequest } from "./protocol.ts";
-import { decodeRequest } from "./inbound.ts";
 
 /**
  * Google Antigravity (Cloud Code Assist) as a model source: a Google sign-in done in the user's browser, with the
@@ -191,11 +189,6 @@ export async function listAntigravityModels(token: string, projectId?: string): 
   return unique;
 }
 
-/** One Chat request to Antigravity. Failures come back as a Response with the status and a plain reason. */
-export async function sendAntigravity(provider: Provider, token: string | undefined, chat: ChatRequest, signal: AbortSignal): Promise<Response> {
-  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
-  return sendAntigravityConversation(provider, token, decodeRequest(request), request, signal);
-}
 export async function sendAntigravityConversation(provider: Provider, token: string | undefined, conversation: Conversation, request: InboundRequest, signal: AbortSignal): Promise<Response> {
   const fail = (message: string, status: number) => Response.json({ error: { type: "antigravity_error", message } }, { status });
   try {

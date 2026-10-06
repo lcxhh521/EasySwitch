@@ -8,12 +8,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { encodeMessage } from "../src/aws-eventstream.ts";
-import { chatToKiro } from "../src/kiro.ts";
+import { conversationToKiro } from "../src/kiro.ts";
 import { KiroError, readKiroLogin } from "../src/kiro-login.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import type { ChatRequest } from "../src/translate.ts";
+import { decodeRequest } from "../src/inbound.ts";
+const buildKiro = (chat: ChatRequest, login: Parameters<typeof conversationToKiro>[2]) => { const request = { protocol: "chat" as const, body: chat, model: chat.model, stream: chat.stream }; return conversationToKiro(decodeRequest(request), request, login); };
 
 process.env.EASYSWITCH_SECRETS = "memory";
 type Json = Record<string, any>;
@@ -94,7 +96,7 @@ const login = { accessToken: "t", region: "us-east-1", profileArn: ARN, builderI
 const chat = (over: Partial<ChatRequest> & { messages: ChatRequest["messages"] }): ChatRequest => ({ model: "claude-sonnet-fake", stream: false, ...over });
 
 test("a Chat conversation becomes Kiro's: the system text leads the first user turn, tool calls and results pair up, the last user turn is the current one", () => {
-  const { body, restoreName } = chatToKiro(chat({
+  const { body, restoreName } = buildKiro(chat({
     tools: [{ type: "function", function: { name: "ns__a_very_long_tool_name_that_kiro_would_not_accept_because_it_is_over_sixty_four_characters", description: "d", parameters: { type: "object", additionalProperties: false, properties: { x: { type: "string" } } } } }],
     messages: [
       { role: "system", content: "Be brief." },
@@ -120,13 +122,13 @@ test("a Chat conversation becomes Kiro's: the system text leads the first user t
 });
 
 test("what Kiro cannot do is refused or dropped on purpose, not guessed", () => {
-  assert.throws(() => chatToKiro(chat({ messages: [{ role: "user", content: "x" }], tool_choice: { type: "function", function: { name: "f" } } }), login), (e: KiroError) => e.status === 400 && /强制/.test(e.message));
-  assert.throws(() => chatToKiro(chat({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] }), login), (e: KiroError) => /data URL/.test(e.message));
-  const none = chatToKiro(chat({ tool_choice: "none", tools: [{ type: "function", function: { name: "f", parameters: {} } }], messages: [{ role: "user", content: "x" }] }), login);
+  assert.throws(() => buildKiro(chat({ messages: [{ role: "user", content: "x" }], tool_choice: { type: "function", function: { name: "f" } } }), login), (e: KiroError) => e.status === 400 && /强制/.test(e.message));
+  assert.throws(() => buildKiro(chat({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] }), login), (e: KiroError) => /data URL/.test(e.message));
+  const none = buildKiro(chat({ tool_choice: "none", tools: [{ type: "function", function: { name: "f", parameters: {} } }], messages: [{ role: "user", content: "x" }] }), login);
   assert.equal(none.body.conversationState.currentMessage.userInputMessage.userInputMessageContext, undefined, "tool_choice none sends no tools");
-  const tuned = chatToKiro(chat({ messages: [{ role: "user", content: "x" }], max_tokens: 10, temperature: 0.2 }), login);
+  const tuned = buildKiro(chat({ messages: [{ role: "user", content: "x" }], max_tokens: 10, temperature: 0.2 }), login);
   assert.deepEqual(tuned.dropped, ["max_tokens", "temperature"]);
-  const image = chatToKiro(chat({ messages: [{ role: "user", content: [{ type: "text", text: "see" }, { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } }] }] }), login);
+  const image = buildKiro(chat({ messages: [{ role: "user", content: [{ type: "text", text: "see" }, { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } }] }] }), login);
   assert.deepEqual(image.body.conversationState.currentMessage.userInputMessage.images, [{ format: "png", source: { bytes: "iVBORw0KGgo=" } }]);
 });
 

@@ -7,7 +7,6 @@ import { test } from "node:test";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { GatewayTokenAuthority } from "../src/gateway-auth.ts";
-import { sendChat } from "../src/upstream-chat.ts";
 import { prepareOutbound, sourceProtocols } from "../src/outbound.ts";
 import type { Provider } from "../src/types.ts";
 import type { QoderProcessInput } from "../src/qoder-text-bridge.ts";
@@ -95,11 +94,13 @@ test("invalid or mixed creation and Droid production remain failclosed with zero
 });
 
 
-test("legacy Chat sender cannot silently treat a CLI source as an HTTP source", async t => {
+test("selected outbound adapter never treats a CLI source as an arbitrary HTTP source", async t => {
   let fetched = false; t.mock.method(globalThis, "fetch", async () => { fetched = true; throw new Error("must not fetch"); });
   const p: Provider = { id: "q", name: "Q", baseUrl: "https://untrusted.invalid/v1", models: ["m"], route: "chat-translate", routePinned: true, streamUsage: false, createdAt: "", cliTextBridge: { kind: "qoder", binary: "/fixture/qoder" } };
-  const result = await sendChat(p, "fake-pat", { messages: [{ role: "user", content: "x" }] }, new AbortController().signal);
-  assert.ok(result instanceof Error); assert.equal(fetched, false);
+  let executed = false;
+  const selected = prepareOutbound(p, { protocol: "chat", model: "m", stream: false, body: { messages: [{ role: "user", content: "x" }] } }, { qoderExecutor: async () => { executed = true; return { exitCode: 0, stdout: "fixture" }; } });
+  const result = await selected.send("fake-pat", new AbortController().signal);
+  assert.ok(result instanceof Response); assert.equal(result.status, 200); assert.equal(executed, true); assert.equal(fetched, false);
 });
 
 

@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { chatToTurn, sendCursor } from "../src/cursor/adapter.ts";
+import { conversationToTurn, sendCursorConversation } from "../src/cursor/adapter.ts";
 import { clearCursorCache } from "../src/cursor/auth.ts";
 import { encodeFrame, endStreamError, FrameParser } from "../src/cursor/connect.ts";
 import { decodeServer, encodeRun } from "../src/cursor/messages.ts";
@@ -17,6 +17,8 @@ import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import type { ChatRequest } from "../src/translate.ts";
+import { decodeRequest } from "../src/inbound.ts";
+const buildTurn = (chat: ChatRequest) => conversationToTurn(decodeRequest({ protocol: "chat", body: chat, model: chat.model, stream: chat.stream }), chat.model).turn;
 import type { Provider } from "../src/types.ts";
 import { startFakeCursor, type FakeCursor } from "./fake-cursor.ts";
 
@@ -55,13 +57,13 @@ test("a Chat conversation becomes a turn: system apart, tool traffic as plain te
     { role: "tool", tool_call_id: "c1", content: "a.txt" },
     { role: "assistant", content: "one file" }, { role: "user", content: "and now?" },
   ] };
-  const turn = chatToTurn(chat);
+  const turn = buildTurn(chat);
   assert.equal(turn.system, "Be brief.\n\nBe kind.");
   assert.equal(turn.user, "and now?");
   assert.deepEqual(turn.history.map(h => h.role), ["user", "assistant", "user", "assistant"]);
   assert.match(turn.history[1]!.text, /调用了工具 ls/);
   assert.match(turn.history[2]!.text, /a\.txt/);
-  assert.equal(chatToTurn({ model: "m", stream: false, messages: [{ role: "assistant", content: "x" }] }).user, "请继续。");
+  assert.equal(buildTurn({ model: "m", stream: false, messages: [{ role: "assistant", content: "x" }] }).user, "请继续。");
 });
 
 test("a run request carries the model, the message, an empty tool list and the history as blobs addressed by their hash; server messages decode to events", () => {
@@ -261,11 +263,11 @@ test("heartbeats go out while Cursor is quiet, and silence ends in a timeout", a
   const provider = { id: "x", name: "x", baseUrl: fake.base, models: [], route: "chat-translate", streamUsage: false } as unknown as Provider;
   const chat: ChatRequest = { model: "m", stream: false, messages: [{ role: "user", content: "hi" }] };
   fake.script = () => ({ plain: true, silent: true });
-  const timedOut = await sendCursor(provider, "tok", chat, new AbortController().signal, { heartbeatMs: 20, silenceMs: 150 });
+  const timedOut = await sendCursorConversation(provider, "tok", decodeRequest({ protocol: "chat", body: chat, model: chat.model, stream: chat.stream }), { protocol: "chat", body: chat, model: chat.model, stream: chat.stream }, new AbortController().signal, { heartbeatMs: 20, silenceMs: 150 });
   assert.equal(timedOut.status, 504);
   const beats = fake.runs.at(-1)!.replies.filter(r => r.kind === "heartbeat").length;
   assert.ok(beats >= 3, `heartbeats while waiting: ${beats}`);
-  const none = await sendCursor(provider, undefined, chat, new AbortController().signal);
+  const none = await sendCursorConversation(provider, undefined, decodeRequest({ protocol: "chat", body: chat, model: chat.model, stream: chat.stream }), { protocol: "chat", body: chat, model: chat.model, stream: chat.stream }, new AbortController().signal);
   assert.equal(none.status, 401);
 });
 

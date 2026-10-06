@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ResponsesStream, responsesToChat } from "../src/translate.ts";
+import { outboundBody, convertOutput, sseResponse } from "./protocol-fixture.ts";
 
 type Json = Record<string, unknown>;
 
@@ -36,95 +36,57 @@ const CODEX_REQUEST: Json = {
   prompt_cache_key: "thread-1",
 };
 
-test("instructions and developer turns become one leading system message", () => {
-  const { chat } = responsesToChat(CODEX_REQUEST, "mock-coder", { streamUsage: true });
-  assert.equal(chat.model, "mock-coder");
-  assert.equal(chat.messages[0]?.role, "system");
-  assert.match(String(chat.messages[0]?.content), /You are Codex\.[\s\S]*skills_instructions/);
-  assert.equal(chat.messages.filter(m => m.role === "system").length, 1);
-  assert.ok(chat.messages.every(m => ["system", "user", "assistant", "tool"].includes(m.role)));
+test("real Responses-to-Chat egress merges instructions/developer turns and preserves paired result text", async t => {
+  const { body } = await outboundBody(t, "responses", CODEX_REQUEST);
+  assert.equal(body.messages[0].role, "system");
+  assert.match(body.messages[0].content, /You are Codex\.[\s\S]*skills_instructions/);
+  assert.equal(body.messages.filter((m: any) => m.role === "system").length, 1);
+  assert.deepEqual(body.messages.filter((m: any) => m.role === "tool").map((m: any) => [m.tool_call_id, m.content]), [["call_a", "a.txt"], ["call_b", "/tmp"], ["call_c", "Done"]]);
 });
 
-test("parallel function calls share one assistant turn, outputs become tool messages", () => {
-  const { chat } = responsesToChat(CODEX_REQUEST, "mock-coder", { streamUsage: true });
-  const assistantWithCalls = chat.messages.filter(m => m.tool_calls);
-  assert.equal(assistantWithCalls[0]?.tool_calls?.length, 2);
-  const tools = chat.messages.filter(m => m.role === "tool");
-  assert.deepEqual(tools.map(t => [t.tool_call_id, t.content]), [["call_a", "a.txt"], ["call_b", "/tmp"], ["call_c", "Done"]]);
+test("real egress preserves namespace/custom tool metadata for downstream restoration", async t => {
+  const { body, tools } = await outboundBody(t, "responses", CODEX_REQUEST);
+  assert.ok(tools.find(x => x.name === "apply_patch")?.custom);
+  const custom = body.tools.find((x: any) => x.function.name === "apply_patch").function;
+  assert.deepEqual(custom.parameters.required, ["input"]); assert.match(custom.description, /lark/);
+  const replay = body.messages.flatMap((m: any) => m.tool_calls ?? []).find((x: any) => x.id === "call_c");
+  assert.deepEqual(JSON.parse(replay.function.arguments), { input: "*** Begin Patch" });
 });
 
-test("custom tools become a one-string function and are remembered for the way back", () => {
-  const { chat, customTools } = responsesToChat(CODEX_REQUEST, "mock-coder", { streamUsage: true });
-  assert.ok(customTools.has("apply_patch"));
-  const fn = chat.tools?.find(t => ((t.function ?? {}) as Json).name === "apply_patch")?.function as Json;
-  assert.deepEqual((fn.parameters as Json).required, ["input"]);
-  assert.match(String(fn.description), /lark grammar/);
-  const replayed = chat.messages.flatMap(m => m.tool_calls ?? []).find(c => c.id === "call_c");
-  assert.deepEqual(JSON.parse(replayed?.function.arguments ?? "{}"), { input: "*** Begin Patch" });
+test("real egress reports optional server tools and removes Responses-only fields", async t => {
+  const { body, dropped } = await outboundBody(t, "responses", CODEX_REQUEST);
+  assert.ok(dropped.includes("tool:web_search")); assert.equal(body.tools.length, 3);
+  for (const key of ["include", "store", "instructions", "input", "metadata"]) assert.equal(body[key], undefined);
+  assert.deepEqual(body.stream_options, { include_usage: true });
 });
 
-test("tools Chat cannot express are dropped and reported, Responses-only fields are not forwarded", () => {
-  const { chat, dropped } = responsesToChat(CODEX_REQUEST, "mock-coder", { streamUsage: true });
-  assert.deepEqual(dropped, ["tool:web_search"], "namespaces are flattened, not dropped");
-  assert.equal(chat.tools?.length, 3);
-  const raw = chat as unknown as Json;
-  for (const key of ["include", "store", "reasoning", "prompt_cache_key", "instructions", "input"]) assert.equal(raw[key], undefined, key);
-  assert.deepEqual(chat.stream_options, { include_usage: true });
-});
-
-function collect(feed: (s: ResponsesStream) => void, customTools: string[] = []): Json[] {
-  let out = "";
-  const stream = new ResponsesStream("mock-coder", new Set(customTools), chunk => (out += chunk));
-  stream.start();
-  feed(stream);
-  stream.finish();
-  return out.trim().split("\n\n").map(block => JSON.parse(block.split("\n")[1]!.slice(6)) as Json);
-}
-
-test("a streamed text answer yields the Responses event sequence Codex consumes", () => {
-  const events = collect(s => {
-    s.chunk({ choices: [{ delta: { role: "assistant" } }] });
-    s.chunk({ choices: [{ delta: { content: "Hel" } }] });
-    s.chunk({ choices: [{ delta: { content: "lo" } }] });
-    s.chunk({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } });
-  });
-  assert.deepEqual(events.map(e => e.type), [
-    "response.created", "response.in_progress", "response.output_item.added", "response.content_part.added",
-    "response.output_text.delta", "response.output_text.delta", "response.output_text.done", "response.content_part.done",
-    "response.output_item.done", "response.completed",
-  ]);
-  const completed = events.at(-1)!.response as Json;
-  assert.equal(((completed.output as Json[])[0]!.content as Json[])[0]!.text, "Hello");
-  assert.equal((completed.usage as Json).input_tokens, 10);
+test("real Chat decoder and Responses renderer stream text with usage and monotonic sequence numbers", async () => {
+  const { events, result } = await convertOutput(sseResponse([
+    { choices: [{ delta: { content: "Hel" } }] }, { choices: [{ delta: { content: "lo" }, finish_reason: "stop" }] },
+    { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } },
+  ]), "chat", "responses");
+  assert.equal(events.filter(e => e.type === "response.output_text.delta").map(e => e.delta).join(""), "Hello");
+  assert.equal(result.output[0].content[0].text, "Hello"); assert.equal(result.usage.input_tokens, 10);
   assert.deepEqual(events.map(e => e.sequence_number), events.map((_, i) => i));
 });
 
-test("streamed tool-call fragments are reassembled into function_call and custom_tool_call items", () => {
-  const events = collect(s => {
-    s.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_x", function: { name: "exec_command", arguments: "" } }] } }] });
-    s.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "{\"cmd\":" } }] } }] });
-    s.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"ls\"}" } }] } }] });
-    s.chunk({ choices: [{ delta: { tool_calls: [{ index: 1, id: "call_y", function: { name: "apply_patch", arguments: "{\"input\":\"*** Begin Patch\"}" } }] } }] });
-  }, ["apply_patch"]);
-  const done = events.filter(e => e.type === "response.output_item.done").map(e => e.item as Json);
-  assert.deepEqual(done[0], { id: done[0]!.id, type: "function_call", call_id: "call_x", name: "exec_command", arguments: "{\"cmd\":\"ls\"}", status: "completed" });
-  assert.deepEqual(done[1], { id: done[1]!.id, type: "custom_tool_call", call_id: "call_y", name: "apply_patch", input: "*** Begin Patch", status: "completed" });
-  assert.equal(((events.at(-1)!.response as Json).output as Json[]).length, 2);
+test("real pipeline restores fragmented functions and custom-tool calls", async t => {
+  const { tools } = await outboundBody(t, "responses", CODEX_REQUEST);
+  const { result } = await convertOutput(sseResponse([
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_x", function: { name: "exec_command", arguments: '{"cmd":' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"ls"}' } }, { index: 1, id: "call_y", function: { name: "apply_patch", arguments: '{"input":"*** Begin Patch"}' } }] }, finish_reason: "tool_calls" }] },
+  ]), "chat", "responses", tools);
+  assert.deepEqual(result.output.map((x: any) => [x.type, x.name, x.arguments ?? x.input]), [["function_call", "exec_command", '{"cmd":"ls"}'], ["custom_tool_call", "apply_patch", "*** Begin Patch"]]);
 });
 
-test("namespace tools (MCP servers) travel as flat functions and come back as namespace + name", () => {
-  const { chat, namespaced } = responsesToChat({ model: "m", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }, { type: "function_call", call_id: "c1", namespace: "mcp__easyswitch", name: "list_agents", arguments: "{}" }, { type: "function_call_output", call_id: "c1", output: "ok" }], tools: [{ type: "namespace", name: "mcp__easyswitch", tools: [{ type: "function", name: "list_agents", description: "d", parameters: { type: "object", properties: {} } }] }] }, "m", { streamUsage: false });
-  const flat = ((chat.tools![0] as unknown) as { function: { name: string } }).function.name;
-  assert.equal(flat, "mcp__easyswitch__list_agents");
-  assert.equal(chat.messages.find(m => m.tool_calls)!.tool_calls![0]!.function.name, flat, "earlier calls in the history use the flat name too");
-  assert.deepEqual(namespaced.get(flat), { namespace: "mcp__easyswitch", name: "list_agents" });
-  let out = "";
-  const stream = new ResponsesStream("m", new Set(), c => (out += c), namespaced);
-  stream.start();
-  stream.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: flat, arguments: "{}" } }] } }] });
-  stream.finish();
-  const done = out.trim().split("\n\n").map(b => JSON.parse(b.split("\n")[1]!.slice(6)) as Json).find(e => e.type === "response.output_item.done");
-  const item = done?.item as unknown as Json;
-  assert.equal(item.namespace, "mcp__easyswitch");
-  assert.equal(item.name, "list_agents");
+test("real pipeline restores namespace and bare tool names", async t => {
+  const { tools } = await outboundBody(t, "responses", { input: "x", tools: [{ type: "namespace", name: "mcp__easyswitch", tools: [{ type: "function", name: "list_agents", parameters: {} }] }] });
+  const { result } = await convertOutput(sseResponse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: "mcp__easyswitch__list_agents", arguments: "{}" } }] }, finish_reason: "tool_calls" }] }]), "chat", "responses", tools);
+  assert.equal(result.output[0].namespace, "mcp__easyswitch"); assert.equal(result.output[0].name, "list_agents");
+});
+
+test("real stream keeps reasoning before visible text instead of treating text as the first block", async () => {
+  const { result, events } = await convertOutput(sseResponse([{ choices: [{ delta: { reasoning_content: "thinking" } }] }, { choices: [{ delta: { content: "answer" }, finish_reason: "stop" }] }]), "chat", "responses");
+  assert.deepEqual(result.output.map((x: any) => x.type), ["reasoning", "message"]);
+  assert.ok(events.findIndex(e => e.type === "response.reasoning_summary_text.delta") < events.findIndex(e => e.type === "response.output_text.delta"));
 });

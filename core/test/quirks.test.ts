@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AnthropicStream } from "../src/anthropic.ts";
 import { quirksFor, ReasoningMemory, repairToolPairs, shapeChat, toolChoiceToChat, upstreamModelId } from "../src/quirks.ts";
 import { endpointUrl } from "../src/upstream.ts";
-import { ResponsesStream, responsesToChat } from "../src/translate.ts";
+import { outboundBody, convertOutput, sseResponse } from "./protocol-fixture.ts";
 import type { ChatMessage, ChatRequest } from "../src/translate.ts";
 
 test("a base URL that already names the endpoint is not doubled; bracket suffixes go", () => {
@@ -24,10 +23,10 @@ test("tool_choice becomes Chat's shape; Kimi for Coding only gets auto/none", ()
   assert.equal(toolChoiceToChat("none", kimi), "none");
 });
 
-test("Codex's parallel_tool_calls:true is not forwarded; false is", () => {
+test("Codex's parallel_tool_calls:true is not forwarded; false is", async t => {
   const base = { model: "m", input: "x", tools: [{ type: "function", name: "t", parameters: {} }] };
-  assert.equal(responsesToChat({ ...base, parallel_tool_calls: true }, "m", { streamUsage: false }).chat.parallel_tool_calls, undefined);
-  assert.equal(responsesToChat({ ...base, parallel_tool_calls: false }, "m", { streamUsage: false }).chat.parallel_tool_calls, false);
+  assert.equal((await outboundBody(t, "responses", { ...base, parallel_tool_calls: true })).body.parallel_tool_calls, undefined);
+  assert.equal((await outboundBody(t, "responses", { ...base, parallel_tool_calls: false })).body.parallel_tool_calls, false);
 });
 
 test("tool pairs are repaired: late results move up, orphans become text, unanswered calls say so", () => {
@@ -101,18 +100,13 @@ test("xAI reasoning models lose `stop`", () => {
   assert.equal("stop" in chat, false);
 });
 
-test("both streams capture the reasoning and the tool call ids of a turn", () => {
-  const chunks = [
-    { choices: [{ delta: { reasoning_content: "think " } }] },
-    { choices: [{ delta: { reasoning: "more" } }] },
-    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_9", function: { name: "ls", arguments: "{}" } }] } }] },
-  ];
-  const responses = new ResponsesStream("m", new Set(), () => {});
-  const anthropic = new AnthropicStream("m", () => {});
-  responses.start(); anthropic.start();
-  for (const c of chunks) { responses.chunk(c); anthropic.chunk(c); }
-  assert.deepEqual(responses.turn, { reasoning: "think more", callIds: ["call_9"] });
-  assert.deepEqual(anthropic.turn, { reasoning: "think more", callIds: ["call_9"] });
+test("real source events capture reasoning and tool ids for both response renderers", async () => {
+  const chunks = [{ choices: [{ delta: { reasoning_content: "think " } }] }, { choices: [{ delta: { reasoning: "more" } }] }, { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_9", function: { name: "ls", arguments: "{}" } }] }, finish_reason: "tool_calls" }] }];
+  for (const target of ["responses", "messages"] as const) {
+    const { downstream } = await convertOutput(sseResponse(chunks), "chat", target);
+    assert.equal(downstream.items.filter(i => i.kind === "reasoning").map(i => i.text).join(""), "think more");
+    assert.deepEqual(downstream.items.filter(i => i.kind === "call").map(i => i.callId), ["call_9"]);
+  }
 });
 
 test("the thinking level is said the way each upstream wants it, and never to one that would not understand", async () => {

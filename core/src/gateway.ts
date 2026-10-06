@@ -1,14 +1,11 @@
 import type { QoderExecutor } from "./qoder-text-bridge.ts";
 import type { GatewaySession } from "./gateway-auth.ts";
 import { anthropicModelList } from "./catalog.ts";
-import { applyEffort, type Quirks } from "./quirks.ts";
 import { agentOfHeaders } from "./gateway-chat.ts";
-import { modelEfforts } from "./model-efforts.ts";
 import { liveMembers, poolOf } from "./pools.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SecretStore } from "./secrets.ts";
 import type { Store } from "./store.ts";
-import type { ChatRequest } from "./translate.ts";
 import type { GatewayLogEntry, Provider } from "./types.ts";
 import { parseRequest, routeRequest } from "./gateway-route.ts";
 
@@ -47,20 +44,7 @@ export function noModelMessage(store: Store, exposed: string): string {
   return `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`;
 }
 
-/** OpenAI's list shape by default; Anthropic's ModelInfo list when Claude Code asks. */
-/**
- * The thinking level for one call. What the user saved for the agent wins and is said in the
- * upstream's own way; without one, an agent's own request is passed on only to upstreams that
- * take Chat's `reasoning_effort`, so nothing changes for anyone who never touched the setting.
- */
-export function applyThinking(chat: ChatRequest, store: Store, agent: string, requested: unknown, provider: Provider, quirks: Quirks): void {
-  const style = provider.plan ? "effort" : provider.reasoningEffort === undefined ? quirks.reasoning : provider.reasoningEffort ? "effort" : "none";
-  const saved = store.prefs(agent).effort;
-  const has = modelEfforts(provider, chat.model);
-  if (saved) applyEffort(chat, saved, style, has);
-  else if (style === "effort") applyEffort(chat, requested, style, has);
-}
-
+/** OpenAI list shape by default, Anthropic ModelInfo list when requested. */
 export function listExposedModels(store: Store, anthropic = false): Json {
   const models = store.catalog();
   if (anthropic) return anthropicModelList(models);

@@ -5,11 +5,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { geminiToChat, lowerSchema } from "../src/gemini.ts";
+import { lowerSchema } from "../src/gemini.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { startMockRelay } from "./mock-relay.ts";
+import { outboundBody } from "./protocol-fixture.ts";
 
 process.env.EASYSWITCH_SECRETS = "memory";
 type Json = Record<string, any>;
@@ -44,8 +45,8 @@ test("schemas lose Gemini's capitals and extras", () => {
   assert.deepEqual(lowerSchema({ type: "OBJECT", properties: { a: { type: "STRING", nullable: true } }, required: ["a"] }), { type: "object", properties: { a: { type: "string" } }, required: ["a"] });
 });
 
-test("a Gemini request becomes a Chat request: system, roles, calls matched to responses by name", () => {
-  const { chat } = geminiToChat({
+test("a Gemini request uses real source preparation: system, roles, calls matched by name", async t => {
+  const { body: chat } = await outboundBody(t, "gemini", {
     systemInstruction: { parts: [{ text: "be brief" }] },
     contents: [
       { role: "user", parts: [{ text: "ls" }] },
@@ -55,8 +56,8 @@ test("a Gemini request becomes a Chat request: system, roles, calls matched to r
     generationConfig: { maxOutputTokens: 100, temperature: 0.2, stopSequences: ["END"] },
     toolConfig: { functionCallingConfig: { mode: "ANY" } },
     tools: [{ functionDeclarations: [{ name: "shell", parameters: { type: "OBJECT", properties: {} } }] }],
-  }, "m", { stream: false, streamUsage: true });
-  assert.deepEqual(chat.messages.map(m => m.role), ["system", "user", "assistant", "tool"]);
+  });
+  assert.deepEqual(chat.messages.map((m: Json) => m.role), ["system", "user", "assistant", "tool"]);
   const call = chat.messages[2]!.tool_calls![0]!;
   assert.equal(chat.messages[3]!.tool_call_id, call.id, "the response answers the call of the same name");
   assert.equal(chat.max_tokens, 100);

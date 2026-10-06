@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { recordLimitReached } from "../quota.ts";
-import type { ChatRequest } from "../translate.ts";
 import type { Provider } from "../types.ts";
-import { decodeRequest } from "../inbound.ts";
 import type { Conversation, InboundRequest } from "../protocol.ts";
 import { repairConversation, resultText } from "../subscription-input.ts";
 import { CursorError } from "./errors.ts";
@@ -10,17 +8,14 @@ import type { TurnInput } from "./messages.ts";
 import { runTurn, type TurnEvent } from "./transport.ts";
 
 /**
- * Cursor as a model source for the Chat gateway: a Chat Completions request in, a Chat answer (or stream) out.
+ * Cursor's private turn is built directly from neutral Conversation; the existing output boundary
+ * returns a Chat-shaped answer or stream.
  * Text only for now: the tools a caller offers are not passed on (Cursor answers in words), and earlier tool calls and
  * results in the history are written into the conversation as plain text.
  */
 
 type Json = Record<string, any>;
 
-/** Kept for legacy callers; the selected production source receives Conversation directly. */
-export function chatToTurn(chat: ChatRequest): TurnInput {
-  return conversationToTurn(decodeRequest({ protocol: "chat", body: chat, model: chat.model, stream: chat.stream }), chat.model).turn;
-}
 export function conversationToTurn(value: Conversation, model: string): { turn: TurnInput; dropped: string[] } {
   const c = repairConversation(value), system: string[] = [];
   const turns: Array<{ role: "user" | "assistant"; text: string }> = [];
@@ -49,11 +44,6 @@ export function conversationToTurn(value: Conversation, model: string): { turn: 
 
 const failure = (error: unknown): CursorError => (error instanceof CursorError ? error : new CursorError("Cursor 请求失败，请检查网络或稍后重试。"));
 
-/** One Chat request to Cursor. Failures come back as a Response with the status and a plain reason. */
-export async function sendCursor(provider: Provider, token: string | undefined, chat: ChatRequest, signal: AbortSignal, opts: { heartbeatMs?: number; silenceMs?: number } = {}): Promise<Response> {
-  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
-  return sendCursorConversation(provider, token, decodeRequest(request), request, signal, opts);
-}
 export async function sendCursorConversation(provider: Provider, token: string | undefined, conversation: Conversation, request: InboundRequest, signal: AbortSignal, opts: { heartbeatMs?: number; silenceMs?: number } = {}): Promise<Response> {
   const fail = (error: unknown) => {
     const e = failure(error);

@@ -9,7 +9,8 @@ import { after, before, test } from "node:test";
 import { mimoClientId, withMimoMarker, MIMO_SYSTEM_MARKER, mimoFreeIssue, mimoJwt } from "../src/mimo-free.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
-import { sendChat } from "../src/upstream-chat.ts";
+import { prepareOutbound } from "../src/outbound.ts";
+import { ProtocolError } from "../src/protocol.ts";
 import type { Provider } from "../src/types.ts";
 import { sessionToken } from "../src/gateway-auth.ts";
 import { Store } from "../src/store.ts";
@@ -79,8 +80,7 @@ test("MiMo Free cannot reach vendor endpoints even with the fixture flag", async
     delete process.env.EASYSWITCH_MIMO_BOOTSTRAP; delete process.env.EASYSWITCH_MIMO_CHAT;
     assert.match(mimoFreeIssue()!, /现已停用/);
     await assert.rejects(mimoJwt(stateDir), /现已停用/);
-    const legacy = await sendChat({ mimoFree: true } as Provider, undefined, { model: "mimo-auto", messages: [], stream: false }, new AbortController().signal);
-    assert.ok(legacy instanceof Response); assert.equal(legacy.status, 501);
+    assert.throws(() => prepareOutbound({ mimoFree: true } as Provider, { protocol: "chat", model: "mimo-auto", stream: false, body: { messages: [] } }), (error: unknown) => error instanceof ProtocolError && error.status === 501);
     process.env.EASYSWITCH_MIMO_BOOTSTRAP = bootstrap;
     assert.ok(mimoFreeIssue(), "a local bootstrap with a real chat destination is still blocked");
     process.env.EASYSWITCH_MIMO_CHAT = chat;
@@ -137,10 +137,11 @@ test("a chat call against the free endpoint bootstraps a JWT once and sends the 
 });
 
 
-test("legacy MiMo fixture transport refuses redirects rather than leaving loopback", async () => {
+test("production MiMo fixture adapter refuses redirects rather than leaving loopback", async () => {
   redirectChat = true;
   try {
-    const result = await sendChat(store.provider(pid)!, undefined, { model: "mimo-auto", messages: [{ role: "user", content: "fixture" }], stream: false }, new AbortController().signal);
-    assert.ok(result instanceof Error, "redirect:error blocks even the legacy sender");
+    const prepared = prepareOutbound(store.provider(pid)!, { protocol: "chat", model: "mimo-auto", stream: false, body: { messages: [{ role: "user", content: "fixture" }] } });
+    const result = await prepared.send(undefined, new AbortController().signal);
+    assert.ok(result instanceof Error, "redirect:error blocks the selected production sender");
   } finally { redirectChat = false; }
 });
