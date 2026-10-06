@@ -5,7 +5,7 @@
 
 ## 0.5 2026-10-06 晚的变更（分工以这一节为准，覆盖下面第 4 节里「B20 归 Claude」「B21 归你」的说法）
 
-用户决定：**剩下的所有待办都交给 Dot，Claude 不再开发这个项目**（BACKLOG B72）。你是唯一在 `dev` 上开发的 agent，不用再避让 Claude；只需避让本地 GPT 的 `main` 工作区。
+用户决定：**剩下的开发待办都交给 Dot**（BACKLOG B72）；**Claude 的新角色**（B73）是产品定义、代码检查（会评审你的提交，评审意见写在 `BACKLOG.md` 或提交评论里，请当成必须回应的反馈）、完善，以及你做不了的真机验证（用户 Mac 上跑真实 agent、核对启动器和订阅）。开发项由你做；Claude 若要改代码会先在登记表里登记、避开你正在改的文件。避让本地 GPT 的 `main` 工作区。
 
 交接单写完之后，Claude 又做完并推到 `dev` 的（你不要重做，要核对的才碰）：
 - **订阅当模型来源**（每个订阅是 `core/src/` 下自己的模块，共享文件里只有一两行挂钩，做 B21 时按挂钩迁移）：Kiro（`kiro*.ts`）、Antigravity（`antigravity*.ts`、`gemini-upstream.ts`）、Vertex（`vertex.ts`）、Cursor（`cursor/*`，纯文字）、Kimi 会员登录（`kimi.ts`）、Kimi/MiniMax 套餐额度（`plan-usage.ts`）。都只用假服务验证过，没有用真账号测。
