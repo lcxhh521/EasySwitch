@@ -33,6 +33,8 @@ export interface Provider {
   reasoningEffort?: boolean;
   /** Thinking levels the user says a model on this provider has, by model id. Overrides what EasySwitch knows. */
   modelEfforts?: Record<string, string[]>;
+  /** This provider is Kiro: the user's own Kiro CLI login is read for each request (see kiro.ts). `loginPath` overrides where it is read from. */
+  kiro?: { loginPath?: string };
   /** This provider is Xiaomi's MiMo Free endpoint: no key, a bootstrapped JWT and a required system marker (see mimo-free.ts). */
   mimoFree?: boolean;
   probe?: ProbeReport;

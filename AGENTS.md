@@ -41,6 +41,8 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 | `upstream-chat.ts` | `sendChat`：Chat 请求出站的唯一出口（plan/mimoFree/普通三分支） |
 | `responses-upstream.ts` | Chat → Responses 请求与返回流的翻译（订阅通道用） |
 | `mimo-free.ts` | 小米 MiMo Free 免 key 适配（bootstrap JWT + 系统标记） |
+| `kiro.ts` + `kiro-login.ts` / `kiro-schema.ts` / `aws-eventstream.ts` | Kiro 订阅：每次请求只读 Kiro CLI 的本机登录库，Chat → Kiro 对话状态，AWS 事件流 → Chat 分片；新来源默认关 |
+| `quota.ts` | 订阅额度：读响应头和「用完了」的 429，池子据此跳过用完的订阅，控制台显示还剩多少 |
 | `agent-launch.ts` | 各 agent 的启动方式（interactive/headless）、`runHeadless`、任务执行 |
 | `launch.ts` | Codex/Claude Code 的参数与环境（含 MCP 附着、`claudeEnv` keepLogin） |
 | `mcp.ts` | EasySwitch 自己的 MCP 服务（list_agents/run_agent/list_models），agent 互调 |

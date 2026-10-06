@@ -6,6 +6,7 @@ import { dataDir } from "./paths.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
 import { endpointUrl, upstreamHeaders } from "./upstream.ts";
+import { sendKiro } from "./kiro.ts";
 import { isUsageLimit, recordLimitReached, recordQuotaHeaders } from "./quota.ts";
 
 const mimoStateDir = (): string => join(dataDir(), "mimo");
@@ -18,6 +19,7 @@ const mimoStateDir = (): string => join(dataDir(), "mimo");
  */
 export async function sendChat(provider: Provider, apiKey: string | undefined, payload: unknown, signal: AbortSignal): Promise<Response | Error> {
   const chat = payload as ChatRequest;
+  if (provider.kiro) return sendKiro(provider, chat, signal);
   if (provider.mimoFree) {
     // The free tier wants its own marker and a bootstrapped JWT instead of a stored key.
     let jwt: string;

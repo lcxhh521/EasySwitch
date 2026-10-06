@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { extname } from "node:path";
+import { extname, isAbsolute } from "node:path";
+import { listKiroModels } from "./kiro.ts";
+import { KiroError } from "./kiro-login.ts";
 import { fileURLToPath } from "node:url";
 import { writeCodexCatalog } from "./catalog.ts";
 import { handleChatgpt, handleChatgptUpgrade, isChatgptPath } from "./chatgpt-gateway.ts";
@@ -495,7 +497,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- ChatGPT plan: Continue with ChatGPT --------------------------------
     if (path === "/api/plan" && method === "GET") {
       json(res, 200, {
-        accounts: siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...planQuota(a.id) })),
+        accounts: [
+          ...siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...planQuota(a.id) })),
+          // Kiro has no account of ours (its login stays in the Kiro CLI), only a source; it shows in the same list so it gets the same switch.
+          ...store.providers().filter(p => p.kiro).map(p => ({ id: p.id, kind: "kiro", label: p.name, planUsage: true, needsSignIn: false, on: !p.off, ...planQuota(p.id) })),
+        ],
         signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.userCode ? { userCode: planSignIn.userCode } : {}), ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
       });
       return;
@@ -503,12 +509,50 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // The switch on a subscription: on or off, the user decides. Off keeps the login and the settings.
     const planSwitch = /^\/api\/plan\/([A-Za-z0-9_-]+)\/switch$/.exec(path);
     if (planSwitch && method === "PUT") {
-      const mine = store.providers().filter(p => p.plan?.accountId === planSwitch[1]);
+      const mine = store.providers().filter(p => p.plan?.accountId === planSwitch[1] || (p.kiro && p.id === planSwitch[1]));
       if (!mine.length) { json(res, 404, { error: "没有这个订阅" }); return; }
       if (typeof body.on !== "boolean") { json(res, 400, { error: "需要 on: true 或 false" }); return; }
       for (const p of mine) { if (body.on) delete p.off; else p.off = true; store.upsertProvider(p); }
       agentCache = undefined;
       json(res, 200, { ok: true, on: body.on });
+      return;
+    }
+    // --- Kiro: the user's own Kiro CLI login as a model source. Nothing is copied: only where the login lives is kept.
+    if (path === "/api/kiro/import" && method === "POST") {
+      const existing = store.providers().find(p => p.kiro);
+      const loginPath = typeof body.loginPath === "string" && isAbsolute(body.loginPath) ? body.loginPath : existing?.kiro?.loginPath;
+      try {
+        const { models, region } = await listKiroModels(loginPath);
+        let provider = store.providers().find(p => p.kiro);
+        if (!provider) {
+          provider = {
+            id: slugify("Kiro", [...store.providers().map(p => p.id), "pool"]), name: "Kiro", baseUrl: `https://runtime.${region}.kiro.dev`,
+            models: [], route: "chat-translate", routePinned: true, streamUsage: false, billing: "subscription",
+            // Kiro takes no thinking level, so none is ever sent.
+            reasoningEffort: false, kiro: {}, icon: "kiro-color", createdAt: new Date().toISOString(),
+            // A new subscription starts switched off: the user decides when it is used.
+            off: true,
+          };
+        }
+        provider.baseUrl = `https://runtime.${region}.kiro.dev`;
+        provider.models = models;
+        provider.defaultModel = provider.defaultModel && models.includes(provider.defaultModel) ? provider.defaultModel : models[0]!;
+        provider.kiro = loginPath ? { loginPath } : {};
+        store.upsertProvider(provider);
+        json(res, 200, { id: provider.id, models: models.length, on: !provider.off });
+      } catch (error) {
+        const e = error as KiroError;
+        json(res, e.status === 401 ? 409 : e.status || 502, { error: e.message });
+      }
+      return;
+    }
+    const kiroRemove = /^\/api\/kiro\/([A-Za-z0-9_-]+)$/.exec(path);
+    if (kiroRemove && method === "DELETE") {
+      const provider = store.provider(kiroRemove[1]!);
+      if (!provider?.kiro) { json(res, 404, { error: "没有这个 Kiro 来源" }); return; }
+      // Only the source is removed; the Kiro CLI's own login is not ours to touch.
+      store.removeProvider(provider.id);
+      json(res, 200, { ok: true });
       return;
     }
     if (path === "/api/plan/signin" && method === "POST") {

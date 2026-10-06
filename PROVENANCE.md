@@ -68,7 +68,7 @@ commit, license and how far the code was changed.
 | `core/src/presets.ts` 预设表 | opencodex 供应商注册表（MIT） | 手工删改过 | 对照各家官方文档逐条核实后重写 | 待办 |
 | `web/style.css` 设计变量 | Magpie（MIT） | 已为本布局重写 | 复核是否独立；必要时重取色值 | 待核 |
 | `core/src/quirks.ts` 怪癖表 | opencodex、Magpie 的知识 | 自己的结构重新表达 | 低风险；按各家官方行为文档复核 | 低 |
-| Kiro 适配（`kiro.ts`、`kiro-login.ts`、`aws-eventstream.ts`、`protocol.ts` 等，GPT 在做，`third_party/opencodex`） | opencodex（MIT） | 改编，文件头已声明 | 按协议事实清单重写；eventstream 帧格式是公开的 AWS 格式，可自实现 | 待办 |
+| Kiro 适配：`aws-eventstream.ts`、`kiro-schema.ts`、`kiro-login.ts` 按 GPT 快照原样带入；`kiro.ts` 为 Chat 出口重写（请求构造、事件解释的协议事实仍来自 opencodex）；`third_party/opencodex/LICENSE` | opencodex（MIT） | 改编，文件头已声明 | 按协议事实清单重写；eventstream 帧格式是公开的 AWS 格式，可自实现；SQLite 登录库读取按 Kiro CLI 的表结构自写 | 待办 |
 | Cursor 适配（protobuf 定义、Run 端点） | opencodex（MIT）；protobuf 定义来自逆向的专有协议 | 未开始/进行中 | 手写 .proto 与编码；注意服务条款风险，独立于版权 | 待办 |
 | Antigravity 适配 | opencodex（MIT） | 未开始 | **OAuth client secret 不得写进公开仓库**（来自 Antigravity 桌面端，会触发密钥扫描）；改为运行时从用户本机读取 | 待办 |
 | `core/src/opencodex-import.ts` | 自写（读用户自己的 opencodex 配置） | 互操作功能，无拷贝 | 保留 | 无需 |
