@@ -240,7 +240,7 @@ function agentControls(id) {
   };
   const effort = levels.length
     ? `<div class="ctl"><small>想得多深</small><select data-effort-select="${esc(id)}" title="只对这个 agent 生效">
-        ${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${l ? `${EFFORT_LABEL[l] ?? l}（${esc(l)}）` : "默认"}</option>`).join("")}</select></div>`
+        ${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${levelLabel(l, levels)}</option>`).join("")}</select></div>`
     : modelKey
       // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
       ? `<div class="ctl"><small>想得多深</small><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="${esc(binding.model)} 没有已知的思考档位；告诉 EasySwitch 它有哪些">档位未知，设置</button></div>`
@@ -385,6 +385,13 @@ function otherAgents() {
 }
 
 
+/** A model that can only think or not (DeepSeek, Kimi and the like) gets "off / on", not a scale it does not have. */
+function levelLabel(level, levels) {
+  if (!level) return "默认";
+  const switchOnly = levels.length === 2 && levels.includes("none") && levels.some(l => l !== "none");
+  if (switchOnly) return level === "none" ? "关闭思考" : "开启思考";
+  return `${EFFORT_LABEL[level] ?? level}（${esc(level)}）`;
+}
 const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
 const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
 let ruleForm = null; // { name, words, minChars, maxChars, cwdPrefix, agent, model, effort, error } while the rule form is open

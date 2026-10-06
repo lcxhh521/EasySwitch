@@ -51,3 +51,8 @@
 ## 归档 2026-10-06
 
 - [x] B30 · 网关鉴权令牌：网关只接受 EasySwitch 自己签发的令牌 — 来源：第一版 demo 后我列的公开前加固项（10-05）· 验证：令牌 = es-session-<agent>-<随机>-<用本机密钥算的签名>，密钥首次生成后存钥匙串；网关路由（/v1、/v1beta、/mcp、/responses、/chat/completions）不带有效令牌回 401，/health 和控制台接口不受影响；令牌认 Authorization、x-api-key、x-easyswitch-session（保留登录的 Claude Code）、x-goog-api-key 和 ?key=；Codex 现在带 x-easyswitch-session 头；Hermes 配置里和配置向导里的是稳定令牌；gateway-auth.test.ts 6 个用例；真 Claude Code、真 Codex、真 Hermes、真 dsh 的测试都改成在开着鉴权的网关上跑并通过 · 备注：ChatGPT 桌面端那条路径（带它自己的登录）不在这个门里；测试默认不开鉴权（现有测试用的是假令牌），入口 main.ts 默认开；升级前启动、还在跑的旧会话用的是未签名令牌，会被拒，重启一次就好
+
+## 归档 2026-10-06
+
+- [x] B11 · 核对 MiMo：免 key 的 MiMo Free 和官方 MiMo API 两种都要 — 来源：「MiMo 绕过限额和 api 两种都要」（10-05）· 验证：预设里三个都在——小米 MiMo Free（免 key，mimo-free.ts，mimo-free.test.ts 4 个用例通过）、小米 MiMo 官方 API（OpenAI 和 Anthropic 两个地址，默认 mimo-v2.6-flash）、MiMo Token Plan（默认 mimo-v2.6-pro）；默认模型是 V2.6，不受小米 2026-10-21 下线 V2.5 的影响 · 备注：没有真账号实测；发现一个缺口登记为 B64
+- [x] B12 · DeepSeek / Kimi 这类「只有思考 / 不思考」的模型，档位下拉框要直白 — 来源：我在上轮列的缺口（10-05）· 验证：这类模型（档位正好是 none + 一个）的下拉框显示「默认 / 关闭思考 / 开启思考」，多档位的模型（Codex、Claude Code）不变；在开发实例里造了一个只有 none/high 的模型并绑到 Hermes，用真页面读了下拉选项
