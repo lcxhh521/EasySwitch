@@ -21,6 +21,7 @@ export interface GatewayDeps {
   session?: GatewaySession;
   /** Explicit local-test transport; never read from a request. */
   qoderExecutor?: QoderExecutor;
+  codeBuddyExecutor?: QoderExecutor;
 }
 
 /** `<provider id>/<upstream model>`: the provider is everything before the first slash. */

@@ -188,3 +188,29 @@ test("Qoder source switch uses the source API and never initiates a sign-in or t
   assert.equal(app.run('JSON.stringify(requests[0].body)'),'{"on":true}');
   assert.equal(app.run('requests.length'),1);
 });
+
+
+test("CodeBuddy source UI requires explicit region, retains text-only caveats and never uses the launcher route", async () => {
+  const app = ui();
+  await app.dispatch("click", app.target("[data-cli-text-open]", { cliTextOpen: "codebuddy" }));
+  app.run(`planInfo={accounts:[]};page='providers';renderActual();`);
+  assert.match(app.html(), /CodeBuddy API Key/); assert.match(app.html(), /凭据所属区域/);
+  assert.match(app.html(), /不继承本地网关地址/); assert.match(app.html(), /真实CLI未验收/);
+  assert.match(app.html(), /value="international"/); assert.match(app.html(), /value="china"/);
+  const form = { matches: (s: string) => s === "[data-cli-text-form]", querySelectorAll: () => [], values: { name: "CodeBuddy", binary: "/fixture/codebuddy", model: "m", apiKey: "fake-key", edition: "", experimental: "on" } };
+  await app.dispatch("submit", form); assert.equal(app.run("requests.length"), 0);
+  form.values.edition = "china"; await app.dispatch("submit", form);
+  assert.equal(app.run("requests[0].path"), "/api/cli-text-sources");
+  assert.equal(app.run("requests[0].body.kind"), "codebuddy"); assert.equal(app.run("requests[0].body.edition"), "china");
+  assert.equal(app.storageWrites(), 0);
+});
+
+test("CodeBuddy source form closes cleanly and a later Qoder form does not retain the region", async () => {
+  const app = ui();
+  await app.dispatch("click", app.target("[data-cli-text-open]", { cliTextOpen: "codebuddy" }));
+  await app.dispatch("click", app.target("[data-cli-text-close]"));
+  assert.equal(app.run("cliTextFormOpen"), false);
+  await app.dispatch("click", app.target("[data-cli-text-open]", { cliTextOpen: "qoder" }));
+  assert.equal(app.run("cliTextKind"), "qoder");
+  assert.doesNotMatch(app.run("cliTextSourcesCard()"), /name="edition"/);
+});

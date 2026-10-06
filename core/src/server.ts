@@ -1,3 +1,4 @@
+import { codeBuddyTextBridgeIssue, type CodeBuddyTextBridgeConfig } from "./codebuddy-text-bridge.ts";
 import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { qoderTextBridgeIssue, type QoderExecutor } from "./qoder-text-bridge.ts";
 import { DROID_TEXT_BRIDGE_BLOCKER } from "./droid-text-bridge.ts";
@@ -85,6 +86,7 @@ export interface ServerDeps {
   gatewayAuth?: GatewayTokenAuthority;
   /** In-process fake executor for bridge integration tests; not a production switch. */
   qoderExecutor?: QoderExecutor;
+  codeBuddyExecutor?: QoderExecutor;
   /** In-process test seam; never configurable over HTTP or environment variables. */
   interactiveRuntime?: {
     findBinary: (id: string) => Promise<string | undefined>;
@@ -1315,21 +1317,21 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
 
     if (path === "/api/cli-text-sources" && method === "GET") {
-      json(res, 200, { qoder: { state: "documented", textOnly: true, defaultOff: true, realCliVerified: false }, droid: { state: "blocked", status: 501, message: DROID_TEXT_BRIDGE_BLOCKER } }); return;
+      json(res, 200, { qoder: { state: "documented", textOnly: true, defaultOff: true, realCliVerified: false }, codebuddy: { state: "documented", textOnly: true, defaultOff: true, realCliVerified: false, editions: ["international", "china"] }, droid: { state: "blocked", status: 501, message: DROID_TEXT_BRIDGE_BLOCKER } }); return;
     }
     if (path === "/api/cli-text-sources" && method === "POST") {
       if (body.kind === "droid") { json(res, 501, { error: DROID_TEXT_BRIDGE_BLOCKER }); return; }
-      const allowed = ["kind", "name", "model", "binary", "apiKey", "timeoutMs", "maxOutputBytes", "experimental"];
-      if (body.kind !== "qoder" || Object.keys(body).some(k => !allowed.includes(k))) { json(res, 400, { error: "无效的CLI文字来源配置" }); return; }
+      const allowed = ["kind", "name", "model", "binary", "apiKey", "timeoutMs", "maxOutputBytes", "experimental", ...(body.kind === "codebuddy" ? ["edition"] : [])];
+      if ((body.kind !== "qoder" && body.kind !== "codebuddy") || Object.keys(body).some(k => !allowed.includes(k))) { json(res, 400, { error: "无效的CLI文字来源配置" }); return; }
       if (body.experimental !== true) { json(res, 409, { error: "请确认纯文字桥限制与真实CLI尚未验收；添加时不会执行程序" }); return; }
-      const config = { binary: body.binary, ...(body.timeoutMs !== undefined ? { timeoutMs: body.timeoutMs } : {}), ...(body.maxOutputBytes !== undefined ? { maxOutputBytes: body.maxOutputBytes } : {}) };
-      const issue = qoderTextBridgeIssue(config);
+      const config = { binary: body.binary, ...(body.kind === "codebuddy" ? { edition: body.edition } : {}), ...(body.timeoutMs !== undefined ? { timeoutMs: body.timeoutMs } : {}), ...(body.maxOutputBytes !== undefined ? { maxOutputBytes: body.maxOutputBytes } : {}) };
+      const issue = body.kind === "codebuddy" ? codeBuddyTextBridgeIssue(config) : qoderTextBridgeIssue(config);
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const model = typeof body.model === "string" ? body.model.trim() : "";
       const key = typeof body.apiKey === "string" ? body.apiKey : "";
-      if (issue || !name || !/^[a-z0-9][a-z0-9._:/-]{0,191}$/i.test(model) || !key || /[\r\n\0]/.test(key)) { json(res, 400, { error: issue ?? "需要名称、明确模型ID和用户提供的PAT" }); return; }
-      const id = `qoder-${randomUUID().replace(/-/g, "")}`;
-      const provider: Provider = { id, name, baseUrl: "cli://qoder", defaultModel: model, models: [model], route: "chat-translate", routePinned: true, protocols: ["chat"], streamUsage: false, billing: "subscription", off: true, cliTextBridge: { kind: "qoder", binary: config.binary as string, ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs as number } : {}), ...(config.maxOutputBytes !== undefined ? { maxOutputBytes: config.maxOutputBytes as number } : {}) }, icon: "qoder", createdAt: new Date().toISOString() };
+      if (issue || !name || !/^[a-z0-9][a-z0-9._:/-]{0,191}$/i.test(model) || !key || /[\r\n\0]/.test(key)) { json(res, 400, { error: issue ?? "需要名称、明确模型ID和用户提供的凭据" }); return; }
+      const id = `${body.kind}-${randomUUID().replace(/-/g, "")}`;
+      const provider: Provider = { id, name, baseUrl: `cli://${body.kind}`, defaultModel: model, models: [model], route: "chat-translate", routePinned: true, protocols: ["chat"], streamUsage: false, billing: "subscription", off: true, cliTextBridge: body.kind === "codebuddy" ? { kind: "codebuddy", ...config as CodeBuddyTextBridgeConfig } : { kind: "qoder", binary: config.binary as string, ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs as number } : {}), ...(config.maxOutputBytes !== undefined ? { maxOutputBytes: config.maxOutputBytes as number } : {}) }, icon: body.kind, createdAt: new Date().toISOString() };
       try { await secrets.set(id, key); store.upsertProvider(provider); }
       catch { try { store.removeProvider(id); } catch {} await secrets.delete(id).catch(() => {}); json(res, 500, { error: "未能保存CLI文字来源，请检查本地存储" }); return; }
       json(res, 201, { ...publicProvider(provider, true), notice: "默认关闭；仅文字，不能调用工具/图片，不等同原生模型API。未运行CLI或探测。" }); return;
@@ -1712,7 +1714,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (path === "/mcp") {
@@ -1731,13 +1733,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor });
+          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -1751,7 +1753,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {

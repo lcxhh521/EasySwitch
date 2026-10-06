@@ -55,27 +55,31 @@ function subscriptionSupportCard() {
 }
 
 let cliTextFormOpen = false;
+let cliTextKind = "qoder";
 let cliTextBusy = false;
 function cliTextSourceNotice(p) {
-  return p.cliTextBridge?.kind === "qoder"
-    ? "Qoder纯文字桥：拒绝工具定义、工具历史和图片；普通编码agent通常附带工具，不能直接当完整模型API用。多角色仅作文字transcript，流式请求等待完整结果，没有已核验的token用量。真实CLI未验收，开启后显式调用可能消耗Qoder额度。"
+  return ["qoder", "codebuddy"].includes(p.cliTextBridge?.kind)
+    ? `${p.cliTextBridge.kind === "codebuddy" ? "CodeBuddy" : "Qoder"}纯文字桥：拒绝工具定义、工具历史和图片；普通编码agent通常附带工具，不能直接当完整模型API用。多角色仅作文字transcript，流式请求等待完整结果，没有已核验的token用量。真实CLI未验收，开启后显式调用可能消耗所选厂商额度。`
     : "Droid生产来源尚未接通已验证的隔离传输，保持501；假控制器测试不代表可用。";
 }
 function cliTextSourcesCard() {
+  const label = cliTextKind === "codebuddy" ? "CodeBuddy" : "Qoder";
   return `<div class="section-head"><h2>CLI文字来源</h2><span class="aside">实验性 · 默认关闭 · 不自动运行程序</span></div><div class="card" style="padding:16px">
-    <p>${esc(cliTextSourceNotice({cliTextBridge:{kind:'qoder'}}))}</p>
+    <p>${esc(cliTextSourceNotice({cliTextBridge:{kind:cliTextKind}}))}</p>
     ${cliTextFormOpen ? `<form class="form" data-cli-text-form>
-      <div class="field"><label>来源名称</label><input name="name" required placeholder="我的Qoder文字来源"></div>
-      <div class="field"><label>已安装Qoder CLI绝对路径（不自动安装或检测）</label><input name="binary" required placeholder="/absolute/path/to/qodercli"></div>
+      <div class="field"><label>来源名称</label><input name="name" required placeholder="我的${label}文字来源"></div>
+      <div class="field"><label>已安装${label} CLI绝对路径（不自动安装或检测）</label><input name="binary" required placeholder="/absolute/path/to/${cliTextKind === "codebuddy" ? "codebuddy" : "qoder"}"></div>
+      ${cliTextKind === "codebuddy" ? `<div class="field"><label>凭据所属区域（必须明确选择，不自动切换）</label><select name="edition" required><option value="">请选择</option><option value="international">国际版</option><option value="china">国内版</option></select></div><p class="hint">这是让CodeBuddy提供纯文字结果的来源，不是把EasySwitch模型接入CodeBuddy的启动器；不继承本地网关地址。</p>` : ""}
       <div class="field"><label>你已确认可用的模型ID（不自动查询）</label><input name="model" required></div>
-      <div class="field"><label>用户自行提供的Qoder PAT</label><input name="apiKey" type="password" autocomplete="off" required></div>
+      <div class="field"><label>用户自行提供的${cliTextKind === "codebuddy" ? "CodeBuddy API Key" : "Qoder PAT"}</label><input name="apiKey" type="password" autocomplete="off" required></div>
       <label><input name="experimental" type="checkbox" required> 我了解纯文字限制与真实CLI尚未验收，添加后仍需明确开启</label>
       <div class="controls"><button class="btn" type="submit" ${cliTextBusy ? "disabled" : ""}>${cliTextBusy ? "保存中…" : "添加，保持关闭"}</button><button type="button" class="btn secondary" data-cli-text-close ${cliTextBusy ? "disabled" : ""}>取消</button></div>
-    </form>` : `<button class="btn secondary" data-cli-text-open>添加Qoder纯文字来源</button>`}
+    </form>` : `<button class="btn secondary" data-cli-text-open="qoder">添加Qoder纯文字来源</button> <button class="btn secondary" data-cli-text-open="codebuddy">添加CodeBuddy纯文字来源</button>`}
     <p class="hint">Droid：尚未开放，生产返回501。需要先验证无工具权限、私有会话和隔离传输，不能用按钮或设置跳过。</p></div>`;
 }
 document.addEventListener("click", async event => {
-  if (event.target.closest?.("[data-cli-text-open]")) { event.stopImmediatePropagation(); cliTextFormOpen = true; render(); return; }
+  const open = event.target.closest?.("[data-cli-text-open]");
+  if (open) { event.stopImmediatePropagation(); if (cliTextBusy) return; cliTextKind = open.dataset.cliTextOpen === "codebuddy" ? "codebuddy" : "qoder"; cliTextFormOpen = true; render(); return; }
   if (event.target.closest?.("[data-cli-text-close]")) { event.stopImmediatePropagation(); if (!cliTextBusy) { cliTextFormOpen = false; render(); } return; }
   const button = event.target.closest?.("[data-cli-source-switch]");
   if (!button) return; event.stopImmediatePropagation();
@@ -88,9 +92,11 @@ document.addEventListener("submit", async event => {
   event.preventDefault(); event.stopImmediatePropagation(); if (cliTextBusy) return;
   const form = event.target; const fields = new FormData(form);
   if (fields.get("experimental") !== "on") { toast("请先确认纯文字限制与未实测状态"); return; }
-  const body = { kind: "qoder", name: String(fields.get("name") ?? "").trim(), binary: String(fields.get("binary") ?? "").trim(), model: String(fields.get("model") ?? "").trim(), apiKey: String(fields.get("apiKey") ?? ""), experimental: true };
-  cliTextBusy = true; form.querySelectorAll("button,input").forEach(el => { el.disabled = true; });
+  const edition = fields.get("edition");
+  if (cliTextKind === "codebuddy" && !["international", "china"].includes(edition)) { toast("请选择凭据所属的CodeBuddy区域"); return; }
+  const body = { kind: cliTextKind, ...(cliTextKind === "codebuddy" ? { edition } : {}), name: String(fields.get("name") ?? "").trim(), binary: String(fields.get("binary") ?? "").trim(), model: String(fields.get("model") ?? "").trim(), apiKey: String(fields.get("apiKey") ?? ""), experimental: true };
+  cliTextBusy = true; form.querySelectorAll("button,input,select").forEach(el => { el.disabled = true; });
   try { await call("POST", "/api/cli-text-sources", body); cliTextFormOpen = false; await refresh(true); toast("文字来源已添加，仍处于关闭状态"); }
   catch (error) { toast(error.message); }
-  finally { cliTextBusy = false; form.querySelectorAll("button,input").forEach(el => { el.disabled = false; }); }
+  finally { cliTextBusy = false; form.querySelectorAll("button,input,select").forEach(el => { el.disabled = false; }); }
 });

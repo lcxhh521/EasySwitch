@@ -15,6 +15,8 @@
 
 官方文档存在不等于 EasySwitch 已实现。纯假服务测试通过也不等于真实账号实测。
 
+后续 B69/B70 已实现 Qoder 与 CodeBuddy 的实验性 CLI 纯文字来源，见 [CLI 文字桥边界](cli-text-bridges.md)。它们默认关闭，只使用用户显式提供的 PAT/API Key，不接收工具/媒体，真实 CLI 尚未验收；不能将其认定为通用模型 API 或完整 agent 会话集成。注册表的 `not-verified` 仍指通用模型 API，`agentRoutes` 的未实现仍指完整 agent 接入，不否认这些受限文字桥。
+
 ## Cursor
 
 官方 [TypeScript SDK](https://cursor.com/docs/sdk/typescript) 接受用户 API Key，支持本地或云端 agent。用户 Key 计入用户套餐；SDK 遵循相同的价格、请求池和 Privacy Mode。它没有自动从 Cursor 应用提取登录凭据。

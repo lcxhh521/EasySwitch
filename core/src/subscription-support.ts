@@ -10,7 +10,7 @@ export interface OfficialAgentRoute {
   label: string;
   auth: string;
   billing: string;
-  /** Vendor documentation verified; no EasySwitch implementation or real-account verification. */
+  /** Full agent-session integration is absent; experimental text-only sources are described separately. */
   implementation: "not-implemented";
   docs: string[];
 }
@@ -93,13 +93,13 @@ const SUPPORT: SubscriptionSupport[] = [
   },
   {
     vendor: "qoder", label: "Qoder", reviewedAt: REVIEWED_AT,
-    modelSource: { state: "not-verified", available: false, reason: "官方 CLI 和 Agent SDK 可以运行 Qoder agent 并使用 Credits；SDK 的 PAT/服务账号不等于公开的兼容模型接口。尚未核实订阅作为通用模型来源的官方接法。" },
+    modelSource: { state: "not-verified", available: false, reason: "已接实验性 Qoder CLI 纯文字桥，默认关闭、使用用户提供的 PAT；真实 CLI 未验收。工具/媒体不支持，CLI 自有 agent 行为，不能视为通用模型 API 或完整 agent SDK 接入。" },
     agentRoutes: [{ label: "Qoder CLI / Agent SDK", auth: "官方 CLI 登录，或用户提供 QODER_PERSONAL_ACCESS_TOKEN", billing: "Qoder 账号 Credits 与相应套餐限制。", implementation: "not-implemented", docs: ["https://docs.qoder.com/cli/sdk/authentication", "https://docs.qoder.com/cli/sdk/how-it-works"] }],
     sources: ["https://docs.qoder.com/cli/sdk/authentication", "https://docs.qoder.com/cli/sdk/how-it-works", "https://docs.qoder.com/cli/usage"],
   },
   {
     vendor: "codebuddy", label: "CodeBuddy", reviewedAt: REVIEWED_AT,
-    modelSource: { state: "not-verified", available: false, reason: "CodeBuddy Code/Agent SDK 有官方登录与区域对应的 Key；尚未核实可导出订阅额度的通用模型 API。配置第三方 BASE_URL 是把模型接入 CodeBuddy，不是反向借出订阅。" },
+    modelSource: { state: "not-verified", available: false, reason: "已接实验性 CodeBuddy CLI 纯文字桥，默认关闭、须明确国际/国内版和 API Key；真实 CLI 未验收。它不是通用模型 API、完整 agent SDK 或 WorkBuddy 私有订阅接口；原有 BASE_URL 启动器仍是相反方向。" },
     agentRoutes: [{ label: "CodeBuddy Code / Agent SDK（预览）", auth: "官方 CLI 登录或匹配国内/国际版的 CODEBUDDY_API_KEY", billing: "按 CodeBuddy 账号权益和 Credits；不能假定 Key 等于按 token 的通用模型额度。", implementation: "not-implemented", docs: ["https://www.codebuddy.ai/docs/cli/sdk", "https://www.codebuddy.ai/docs/cli/env-vars"] }],
     sources: ["https://www.codebuddy.ai/docs/cli/sdk", "https://www.codebuddy.ai/docs/cli/env-vars", "https://www.codebuddy.ai/pricing/"],
   },

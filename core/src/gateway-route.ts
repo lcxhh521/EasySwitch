@@ -88,7 +88,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
   try {
     const saved = deps.store.prefs(harness).effort;
     const effort = saved ? resolveModelEffort(saved, modelEfforts(provider, model)) : undefined;
-    try { prepared = prepareOutbound(provider, { ...input, model, effort }, { qoderExecutor: deps.qoderExecutor }); }
+    try { prepared = prepareOutbound(provider, { ...input, model, effort }, { qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }); }
     catch (error) {
       if (error instanceof SyntaxError || error instanceof TypeError) throw new ProtocolError("请求字段或工具参数格式不正确。");
       throw error;

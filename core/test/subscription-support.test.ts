@@ -115,3 +115,14 @@ test("all reviewed API routes have explicit credential, billing and documentary 
   const doubao = subscriptionSupport().find(s => s.vendor === "doubao")!;
   assert.match(doubao.modelSource.reason, /仅限 AI 编程工具/);
 });
+
+test("Qoder and CodeBuddy metadata acknowledges experimental text bridges without claiming generic model or real verification", () => {
+  for (const vendor of ["qoder", "codebuddy"]) {
+    const support = subscriptionSupport().find(s => s.vendor === vendor)!;
+    assert.equal(support.modelSource.state, "not-verified");
+    assert.equal(support.modelSource.available, false);
+    assert.match(support.modelSource.reason, /已接实验性.*纯文字桥/);
+    assert.match(support.modelSource.reason, /真实 CLI 未验收/);
+    assert.match(support.modelSource.reason, /通用模型 API/);
+  }
+});

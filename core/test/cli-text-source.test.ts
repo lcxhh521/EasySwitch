@@ -26,6 +26,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const server: Server = createEasySwitchServer({ store, port: 0, gatewayAuth: auth,
     secrets: { async get(id) { secretCalls.push("get:" + id); return values.get(id); }, async set(id, value) { secretCalls.push("set:" + id); values.set(id, value); }, async delete(id) { secretCalls.push("delete:" + id); values.delete(id); } },
     qoderExecutor: async job => { jobs.push(job); return { exitCode: 0, stdout: "fixture text answer" }; },
+    codeBuddyExecutor: async job => { jobs.push(job); return { exitCode: 0, stdout: "fixture CodeBuddy answer" }; },
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -98,4 +99,49 @@ test("legacy Chat sender cannot silently treat a CLI source as an HTTP source", 
   const p: Provider = { id: "q", name: "Q", baseUrl: "https://untrusted.invalid/v1", models: ["m"], route: "chat-translate", routePinned: true, streamUsage: false, createdAt: "", cliTextBridge: { kind: "qoder", binary: "/fixture/qoder" } };
   const result = await sendChat(p, "fake-pat", { messages: [{ role: "user", content: "x" }] }, new AbortController().signal);
   assert.ok(result instanceof Error); assert.equal(fetched, false);
+});
+
+
+test("CodeBuddy region-bound text sources remain off until switched and use the dedicated executor for four protocols", async t => {
+  const f = await fixture(t);
+  for (const edition of ["international", "china"] as const) {
+    const startJobs = f.jobs.length;
+    const made = await call(f.base, "/api/cli-text-sources", "POST", { ...config, kind: "codebuddy", binary: "/fixture/codebuddy", name: "CodeBuddy " + edition, edition });
+    assert.equal(made.status, 201, made.text); const id = made.body.id;
+    assert.equal(made.body.off, true); assert.equal(made.body.baseUrl, "cli://codebuddy");
+    assert.equal(made.body.cliTextBridge.edition, edition); assert.deepEqual(made.body.supportedProtocols, ["chat"]);
+    assert.doesNotMatch(made.text, /fixture-pat-private/); assert.equal(f.jobs.length, startJobs);
+    const [firstPath, firstBody] = bodies(id + "/fixture-model")[0];
+    assert.equal((await call(f.base, firstPath, "POST", firstBody, f.token)).status, 404);
+    assert.equal((await call(f.base, `/api/providers/${id}/switch`, "PUT", { on: true })).status, 200);
+    assert.equal(f.jobs.length, startJobs, "switching does not execute a CLI");
+    for (const [path, body] of bodies(id + "/fixture-model")) {
+      const answer = await call(f.base, path, "POST", body, f.token);
+      assert.equal(answer.status, 200, answer.text); assert.match(answer.text, /fixture CodeBuddy answer/);
+    }
+    const jobs = f.jobs.slice(startJobs); assert.equal(jobs.length, 4);
+    for (const job of jobs) {
+      assert.equal(job.env.CODEBUDDY_API_KEY, config.apiKey);
+      assert.equal(job.env.CODEBUDDY_INTERNET_ENVIRONMENT, edition === "china" ? "internal" : undefined);
+      assert.equal(job.env.CODEBUDDY_BASE_URL, undefined); assert.equal(job.env.CODEBUDDY_AUTH_TOKEN, undefined);
+      assert.equal(job.env.ANTHROPIC_BASE_URL, undefined); assert.equal(job.env.QODER_PERSONAL_ACCESS_TOKEN, undefined);
+      assert.ok(!JSON.stringify(job.args).includes(config.apiKey));
+    }
+    const before = f.secretCalls.length;
+    assert.equal((await call(f.base, `/api/providers/${id}/probe`, "POST", {})).status, 409);
+    assert.equal(f.secretCalls.length, before); assert.equal(f.jobs.length, startJobs + 4);
+    assert.equal((await call(f.base, `/api/providers/${id}/switch`, "PUT", { on: false })).status, 200);
+  }
+  assert.equal(f.store.catalog().length, 0);
+  const state = await call(f.base, "/api/state"); assert.doesNotMatch(state.text, /fixture-pat-private/);
+  assert.ok(state.body.log.filter((entry: any) => entry.adapter).every((entry: any) => entry.adapter === "codebuddy-cli-text" && entry.costNote === "subscription" && entry.inputTokens === undefined));
+});
+
+test("CodeBuddy creation rejects absent or invented regions and source auth overrides before side effects", async t => {
+  const f = await fixture(t);
+  for (const override of [{}, { edition: "enterprise" }, { edition: "china", baseUrl: "http://127.0.0.1:123/v1" }, { edition: "international", env: {} }, { edition: "china", plan: {} }]) {
+    assert.equal((await call(f.base, "/api/cli-text-sources", "POST", { ...config, kind: "codebuddy", ...override })).status, 400);
+  }
+  assert.equal((await call(f.base, "/api/cli-text-sources", "POST", { ...config, edition: "china" })).status, 400, "Qoder does not accept a CodeBuddy region");
+  assert.deepEqual(f.secretCalls, []); assert.equal(f.jobs.length, 0); assert.equal(f.store.providers().length, 0);
 });

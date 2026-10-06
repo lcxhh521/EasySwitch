@@ -228,7 +228,7 @@ function derive(agent: AgentInfo): AgentCaps {
     : !hasLauncher ? { state: "todo", note: "要先有启动方式" }
     : launcherListsModels(l) ? { state: l!.verified ? "verified" : "documented", note: "所有可用的模型都写进了它的私有配置，EasySwitch 里选的只是默认" + (l!.verified ? "" : "；还没在真实程序上确认它的菜单真的列出来") }
     : { state: "todo", note: l!.pickerNote ?? "它的配置一次只能指定一个模型，还没查它启动后能不能列出或切换到别的模型" });
-  const source: Cap = agent.id === "qoder-cli" ? d.source! : agent.id === "droid" ? { state: "todo", note: "Droid纯文字控制器仅有假传输测试；生产传输和隔离尚未核实，创建与请求返回501" } : SUBSCRIPTION_VENDOR[agent.id] ? subscriptionSourceCapability(SUBSCRIPTION_VENDOR[agent.id]!) : d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
+  const source: Cap = agent.id === "qoder-cli" ? d.source! : agent.id === "codebuddy" ? { state: "documented", note: "实验性官方CLI纯文字来源：显式区域/API Key、私有会话、默认关闭；拒绝工具/媒体，不继承网关地址，只有fake验证，真实CLI未验收；与CodeBuddy入站启动器独立" } : agent.id === "droid" ? { state: "todo", note: "Droid纯文字控制器仅有假传输测试；生产传输和隔离尚未核实，创建与请求返回501" } : SUBSCRIPTION_VENDOR[agent.id] ? subscriptionSourceCapability(SUBSCRIPTION_VENDOR[agent.id]!) : d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
 
   return { launch, task, mcp, effort, tiers, picker, source };
 }

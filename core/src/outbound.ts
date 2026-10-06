@@ -1,3 +1,4 @@
+import { prepareCodeBuddyTextBridge } from "./codebuddy-text-bridge.ts";
 import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { prepareQoderTextBridge, type QoderExecutor } from "./qoder-text-bridge.ts";
 import { DROID_TEXT_BRIDGE_BLOCKER } from "./droid-text-bridge.ts";
@@ -25,7 +26,7 @@ import { mimoChatUrl, mimoHeaders, mimoJwt, withMimoMarker, mimoFreeIssue } from
 
 /** Legacy route settings remain readable; explicit model/source capabilities take precedence. */
 export function sourceProtocols(p: Provider, model: string): ApiProtocol[] {
-  if (p.cliTextBridge !== undefined) return cliTextSourceIssue(p) || p.cliTextBridge.kind !== "qoder" ? [] : ["chat"];
+  if (p.cliTextBridge !== undefined) return cliTextSourceIssue(p) || p.cliTextBridge.kind === "droid" ? [] : ["chat"];
   if (p.vertex && (p.plan || p.mimoFree || p.kiro || p.antigravity || p.cursor || p.kimi)) return [];
   try { if (existingSubscriptionKind(p)) return ["chat"]; } catch { return []; }
   if (subscriptionSourceIssue(p)) return [];
@@ -54,11 +55,15 @@ export interface PreparedOutbound {
   events: (response: Response) => AsyncIterable<OutputEvent>;
 }
 
-export function prepareOutbound(provider: Provider, input: InboundRequest, runtime?: { qoderExecutor?: QoderExecutor }): PreparedOutbound {
+export function prepareOutbound(provider: Provider, input: InboundRequest, runtime?: { qoderExecutor?: QoderExecutor; codeBuddyExecutor?: QoderExecutor }): PreparedOutbound {
   if (provider.cliTextBridge !== undefined) {
     const issue = cliTextSourceIssue(provider); if (issue) throw new ProtocolError(issue, 400);
     if (provider.cliTextBridge.kind === "droid") throw new ProtocolError(DROID_TEXT_BRIDGE_BLOCKER, 501);
-    if (provider.off) throw new ProtocolError("Qoder文字来源当前关闭，请先在控制台显式开启。", 403);
+    if (provider.off) throw new ProtocolError("CLI文字来源当前关闭，请先在控制台显式开启。", 403);
+    if (provider.cliTextBridge.kind === "codebuddy") {
+      const { kind: _kind, ...config } = provider.cliTextBridge;
+      return prepareCodeBuddyTextBridge(config, { ...input, model: upstreamModelId(input.model), source: provider.id }, runtime?.codeBuddyExecutor);
+    }
     const { kind: _kind, ...config } = provider.cliTextBridge;
     return prepareQoderTextBridge(config, { ...input, model: upstreamModelId(input.model), source: provider.id }, runtime?.qoderExecutor);
   }
