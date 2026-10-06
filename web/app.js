@@ -501,6 +501,15 @@ function rulesCard(agents, models) {
 let profileNaming = false;
 
 /** Profiles: every agent's settings saved under a name, to come back to in one click. */
+/** The first thing on the Agent page: hand something to an agent in one line. "Auto" follows the rules written on the Tasks page. */
+function quickTask() {
+  return `<form class="card" data-quick-task style="display:flex;gap:8px;align-items:center;padding:10px 14px">
+    <input type="text" name="task" placeholder="交给 agent 做点什么，比如：给这个项目的登录函数补上单元测试" required style="flex:1;min-width:0">
+    <button class="btn" type="submit">派出去（自动选）</button>
+  </form>
+  <div class="hint" style="margin:4px 6px 12px">按「任务」页里写的规则分给合适的 agent；没有规则就交给第一个能接活的。结果在「任务」页看。</div>`;
+}
+
 function profileBar() {
   const list = state.profiles ?? [];
   return `
@@ -554,6 +563,7 @@ function renderAgents() {
     ...others.missing.map(genericAgentRow),
   ];
   return `
+    ${quickTask()}
     ${profileBar()}
     <div class="section-head"><h2>已安装</h2><span class="aside">${inst.length ? `${agentList ? agentList.filter(a => a.installed).length : inst.length} 个` : ""}；每个 agent 平时都走原生，增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
@@ -1671,6 +1681,19 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("submit", async e => {
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
+  if (e.target.matches?.("[data-quick-task]")) {
+    e.preventDefault();
+    const text = String(new FormData(e.target).get("task") ?? "").trim();
+    if (!text) return;
+    try {
+      await call("POST", "/api/tasks", { agent: AUTO, task: text });
+      toast("已派出去，结果在「任务」页");
+      page = "tasks";
+      if (!PANEL) history.replaceState(null, "", "#tasks");
+    } catch (error) { toast(`没有派出去：${error.message}`); }
+    await refresh(true);
+    return;
+  }
   if (e.target.dataset?.budgetForm) {
     e.preventDefault();
     const f = new FormData(e.target);
