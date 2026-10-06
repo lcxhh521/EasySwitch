@@ -80,3 +80,7 @@
 ## 归档 2026-10-06
 
 - [x] B4 · 每个 agent 的思考档位和子 agent / 小任务模型：能设的都设，不能设的写明原因 — 来源：「每个agent都应该有自己的推理程度、子模型、小任务模型」（10-05）+ 盘点（10-06）· 验证：dsh 已用真程序验证（档位、小任务模型确实走了小任务模型）；Copilot 把 effortLevel 写进私有 COPILOT_HOME 的 settings.json、Gemini 写成系统设置里的 thinkingConfig（这两个的写法凭记忆，已在启动器 caveat 里写明，capabilities.test.ts 检查了生成的文件）；其余在各启动器里；没有这些设置的在能力表里标明 · 备注：Copilot 和 Gemini 要用户在本机用 verify-launchers 和亲自启动确认
+
+## 归档 2026-10-06
+
+- [x] B7 · 其余各 agent 的订阅当模型来源（Gemini CLI、Qoder、CodeBuddy、Trae、Amp、豆包、Grok、MiniMax、Kimi、Droid）逐个调研：能接就接，不能接写明原因 — 来源：「订阅这里…得我们自己做了」（10-06）· 验证：十个都查完，结论写在 research/subscription-sources-2.md 和 -3.md，并落进能力表的「模型来源」一列（capabilities.test.ts 通过）：豆包、Kimi、MiniMax 的编程套餐 Key 本来就是预设；Trae、Amp、个人版 Gemini 登录做不了（写了原因）；Grok、WorkBuddy、Droid、Qoder、CodeBuddy 做得了但各有代价，拆成 B66–B70 · 备注：资料来自两个参考仓库，没有用真账号核对

@@ -87,6 +87,18 @@ const NO_ENDPOINT = "请求走它自己的服务器，没有本地可改的端�
  * Anything an agent has no entry for here is derived from its launcher, or is "todo".
  */
 const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
+  "grok-build": {
+    source: { state: "todo", note: "做得了：读 Grok CLI 本机的登录文件（~/.grok/auth.json），转发到它的 cli-chat-proxy 代理（Responses 风格，要带一组仿 CLI 的头）；令牌每次刷新会轮换，过期了要让 Grok 自己刷新，不能我们刷。风险：仿客户端标识。见 research/subscription-sources-3.md" },
+  },
+  "qoder-cli": {
+    source: { state: "todo", note: "私有协议（要自己实现加密签名那一套）很难；稳妥的做法是让用户在 Qoder 网页建个人访问令牌，用它启动 qodercli 子进程当桥（只有文字）。还没做，见 research/subscription-sources-3.md" },
+  },
+  "gemini-cli": {
+    source: { state: "impossible", note: "个人账号的 Google 登录已不再提供给 Gemini CLI 的 Code Assist（只有标准版/企业版账号，且要自备 Cloud 项目）；想用自己的 Gemini 额度，走 API Key（已有 Google 预设）。企业账号走 Code Assist 的路是可做的，但我们没有这类账号可测" },
+  },
+  "kimi-cli": {
+    source: { state: "documented", note: "Kimi 编程套餐已经是现成的预设（kimi-coding，地址 api.kimi.com/coding/v1，填会员页的 Key）；官方允许会员在第三方工具里用。「登录即用」（设备码登录，要带 X-Msh-* 一整套头）还没做，见 research/subscription-sources-3.md" },
+  },
   codex: {
     picker: { state: "verified", note: "模型目录里原生模型和外接模型放在一起（用真实 Codex 验证过）" },
     source: { state: "documented", note: "「Continue with ChatGPT」：用 Codex 的登录身份，额度和 ChatGPT 订阅共用（用本地假服务验证过，没用真账号测）" },
@@ -114,6 +126,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     source: { state: "todo", note: "订阅适配由 Claude 做（起点：云端 gpt-wip 里的草稿）" },
   },
   trae: {
+    source: { state: "impossible", note: "国际版没有文档化的接口；国内版只有靠逆向 IDE 登录的社区做法，风险自担，我们暂不做" },
     launch: { state: "manual", note: "配置向导：给出接口地址、令牌和模型，你在 Trae 的设置里添加一次；Trae 没有每次启动单独指定的办法，我们不改它的文件" },
     task: { state: "impossible", note: "桌面 IDE，没有无界面的调用方式" },
     picker: { state: "manual", note: "你把想用的模型逐个添加到 Trae 里，之后在它自己的模型选择里换" },
@@ -124,6 +137,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     picker: { state: "manual", note: "你把想用的模型逐个添加到 Z Code 里，之后在它自己的选择器里换" },
   },
   doubao: {
+    source: { state: "documented", note: "火山方舟编程套餐已经是现成的预设：填它的 key 就能当模型来源（地址 .../api/coding/v3）。条款写明：套餐额度只给指定的编程工具用，用在别处可能被停用订阅" },
     launch: { state: "impossible", note: "聊天客户端，没有自定义模型或自定义地址的入口（豆包的模型可以通过火山方舟当模型来源接进别的 agent）" },
     task: { state: "impossible", note: "桌面聊天客户端，没有无界面的调用方式" },
   },
@@ -136,7 +150,11 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     mcp: { state: "verified", note: "用真实 dsh 验证过：模型拿到了 EasySwitch 的三个 MCP 工具。前提：MCP 插件不在 dsh 的安装包里，要你自己的 dsh 里装过它（我们从你放插件的位置找到它，链接进这次启动的私有目录），没装就挂不上" },
     tiers: { state: "verified", note: "用真实 dsh 验证过：起会话标题这类小任务走了配的小任务模型；子 agent 的模型只写进了配置，没有触发过" },
   },
+  droid: {
+    source: { state: "todo", note: "稳妥的路是用 droid exec 做本地桥（只有文字、没有工具）；直连 Factory 的接口没有公开文档，会被 403；Droid 自己的登录是加密的读不了，要另登一次" },
+  },
   amp: {
+    source: { state: "impossible", note: "没有公开的兼容接口，额度是 Amp 内部的，转不成通用来源" },
     launch: { state: "impossible", note: "请求走它自己的 ampcode.com 并要求账号登录，没有 OpenAI 兼容的自定义端点；只能检测并打开" },
     task: { state: "impossible", note: "它只认自己的账号服务，没法把别的模型接进它" },
     mcp: { state: "impossible", note: "它只认自己的账号服务，没法给它挂我们的 MCP" },
@@ -145,6 +163,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   },
   // CodeBuddy Code (the command line) and WorkBuddy (the desktop app) are two products: they are never described as one.
   codebuddy: {
+    source: { state: "todo", note: "官方稳妥的路是用 CODEBUDDY_API_KEY 并通过它的命令行包装，没有直接的 HTTP；见 research/subscription-sources-2.md" },
     launch: { state: "impossible", note: "命令行版只有区域和账号两个开关，没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它" },
     task: { state: "impossible", note: "同一个原因：改不了它连的服务地址，别的模型接不进去" },
     mcp: { state: "impossible", note: "改不了它连的服务地址，别的模型接不进去，也就没法每次启动给它挂我们的 MCP" },
@@ -152,6 +171,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     tiers: { state: "impossible", note: "改不了它连的服务地址，用什么模型由腾讯自己的服务决定" },
   },
   workbuddy: {
+    source: { state: "todo", note: "做得了但要自己走一遍腾讯的登录和 /v2/chat/completions（见 research/subscription-sources-2.md）；它会拒绝 Codex 和 Claude Code 的系统提示（只让 Hermes、OpenCode、Pi 这类用）；是否符合腾讯的使用条款待查" },
     launch: { state: "manual", note: "配置向导：给出 models.json 的内容和位置，你自己放进去，WorkBuddy 会自己发现变化；我们不改 ~/.workbuddy。以后可以做成另开一个用私有目录的 WorkBuddy（WORKBUDDY_CONFIG_DIR），那时才算一键；具体用哪个模型要在它的窗口里按任务选，没法替你选好；使用条款待核实" },
     picker: { state: "manual", note: "向导给出的 models.json 里有所有可用的模型，在它的窗口里按任务选名字带 custom-local 的" },
     task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
@@ -160,6 +180,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     tiers: { state: "todo", note: "还没查它有没有子 agent / 小任务的模型设置" },
   },
   "minimax-code": {
+    source: { state: "documented", note: "MiniMax 编程套餐（Token Plan）的 Key 已经是现成的预设；用 MiniMax Code 账号登录的那种没有可查的资料，暂不做" },
     mcp: { state: "impossible", note: "它没有用户级的 MCP 配置文件，只有插件自带的；每次启动挂不上" },
   },
   pi: {
