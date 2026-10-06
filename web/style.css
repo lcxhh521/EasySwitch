@@ -1,36 +1,35 @@
 /*
- * EasySwitch console. Design tokens adapted from Magpie (MIT, yetone/magpie
- * 8b7c4ef, internal/gui/assets/app.css): a quiet grey ground, white cards, an
- * indigo accent, soft status colours. Rewritten for this layout; see PROVENANCE.md.
+ * EasySwitch console. Its own look: a warm paper ground, white cards and a teal accent (the colour of the
+ * "switch" mark), with status colours kept apart from the accent so "on" never looks like "selected".
  */
 :root {
-  --bg: #f4f4f6; --card: #ffffff; --pill: #f1f1f4; --pill-hover: #e8e8ee; --seg-track: #e6e6eb;
-  --line: #e3e3e8; --line-2: #ececf0; --fg: #1c1c21; --muted: #7d7d86; --faint: #b4b4bd;
-  --accent: #5b55e6; --accent-hover: #4d47d6; --accent-soft: #eeedfd; --accent-fg: #ffffff;
-  --green: #18884f; --green-soft: #e4f6ec; --red: #c93c3c; --red-soft: #fbe9e9; --amber: #a3560a; --amber-soft: #fbf0df;
-  --chart: #5b55e6; --grid: #ececf0;
-  --shadow: 0 16px 44px rgba(20, 22, 30, .16), 0 2px 8px rgba(20, 22, 30, .06), 0 0 0 .5px rgba(20, 22, 30, .1);
+  --bg: #f5f3ee; --card: #ffffff; --pill: #efede6; --pill-hover: #e6e3da; --seg-track: #e4e1d7;
+  --line: #e2dfd5; --line-2: #ebe8df; --fg: #1f2421; --muted: #767b72; --faint: #b3b6ac;
+  --accent: #0f7b7a; --accent-hover: #0b6362; --accent-soft: #e0f1ef; --accent-fg: #ffffff;
+  --green: #2f8a3c; --green-soft: #e5f3e3; --red: #c2413a; --red-soft: #faeae8; --amber: #a8590b; --amber-soft: #faefd9;
+  --chart: #0f7b7a; --grid: #ebe8df;
+  --shadow: 0 16px 44px rgba(28, 30, 22, .16), 0 2px 8px rgba(28, 30, 22, .06), 0 0 0 .5px rgba(28, 30, 22, .1);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
   --code: ui-monospace, "SF Mono", Menlo, monospace;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #151517; --card: #1e1e22; --pill: #2a2a30; --pill-hover: #33333a; --seg-track: #26262b;
-    --line: #2f2f36; --line-2: #2a2a30; --fg: #ececf1; --muted: #9a9aa6; --faint: #5d5d68;
-    --accent: #7c76f0; --accent-hover: #8e89f3; --accent-soft: #2a2850; --accent-fg: #ffffff;
-    --green: #4ccb88; --green-soft: #173325; --red: #f07878; --red-soft: #3a1c1c; --amber: #f0b45a; --amber-soft: #3a2a12;
-    --chart: #7c76f0; --grid: #2a2a30;
+    --bg: #111514; --card: #1a1f1e; --pill: #252b29; --pill-hover: #2e3533; --seg-track: #20262a;
+    --line: #2c3331; --line-2: #252b29; --fg: #e9ede9; --muted: #98a09a; --faint: #5c6560;
+    --accent: #3fb8b3; --accent-hover: #5cc7c2; --accent-soft: #16393a; --accent-fg: #0b1514;
+    --green: #6bc77a; --green-soft: #1b3320; --red: #ef7b72; --red-soft: #3a1f1d; --amber: #f0b45a; --amber-soft: #3a2b12;
+    --chart: #3fb8b3; --grid: #252b29;
     --shadow: 0 16px 44px rgba(0, 0, 0, .5), 0 0 0 .5px rgba(255, 255, 255, .08);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #151517; --card: #1e1e22; --pill: #2a2a30; --pill-hover: #33333a; --seg-track: #26262b;
-  --line: #2f2f36; --line-2: #2a2a30; --fg: #ececf1; --muted: #9a9aa6; --faint: #5d5d68;
-  --accent: #7c76f0; --accent-hover: #8e89f3; --accent-soft: #2a2850; --accent-fg: #ffffff;
-  --green: #4ccb88; --green-soft: #173325; --red: #f07878; --red-soft: #3a1c1c; --amber: #f0b45a; --amber-soft: #3a2a12;
-  --chart: #7c76f0; --grid: #2a2a30;
+  --bg: #111514; --card: #1a1f1e; --pill: #252b29; --pill-hover: #2e3533; --seg-track: #20262a;
+  --line: #2c3331; --line-2: #252b29; --fg: #e9ede9; --muted: #98a09a; --faint: #5c6560;
+  --accent: #3fb8b3; --accent-hover: #5cc7c2; --accent-soft: #16393a; --accent-fg: #0b1514;
+  --green: #6bc77a; --green-soft: #1b3320; --red: #ef7b72; --red-soft: #3a1f1d; --amber: #f0b45a; --amber-soft: #3a2b12;
+  --chart: #3fb8b3; --grid: #252b29;
   color-scheme: dark;
 }
 

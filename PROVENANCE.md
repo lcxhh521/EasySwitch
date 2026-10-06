@@ -66,7 +66,7 @@ commit, license and how far the code was changed.
 | `web/icons/` 中 opencodex 供应商图标集（约 40 个） | opencodex（MIT；集内部分图标另有出处，SOURCES.md 记着，许可未核实） | 原样拷贝 | 自绘或字母头像（优先，来源最杂） | 待办 |
 | `core/src/pricing/prices.json` | opencodex 模型元数据（MIT） | 由脚本从其数据生成 | 价格是事实；换成自己整理的来源重新生成 | 待办 |
 | `core/src/presets.ts` 预设表 | opencodex 供应商注册表（MIT） | 手工删改过 | 对照各家官方文档逐条核实后重写 | 待办 |
-| `web/style.css` 设计变量 | Magpie（MIT） | 已为本布局重写 | 复核是否独立；必要时重取色值 | 待核 |
+| `web/style.css` 设计变量 | （原先取自 Magpie） | 2026-10-06 已整套换成自己的色板（暖纸色底 + 青绿强调色） | 无需再处理 | 完成 |
 | `core/src/quirks.ts` 怪癖表 | opencodex、Magpie 的知识 | 自己的结构重新表达 | 低风险；按各家官方行为文档复核 | 低 |
 | Kiro 适配：`aws-eventstream.ts`、`kiro-schema.ts`、`kiro-login.ts` 按 GPT 快照原样带入；`kiro.ts` 为 Chat 出口重写（请求构造、事件解释的协议事实仍来自 opencodex）；`third_party/opencodex/LICENSE` | opencodex（MIT） | 改编，文件头已声明 | 按协议事实清单重写；eventstream 帧格式是公开的 AWS 格式，可自实现；SQLite 登录库读取按 Kiro CLI 的表结构自写 | 待办 |
 | Cursor 适配（protobuf 定义、Run 端点） | opencodex（MIT）；protobuf 定义来自逆向的专有协议 | 未开始/进行中 | 手写 .proto 与编码；注意服务条款风险，独立于版权 | 待办 |
