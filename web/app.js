@@ -915,11 +915,11 @@ function planCard() {
   const si = planInfo?.signIn;
   const row = a => `
     <div class="row">
-      ${icon(a.kind === "copilot" ? "github-copilot-color" : a.kind === "kiro" ? "kiro-color" : a.kind === "antigravity" ? "antigravity-color" : "openai", "lg")}
+      ${icon(a.kind === "copilot" ? "github-copilot-color" : a.kind === "kiro" ? "kiro-color" : a.kind === "antigravity" ? "antigravity-color" : a.kind === "cursor" ? "cursor-color" : "openai", "lg")}
       <div class="grow"><div class="title">${esc(a.kind === "copilot" ? "GitHub Copilot · " : "")}${esc(a.label)}${a.email && a.email !== a.label ? ` <span class="hint">${esc(a.email)}</span>` : ""}</div>
-        <div class="sub">${a.kind === "antigravity" ? `用 Google 账号登录，令牌存在钥匙串。${a.on ? "已打开：它的模型出现在下面的来源里" : "开关是关的：打开后 agent 才能用"}<br><span class="quota-out">用第三方工具调用 Antigravity 订阅，账号有被限制的风险，请自己决定要不要打开</span>` : a.kind === "kiro" ? `登录在 Kiro CLI 里，我们每次请求时只读它、不保存令牌。${a.on ? "已打开：它的模型出现在下面的来源里" : "开关是关的：打开后 agent 才能用"}<br><span class="quota-out">用第三方工具调用 Kiro 订阅，账号有被限制的风险，请自己决定要不要打开</span>` : a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : a.on ? "已打开：它的模型出现在下面的来源里，所有 agent 都能选" : "已登录，开关是关的：打开后它的模型才会出现，agent 才能用"}${a.quota && a.on && !a.needsSignIn && a.planUsage ? `<br><span class="${a.quota.exhaustedUntil ? "quota-out" : "quota"}">额度：${esc(a.quota.text)}</span>` : ""}</div></div>
+        <div class="sub">${a.kind === "cursor" ? `在浏览器里登录 Cursor，令牌存在钥匙串。${a.on ? "已打开：它的模型出现在下面的来源里" : "开关是关的：打开后 agent 才能用"}<br><span class="quota-out">目前只支持纯文字对话（不能让它执行工具）；用第三方工具调用 Cursor 订阅，账号有被限制的风险，请自己决定要不要打开</span>` : a.kind === "antigravity" ? `用 Google 账号登录，令牌存在钥匙串。${a.on ? "已打开：它的模型出现在下面的来源里" : "开关是关的：打开后 agent 才能用"}<br><span class="quota-out">用第三方工具调用 Antigravity 订阅，账号有被限制的风险，请自己决定要不要打开</span>` : a.kind === "kiro" ? `登录在 Kiro CLI 里，我们每次请求时只读它、不保存令牌。${a.on ? "已打开：它的模型出现在下面的来源里" : "开关是关的：打开后 agent 才能用"}<br><span class="quota-out">用第三方工具调用 Kiro 订阅，账号有被限制的风险，请自己决定要不要打开</span>` : a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : a.on ? "已打开：它的模型出现在下面的来源里，所有 agent 都能选" : "已登录，开关是关的：打开后它的模型才会出现，agent 才能用"}${a.quota && a.on && !a.needsSignIn && a.planUsage ? `<br><span class="${a.quota.exhaustedUntil ? "quota-out" : "quota"}">额度：${esc(a.quota.text)}</span>` : ""}</div></div>
       ${a.needsSignIn || !a.planUsage ? `<span class="chip warn">${a.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : `<button class="switch ${a.on ? "on" : ""}" role="switch" aria-checked="${a.on ? "true" : "false"}" data-plan-switch="${esc(a.id)}" data-on="${a.on ? "1" : "0"}" title="${a.on ? "点一下关掉：哪里都不会用它" : "点一下打开"}"><span class="knob"></span><span class="lbl">${a.on ? "已打开" : "已关闭"}</span></button>${a.on && a.quota?.exhaustedUntil ? `<span class="chip warn">额度用完了</span>` : ""}`}
-      ${a.kind === "antigravity" ? `<button class="btn secondary" data-antigravity-refresh="${esc(a.id)}">刷新模型</button><button class="btn secondary" data-antigravity-remove="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>` : a.kind === "kiro" ? `<button class="btn secondary" data-kiro-import>刷新模型</button><button class="btn secondary" data-kiro-remove="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次移除" : "移除"}</button>` : `
+      ${a.kind === "cursor" ? `<button class="btn secondary" data-cursor-refresh="${esc(a.id)}">刷新模型</button><button class="btn secondary" data-cursor-remove="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>` : a.kind === "antigravity" ? `<button class="btn secondary" data-antigravity-refresh="${esc(a.id)}">刷新模型</button><button class="btn secondary" data-antigravity-remove="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>` : a.kind === "kiro" ? `<button class="btn secondary" data-kiro-import>刷新模型</button><button class="btn secondary" data-kiro-remove="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次移除" : "移除"}</button>` : `
       <button class="btn secondary" data-plan-signin-again="${esc(a.id)}" data-plan-kind="${esc(a.kind ?? "open")}">${a.needsSignIn || !a.planUsage ? "重新登录" : "重新登录一次"}</button>
       ${a.planUsage && !a.needsSignIn ? `<button class="btn secondary" data-plan-models="${esc(a.id)}">刷新模型</button>` : ""}
       <button class="btn secondary" data-plan-signout="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>`}
@@ -933,6 +933,7 @@ function planCard() {
       ${si?.status === "done" && si.message ? `<div class="row"><div class="grow"><div class="sub">${esc(si.message)}</div></div></div>` : ""}
       <button class="add-row" data-plan-signin>${icon("openai", "sm")} Continue with ChatGPT</button>
       <button class="add-row" data-plan-signin data-plan-mode="copilot">${icon("github-copilot-color", "sm")} 用 GitHub Copilot 订阅</button>
+      <button class="add-row" data-cursor-signin>${icon("cursor-color", "sm")} 用 Cursor 订阅（浏览器登录，纯文字）</button>
       <button class="add-row" data-antigravity-signin>${icon("antigravity-color", "sm")} 用 Antigravity 订阅（Google 登录）</button>
       ${(planInfo?.accounts ?? []).some(a => a.kind === "kiro") ? "" : `<button class="add-row" data-kiro-import>${icon("kiro-color", "sm")} 用 Kiro 订阅（读取本机 Kiro CLI 的登录）</button>`}
     </div>
@@ -1459,6 +1460,26 @@ document.addEventListener("click", async e => {
   const copyBtn = t.closest("[data-copy]");
   if (copyBtn) {
     try { await navigator.clipboard.writeText(copyBtn.dataset.copy); toast("已复制"); } catch { toast("复制失败：请手动选中复制"); }
+    return;
+  }
+  if (t.closest("[data-cursor-signin]")) {
+    try { await call("POST", "/api/cursor/signin", {}); toast("已在浏览器里打开 Cursor 登录页"); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const cuRefresh = t.closest("[data-cursor-refresh]");
+  if (cuRefresh) {
+    try { const r = await call("POST", `/api/cursor/${cuRefresh.dataset.cursorRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
+  const cuOut = t.closest("[data-cursor-remove]");
+  if (cuOut) {
+    const id = cuOut.dataset.cursorRemove;
+    if (planConfirmOut !== id) { planConfirmOut = id; render(); return; }
+    planConfirmOut = null;
+    try { await call("DELETE", `/api/cursor/${id}`); toast("已退出登录，令牌已从钥匙串删除"); } catch (error) { toast(error.message); }
+    await refresh(true);
     return;
   }
   if (t.closest("[data-antigravity-signin]")) {

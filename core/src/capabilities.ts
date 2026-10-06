@@ -113,7 +113,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   cursor: {
     launch: { state: "impossible", note: NO_ENDPOINT },
     task: { state: "impossible", note: NO_ENDPOINT },
-    source: { state: "todo", note: "订阅适配由 Claude 做（起点：云端 gpt-wip 里的草稿）" },
+    source: { state: "documented", note: "在浏览器里登录 Cursor 就能当模型来源（纯文字对话：它不能替 agent 执行工具）；用假的 Cursor 服务验证过，没有用真账号测；有被限制账号的风险，默认关" },
   },
   kiro: {
     launch: { state: "impossible", note: "绑定 AWS 登录，没有本地可改的端点" },

@@ -7,6 +7,7 @@ import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
 import { endpointUrl, upstreamHeaders } from "./upstream.ts";
 import { sendAntigravity } from "./antigravity.ts";
+import { sendCursor } from "./cursor/adapter.ts";
 import { sendKiro } from "./kiro.ts";
 import { isUsageLimit, recordLimitReached, recordQuotaHeaders } from "./quota.ts";
 
@@ -22,6 +23,7 @@ export async function sendChat(provider: Provider, apiKey: string | undefined, p
   const chat = payload as ChatRequest;
   if (provider.kiro) return sendKiro(provider, chat, signal);
   if (provider.antigravity) return sendAntigravity(provider, apiKey, chat, signal);
+  if (provider.cursor) return sendCursor(provider, apiKey, chat, signal);
   if (provider.mimoFree) {
     // The free tier wants its own marker and a bootstrapped JWT instead of a stored key.
     let jwt: string;

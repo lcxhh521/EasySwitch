@@ -19,7 +19,7 @@
 5. 新功能尽量放新文件，共享文件里只留最少的接线。
 
 正在改（谁 · 哪些文件 · 做什么 · 登记时间）：
-- Claude · （没有，B30 已推完）
+- Claude · （没有，B20 Cursor 已推完）
 - Dot · （还没登记；B21 会碰 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`，B45 是新文件为主）
 
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
@@ -34,11 +34,11 @@
 
 ## 订阅适配与协议层（B20 Claude，B21 Dot）
 
-- [~] B20 · Cursor、Kiro、Antigravity 的订阅适配 — 来源：「这几个我都交给gpt了」（10-05）→「是给gpt做的那个给dot做」（10-06）→「订阅这里dot说他不做，这个得我们自己做了」（10-06）· 备注：Dot 不做，现在由 Claude 做；起点是云端 `gpt-wip` 里的 Kiro 适配器和协议层草稿（GPT 的快照，用前要核对）；本地 GPT 不应再改这几项，免得撞车；协议事实在 AGENTS.md 私有段 · 进展：Kiro 已做（kiro.test.ts 8 个用例，假的 Kiro 服务 + 临时 SQLite 登录库验证，**没有用真账号测**，因为不能读你的真实登录）；Antigravity 已做（antigravity.test.ts 8 个用例，用假 Google 验证，**没有用真账号测**；模型列表的返回格式是按 opencodex 的写法宽松解析的，真实格式未核实）；Cursor 未做
 - [ ] B21 · 协议层重构（按出站来源选适配器）— 来源：AGENTS.md 硬性原则 5；原本是 GPT 的，2026-10-06 改给 Dot · 备注：本地 GPT 在 main 工作区已有未提交的进展，要先推到云端分支（见 B44）
 - [ ] B45 · Claude 桌面端（B38）的测试和实现交给 Dot — 来源：「claude桌面端那个也让dot做测试」（10-06）· 备注：用户建议 Dot 在自己的云电脑上下载 Claude 桌面端来测（Claude 桌面端只有 macOS / Windows 版，Linux 云电脑测不了，要说明）；测通后仍要在用户的 Mac 上跑一次短确认（macOS 路径）；详细步骤在 HANDOVER.md 的 B38 段
 - [ ] B58 · 把 Antigravity 的客户端密钥从写死改成运行时读取，并从仓库里移除（公开前必做，B33 的一部分）— 来源：B56 的「后续再迭代」（10-06）
 - [~] B60 · 每个 agent 启动后要能在它自己的模型菜单里选模型，不是都在 EasySwitch 界面里选死：把所有可用的模型写进每个 agent 的私有配置（EasySwitch 里选的只是默认），并把「能在它自己的界面里选模型」做成能力矩阵的一列，逐个 agent 定状态 — 来源：「我记得我们说过你要能在每个harness里面选模型的，而不是都在我们easyswitch界面选好」（10-06）· 备注：Codex 和 Claude Code 早就有（目录 / /model 并排）；今天写的 13 个新启动器和已有的 Hermes、OpenCode、dsh 只写了一个主模型，是漏的 · 进展：已做——启动器拿到全部可用模型（已关闭的订阅除外），Hermes、OpenCode、dsh 和 12 个新启动器都把它们全写进 agent 自己的私有配置，EasySwitch 里选的只是默认；能力矩阵新增一列，Codex 和 Claude Code 为已实测；真实 dsh 带两个模型跑通。未做/未知——Gemini CLI、Qwen Code、Copilot CLI 只能用环境变量指定一个模型，还没查它们的 /model 能不能列出；Aider 只能手动输入模型名；这 12 个新启动器的菜单是否真的列出来，要在真实程序上确认（B57 的命令里要加这一项）
+- [ ] B71 · Cursor 的工具调用：现在它要执行工具就报错；要支持就得实现它的 exec 一族消息（读文件、改文件、跑命令的各种请求和结果字段），再映射成 Chat 的 tool_calls — 来源：B20 第一版的限制（10-06）
 - [ ] B66 · Kimi 订阅「登录即用」：设备码登录（auth.kimi.com，要带 KimiCLI 的 X-Msh-* 头），令牌存钥匙串，开关默认关，额度读 /coding/v1/usages — 来源：B7 调研结论（Kimi 明确允许会员在第三方工具里用）
 - [ ] B67 · Kimi、MiniMax 编程套餐、Grok 的额度显示：读各自的用量接口（Kimi /coding/v1/usages，MiniMax coding_plan/remains，Grok /v1/billing），显示在来源卡片上，用完时池子跳过 — 来源：B7 调研、B48 的延伸
 - [ ] B68 · Grok 订阅：只读 Grok CLI 本机的登录文件，转发到它的 cli-chat-proxy；令牌过期时让 Grok 自己刷新，不自己刷；开关默认关；风险是仿客户端标识，要在界面写明 — 来源：B7 调研结论

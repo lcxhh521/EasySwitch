@@ -84,3 +84,7 @@
 ## 归档 2026-10-06
 
 - [x] B7 · 其余各 agent 的订阅当模型来源（Gemini CLI、Qoder、CodeBuddy、Trae、Amp、豆包、Grok、MiniMax、Kimi、Droid）逐个调研：能接就接，不能接写明原因 — 来源：「订阅这里…得我们自己做了」（10-06）· 验证：十个都查完，结论写在 research/subscription-sources-2.md 和 -3.md，并落进能力表的「模型来源」一列（capabilities.test.ts 通过）：豆包、Kimi、MiniMax 的编程套餐 Key 本来就是预设；Trae、Amp、个人版 Gemini 登录做不了（写了原因）；Grok、WorkBuddy、Droid、Qoder、CodeBuddy 做得了但各有代价，拆成 B66–B70 · 备注：资料来自两个参考仓库，没有用真账号核对
+
+## 归档 2026-10-06
+
+- [x] B20 · Cursor、Kiro、Antigravity 的订阅适配 — 来源：「这几个我都交给gpt了」（10-05）→「是给gpt做的那个给dot做」（10-06）→「订阅这里dot说他不做，这个得我们自己做了」（10-06）· 备注：Dot 不做，现在由 Claude 做；起点是云端 `gpt-wip` 里的 Kiro 适配器和协议层草稿（GPT 的快照，用前要核对）；本地 GPT 不应再改这几项，免得撞车；协议事实在 AGENTS.md 私有段 · 验证：Kiro 已做（kiro.test.ts 8 个用例，假的 Kiro 服务 + 临时 SQLite 登录库验证，**没有用真账号测**，因为不能读你的真实登录）；Antigravity 已做（antigravity.test.ts 8 个用例，用假 Google 验证，**没有用真账号测**；模型列表的返回格式是按 opencodex 的写法宽松解析的，真实格式未核实）；Cursor 已做第一版（cursor.test.ts 10 个用例，假的 Cursor 服务验证：登录轮询、模型列表、一轮对话含服务端的两种追问、错误分类、令牌续期、心跳和超时；**没有用真账号测**，请求体里「只发历史不发 turns」「空工具列表是否被接受」要真账号才知道）；只支持纯文字，**不能执行工具**——后续做工具调用见 B71；三个都只用假服务验证过，真账号的核对要用户自己的账号（工具调用见 B71）

@@ -43,6 +43,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 | `mimo-free.ts` | 小米 MiMo Free 免 key 适配（bootstrap JWT + 系统标记） |
 | `kiro.ts` + `kiro-login.ts` / `kiro-schema.ts` / `aws-eventstream.ts` | Kiro 订阅：每次请求只读 Kiro CLI 的本机登录库，Chat → Kiro 对话状态，AWS 事件流 → Chat 分片；新来源默认关 |
 | `antigravity.ts` + `antigravity-client.ts` + `gemini-upstream.ts` | Antigravity 订阅：浏览器里 Google 登录（刷新令牌存钥匙串）、Cloud Code Assist 信封、Chat ↔ Gemini 互转；客户端密钥暂时写在 `antigravity-client.ts`（见私有段） |
+| `cursor/*.ts` | Cursor 订阅（纯文字）：`proto.ts` 手写 protobuf、`connect.ts` 帧、`messages.ts` 一轮对话的消息和字段号、`transport.ts` HTTP/2 流（心跳、服务端追问）、`auth.ts` 浏览器登录轮询和续期、`models.ts`、`adapter.ts` Chat ↔ Cursor；新来源默认关 |
 | `quota.ts` | 订阅额度：读响应头和「用完了」的 429，池子据此跳过用完的订阅，控制台显示还剩多少 |
 | `agent-launch.ts` | 各 agent 的启动方式（interactive/headless）、`runHeadless`、任务执行 |
 | `launch.ts` | Codex/Claude Code 的参数与环境（含 MCP 附着、`claudeEnv` keepLogin） |

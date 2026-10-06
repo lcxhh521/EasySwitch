@@ -75,6 +75,12 @@ export function setAntigravityToken(fn: ((provider: Provider) => Promise<string>
   antigravityToken = fn;
 }
 
+/** Supplies the access token for a provider that is a Cursor account; the server sets it (see cursor/auth.ts). */
+let cursorToken: ((provider: Provider) => Promise<string>) | undefined;
+export function setCursorToken(fn: ((provider: Provider) => Promise<string>) | undefined): void {
+  cursorToken = fn;
+}
+
 /** Supplies the access token for a provider that is a Google Vertex AI project; the server sets it (see vertex.ts). */
 let vertexToken: ((provider: Provider) => Promise<string>) | undefined;
 export function setVertexToken(fn: ((provider: Provider) => Promise<string>) | undefined): void {
@@ -84,6 +90,7 @@ export function setVertexToken(fn: ((provider: Provider) => Promise<string>) | u
 export async function pickKey(secrets: SecretStore, provider: Provider): Promise<{ keyId?: string; apiKey: string | undefined }> {
   if (provider.plan && planToken) return { apiKey: await planToken(provider) };
   if (provider.antigravity && antigravityToken) return { apiKey: await antigravityToken(provider) };
+  if (provider.cursor && cursorToken) return { apiKey: await cursorToken(provider) };
   if (provider.vertex && vertexToken) return { apiKey: await vertexToken(provider) };
   const key = pick(provider);
   if (!key) return { apiKey: await secrets.get(provider.id) };
