@@ -12,14 +12,14 @@ const files = [
   "gateway-chat", "gateway-gemini", "source-adapters", "protocol-safety", "outbound-shape", "outbound-corrections", "upstream-error", "protocol-streaming", "wire", "pool", "keypool",
   "plan-provider", "codex-plan", "copilot", "mimo-free", "subscription-support", "subscription-routes", "subscription-conversation",
   "claude-native", "capabilities", "dispatch", "claude-desktop-ui", "claude-desktop-auth", "protocol-ui", "console-controls",
-  "gateway-auth", "gateway-auth-persistence", "server-auth-persistence", "server-command", "es-cli-local", "gateway-upgrade", "chatgpt-boundary", "budget", "global-budget", "ledger-incremental", "secrets", "native-keychain", "secret-store-health", "server-security", "provider-presets", "provider-contract", "qoder-text-bridge", "codebuddy-text-bridge", "droid-text-bridge", "cli-text-source", "cli-text-process", "vertex", "vertex-gemini", "backlog", "verify-launchers", "setup-guides", "quota", "kiro", "antigravity", "cursor", "kimi", "plan-usage", "agent-config-gaps", "mcp-stdio-bridge", "mcp-capacity", "mcp-stdio",
+  "local-only-guard", "import-parse", "opencodex-import", "pricing", "profiles", "siwc", "ledger", "gateway-auth", "gateway-auth-persistence", "server-auth-persistence", "server-command", "es-cli-local", "gateway-upgrade", "chatgpt-boundary", "budget", "global-budget", "ledger-incremental", "secrets", "native-keychain", "secret-store-health", "server-security", "provider-presets", "provider-contract", "qoder-text-bridge", "codebuddy-text-bridge", "droid-text-bridge", "cli-text-source", "cli-text-process", "vertex", "vertex-gemini", "backlog", "verify-launchers", "setup-guides", "quota", "kiro", "antigravity", "cursor", "kimi", "plan-usage", "agent-config-gaps", "mcp-stdio-bridge", "mcp-capacity", "mcp-stdio",
 ];
 try {
   const env = { PATH: process.env.PATH ?? "", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), HOME: home, USERPROFILE: home, EASYSWITCH_HOME: join(home, "state"), EASYSWITCH_SECRETS: "memory" };
   const result = spawnSync(process.execPath, [
     "--import", "./core/test/local-only-guard.ts", "--test", "--test-force-exit",
     // These files also contain real-program tests; never even enter those test bodies.
-    "--test-skip-pattern", "a REAL|a task sent to auto|a dry run says|the backlog hooks",
+    "--test-skip-pattern", "a REAL|a task sent to auto|a dry run says|the backlog hooks|the icon manifest is current",
     ...files.map(name => `core/test/${name}.test.ts`),
   ], {
     cwd: root, stdio: "inherit",

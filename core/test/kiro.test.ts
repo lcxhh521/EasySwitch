@@ -122,7 +122,7 @@ test("a Chat conversation becomes Kiro's: the system text leads the first user t
 });
 
 test("what Kiro cannot do is refused or dropped on purpose, not guessed", () => {
-  assert.throws(() => buildKiro(chat({ messages: [{ role: "user", content: "x" }], tool_choice: { type: "function", function: { name: "f" } } }), login), (e: KiroError) => e.status === 400 && /强制/.test(e.message));
+  assert.throws(() => buildKiro(chat({ messages: [{ role: "user", content: "x" }], tools: [{ type: "function", function: { name: "f", parameters: {} } }], tool_choice: { type: "function", function: { name: "f" } } }), login), (e: KiroError) => e.status === 400 && /强制/.test(e.message));
   assert.throws(() => buildKiro(chat({ messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/y.png" } }] }] }), login), (e: KiroError) => /data URL/.test(e.message));
   const none = buildKiro(chat({ tool_choice: "none", tools: [{ type: "function", function: { name: "f", parameters: {} } }], messages: [{ role: "user", content: "x" }] }), login);
   assert.equal(none.body.conversationState.currentMessage.userInputMessage.userInputMessageContext, undefined, "tool_choice none sends no tools");

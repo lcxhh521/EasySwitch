@@ -139,7 +139,7 @@ test("adding a Vertex project mints a token to prove the key works, keeps the ke
   assert.ok(call.claims.exp - call.claims.iat === 3600);
   // The private key is in the secret store and nowhere else.
   assert.match((await secrets.get(`vertex:${info.id}`))!, /BEGIN PRIVATE KEY/);
-  const files = readdirSync(join(dir, "store")).map(f => readFileSync(join(dir, "store", f), "utf8")).join("\n");
+  const files = readdirSync(join(dir, "store"), { recursive: true, withFileTypes: true }).filter(f => f.isFile()).map(f => readFileSync(join(f.parentPath, f.name), "utf8")).join("\n");
   assert.ok(!files.includes("PRIVATE KEY"), "no key on disk");
   const visibleState = await (await api("GET", "/api/state")).json() as Json;
   const visibleProvider = visibleState.providers.find((p: Json) => p.id === provider.id);

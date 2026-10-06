@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,14 +9,17 @@ import { Ledger, summarize } from "../src/ledger.ts";
 import { iconForBaseUrl, PRESETS } from "../src/presets.ts";
 import type { GatewayLogEntry } from "../src/types.ts";
 
-const NOW = new Date("2026-10-05T16:00:00+08:00");
+// Usage summaries use the server local calendar, not the test author's timezone.
+const NOW = new Date(2026, 9, 5, 16);
 
 function entry(at: string, over: Partial<GatewayLogEntry> = {}): GatewayLogEntry {
   return { at, model: "relay/m", providerId: "relay", route: "chat-translate", harness: "codex", status: 200, ms: 5, inputTokens: 100, outputTokens: 10, cachedTokens: 40, ...over };
 }
 
-test("the ledger appends numbers only and reads back by date", () => {
-  const ledger = new Ledger(mkdtempSync(join(tmpdir(), "es-ledger-")));
+test("the ledger appends numbers only and reads back by date", t => {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "es-ledger-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ledger = new Ledger(dir);
   ledger.append(entry("2026-10-01T10:00:00+08:00"));
   ledger.append(entry("2026-10-05T10:00:00+08:00", { harness: "claude" }));
   assert.equal(ledger.read().length, 2);
@@ -25,9 +28,9 @@ test("the ledger appends numbers only and reads back by date", () => {
 
 test("a 7-day summary has a slot for every day, quiet days included", () => {
   const summary = summarize([
-    entry("2026-10-01T10:00:00+08:00"),
-    entry("2026-10-05T09:00:00+08:00", { harness: "claude", providerId: "other", model: "other/m" }),
-    entry("2026-10-05T09:30:00+08:00", { status: 502, inputTokens: undefined, outputTokens: undefined, cachedTokens: undefined }),
+    entry(new Date(2026, 9, 1, 10).toISOString()),
+    entry(new Date(2026, 9, 5, 9).toISOString(), { harness: "claude", providerId: "other", model: "other/m" }),
+    entry(new Date(2026, 9, 5, 9, 30).toISOString(), { status: 502, inputTokens: undefined, outputTokens: undefined, cachedTokens: undefined }),
   ], "7d", NOW);
   assert.equal(summary.days.length, 7);
   assert.equal(summary.days[0]!.day, "2026-09-29");
