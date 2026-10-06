@@ -597,6 +597,7 @@ function renderAgents() {
         </span>
       </div>`;
   }
+  if (typeof firstRunVisible === "function" && firstRunVisible()) return firstRunCard();
   const others = otherAgents();
   const codexHere = Boolean(state.codexPath);
   const claudeHere = Boolean(state.claudePath);
@@ -1080,6 +1081,7 @@ function poolsCard() {
 
 function renderProviders() {
   return `
+    ${typeof firstRunVisible === "function" && firstRunVisible() ? `<div class="card" style="padding:16px">准备好来源后，回到三步向导选择 Agent。<button class="btn secondary" data-first-action="resume">继续首次设置</button></div>` : ""}
     ${planCard()}
     ${typeof cliTextSourcesCard === "function" ? cliTextSourcesCard() : ""}
     ${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}
@@ -1355,7 +1357,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1386,6 +1388,8 @@ async function refresh(force = false) {
   } catch {
     state = null;
   }
+  if (state && !PANEL && !state.providers.length && !presets.length) presets = await call("GET", "/api/presets").catch(() => []);
+  if (typeof firstRunSync === "function" && state) firstRunSync();
   if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
   if (page === "agents" && !PANEL) {
     chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
