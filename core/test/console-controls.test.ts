@@ -83,6 +83,28 @@ test("budget form submits validated settings once and re-enables controls after 
   assert.match(app.run("budgetSettingsCard()"), /禁止探测/);
 });
 
+test("budget count, warning and null reset render without HTML injection or epoch dates", () => {
+  const app = ui();
+  app.run(`state.budget.unknownCostCalls='<img src=x onerror="bad">';state.budget.warning='<svg onload=bad>';state.budget.resetsAt=null;`);
+  let html = app.run("budgetSettingsCard()") as string;
+  assert.match(html, /&lt;img src=x onerror=&quot;bad&quot;&gt;/); assert.match(html, /&lt;svg onload=bad&gt;/);
+  assert.doesNotMatch(html, /<img|<svg|1970|Invalid Date/); assert.match(html, /暂不可用/);
+  app.run("state.budget.unknownCostCalls=null"); html = app.run("budgetSettingsCard()");
+  assert.match(html, /0 次请求缺少完整成本信息/);
+  app.run("state.budget={settings:null}"); assert.equal(app.run("budgetSettingsCard()"), "");
+  app.run("state=null"); assert.equal(app.run("budgetSettingsCard()"), "");
+});
+
+test("empty budget values and a stale form after state loss never submit", async () => {
+  const app = ui(); const controls = [{disabled:false},{disabled:true}];
+  const form = {values:{limitUsd:'',period:'day',action:'warn'},matches:(s:string)=>s==='[data-global-budget-form]',querySelectorAll:()=>controls};
+  await app.dispatch("submit", form); assert.equal(app.run("requests.length"), 0);
+  assert.equal(controls[0]!.disabled, false); assert.equal(controls[1]!.disabled, true);
+  form.values.limitUsd='2';app.run("state=null");
+  await app.dispatch("submit", form); assert.equal(app.run("requests.length"), 0);
+  assert.match(app.run("messages[1]"), /状态暂不可用/);
+});
+
 test("support review shows all researched vendors and does not invent login buttons", () => {
   const app = ui();
   app.run(`planInfo={subscriptionSupport:${JSON.stringify(subscriptionSupport())}}`);

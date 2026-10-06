@@ -25,11 +25,13 @@ function ui() {
   const run = (source: string) => vm.runInContext(source, context);
   function form(protocols: string[], model = "") {
     const controls = [{ disabled: false }, { disabled: false }];
-    return { dataset: {} as Record<string, string>, values: { protocols, model }, controls,
+    const detail = { dataset: { provider: "source" }, querySelectorAll: () => controls, querySelector: (_selector: string): any => null };
+    return { dataset: {} as Record<string, string>, values: { protocols, model }, controls, detail,
       matches: (selector: string) => selector === "[data-protocol-form]", querySelectorAll: () => controls,
-      closest: () => ({ dataset: { provider: "source" } }) };
+      closest: () => detail };
   }
-  return { run, form, submit: async (target: ReturnType<typeof form>) => { for (const handler of handlers.submit ?? []) await handler({ target, preventDefault() {} }); } };
+  const dispatch = async (name: string, target: any) => { for (const handler of handlers[name] ?? []) await handler({ target, preventDefault() {} }); };
+  return { run, form, dispatch, submit: (target: ReturnType<typeof form>) => dispatch("submit", target) };
 }
 
 test("protocol choices prefer model override, then source order, then detected defaults", () => {
@@ -67,4 +69,93 @@ test("a failed protocol save keeps the chosen values and permits retry", async (
   assert.deepEqual(form.values.protocols, ["gemini"]); assert.equal(app.run("messages[0]"), "fixture failure");
   app.run("call = async (method,path,body) => { requests.push({method,path,body}); return {}; }");
   await app.submit(form); assert.equal(app.run("requests.length"), 1);
+});
+
+function provider(app: ReturnType<typeof ui>) {
+  app.run(`state.providers=[{id:'source',name:'Fixture',icon:'letter:F',baseUrl:'https://fixture.invalid',models:['m'],usedBy:[],billing:'subscription',hasKey:true,supportedProtocols:['chat']}];openProvider='source';`);
+}
+function buttonFor(form: ReturnType<ReturnType<typeof ui>["form"]>, attribute: string, model = "m") {
+  const button = { disabled: false, type: "button", textContent: attribute === "data-probe" ? "检测一下" : "恢复默认",
+    hasAttribute: (name: string) => name === attribute,
+    closest: (selector: string): any => selector === "button" ? button : selector === ".detail" ? form.detail : null };
+  form.controls.push(button);
+  form.detail.querySelector = selector => selector === "[data-protocol-form]" ? form : selector === ".probe-model" ? { value: model } : selector === "[data-protocol-model]" ? { value: form.values.model } : null;
+  return button;
+}
+
+test("protocol editing starts folded without hiding detection, overrides or reset", async () => {
+  const app = ui(); provider(app);
+  let html = app.run("providerRow(state.providers[0])") as string;
+  const tag = html.match(/<details data-keep="protocols:source"[^>]*>/)?.[0];
+  assert.ok(tag); assert.doesNotMatch(tag, /\bopen\b/);
+  assert.match(html, /协议设置 · 通常不用动/); assert.match(html, /检测一下/);
+  assert.match(html, /可能产生费用/); assert.match(html, /不覆盖 Gemini/);
+  assert.match(html, /data-protocol-form/); assert.match(html, /data-protocol-auto/);
+  await app.dispatch("toggle", { dataset: { keep: "protocols:source" }, open: true });
+  html = app.run("providerRow(state.providers[0])");
+  assert.match(html, /data-keep="protocols:source" open/);
+  await app.dispatch("toggle", { dataset: { keep: "protocols:source" }, open: false });
+  assert.doesNotMatch(app.run("providerRow(state.providers[0])"), /data-keep="protocols:source" open/);
+  assert.equal(app.run("requests.length"), 0);
+});
+
+test("null protocol metadata and hostile probe fields render as inert text", () => {
+  const app = ui(); provider(app);
+  assert.match(app.run("protocolOptions(null)"), /value="chat" checked/);
+  assert.doesNotMatch(app.run("protocolOptions({protocols:['constructor','<img>']})"), /value="chat" checked|<img>|function Object/);
+  app.run(`state.providers[0].models=null;state.providers[0].usedBy=null;state.providers[0].probe={checks:[{status:'" onmouseover="bad',label:'<svg onload=x>',detail:'<&"',latencyMs:'<img src=x>'}]};`);
+  const html = app.run("providerRow(state.providers[0])") as string;
+  assert.match(html, /&lt;svg onload=x&gt;/); assert.match(html, /&lt;img src=x&gt;/);
+  assert.doesNotMatch(html, /onmouseover=|<svg|<img src=x>/);
+  assert.match(html, /data-probe disabled/);
+});
+
+test("unsaved model choices survive a redraw and failed save", async () => {
+  const app = ui(); provider(app); const form = app.form(["messages"], "m");
+  const target = { matches: () => false, closest: (selector: string) => selector === "[data-protocol-form]" ? form : null };
+  await app.dispatch("change", target);
+  let html = app.run("providerRow(state.providers[0])") as string;
+  assert.match(html, /option value="m" selected/); assert.match(html, /value="messages" checked/);
+  assert.doesNotMatch(html, /value="chat" checked/);
+  app.run("call=async()=>{throw new Error('save failed')}");
+  await app.submit(form);
+  html = app.run("providerRow(state.providers[0])");
+  assert.match(html, /value="messages" checked/); assert.equal(form.controls[0]!.disabled, false);
+});
+
+test("detection uses the selected model once, locks protocol mutations and preserves disabled controls", async () => {
+  const app = ui(); provider(app); const form = app.form(["messages"], "m");
+  form.controls[1]!.disabled = true;
+  const button = buttonFor(form, "data-probe", "chosen/model");
+  app.run("call=async(method,path,body)=>{requests.push({method,path,body});return new Promise((resolve,reject)=>globalThis.failProbe=reject)}");
+  const pending = app.dispatch("click", button);
+  assert.equal(button.textContent, "检测中…"); assert.equal(button.disabled, true);
+  await app.dispatch("click", button); await app.submit(form);
+  assert.equal(app.run("requests.length"), 1);
+  assert.equal(app.run("requests[0].method"), "POST"); assert.equal(app.run("requests[0].path"), "/api/providers/source/probe");
+  assert.equal(app.run("requests[0].body.model"), "chosen/model");
+  app.run("failProbe(new Error('fixture unavailable'))"); await pending;
+  assert.equal(button.disabled, false); assert.equal(button.textContent, "检测一下");
+  assert.equal(form.controls[1]!.disabled, true); assert.equal(app.run("providerOperations.size"), 0);
+  assert.match(app.run("providerRow(state.providers[0])"), /value="messages" checked/);
+});
+
+test("empty detection and stale disabled buttons never call an endpoint", async () => {
+  const app = ui(); provider(app); const form = app.form(["chat"]);
+  const button = buttonFor(form, "data-probe", "");
+  await app.dispatch("click", button);
+  assert.equal(app.run("requests.length"), 0); assert.match(app.run("messages[0]"), /先选一个模型/);
+  button.disabled = true; await app.dispatch("click", button);
+  assert.equal(app.run("requests.length"), 0);
+});
+
+test("reset is scoped, suppresses duplicate clicks, and drops the draft only after success", async () => {
+  const app = ui(); provider(app); const form = app.form(["gemini"], "m");
+  const button = buttonFor(form, "data-protocol-auto");
+  app.run("call=async(method,path,body)=>{requests.push({method,path,body});return new Promise(resolve=>globalThis.finishReset=resolve)}");
+  const pending = app.dispatch("click", button); await app.dispatch("click", button);
+  assert.equal(app.run("requests.length"), 1); assert.equal(app.run("protocolDrafts.has('source')"), true);
+  assert.equal(app.run("JSON.stringify(requests[0].body)"), '{"protocols":null,"model":"m"}');
+  app.run("finishReset({})"); await pending;
+  assert.equal(app.run("protocolDrafts.has('source')"), false); assert.equal(button.disabled, false);
 });

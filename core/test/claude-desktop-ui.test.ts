@@ -42,6 +42,7 @@ function ui() {
       await handlers.change![0]!({ target });
     },
     async escape() { await handlers.keydown![0]!({ key: "Escape" }); },
+    async toggle(open: boolean) { for (const handler of handlers.toggle ?? []) await handler({ target: { dataset: { keep: "experimental-agents" }, open } }); },
   };
 }
 
@@ -116,4 +117,25 @@ test("stop targets only the selected desktop session, never the generic native p
   assert.equal(app.run("requests[0].path"), "/api/claude-desktop/sessions/owned-session/stop");
   assert.equal(app.run("requests[0].method"), "POST");
   assert.equal(app.run("claudeDesktopBusy"), false);
+});
+
+test("desktop stays in collapsed experiments while pending cleanup remains visible in the summary", async () => {
+  const app = ui();
+  app.run("claudeDesktopInfo={installed:true,launchBlocked:true,sessions:[{id:'s',state:'failed',cleaned:false}]}");
+  let html = app.run("experimentalAgentsCard()") as string;
+  assert.doesNotMatch(html.match(/<details[^>]*>/)?.[0] ?? "", /\bopen\b/);
+  assert.match(html, /实验功能/); assert.match(html, /1 个会话待停止或清理/);
+  assert.match(html, /data-claude-desktop-stop="s"/); assert.match(html, /data-claude-desktop-ask disabled/);
+  await app.toggle(true); html = app.run("experimentalAgentsCard()");
+  assert.match(html, /data-keep="experimental-agents" open/);
+  app.run("claudeDesktopConfirm=true"); await app.toggle(false);
+  assert.equal(app.run("claudeDesktopConfirm"), false);
+  assert.equal(app.run("requests.length"), 0);
+});
+
+test("experimental desktop tolerates unloaded state without implying launch is available", () => {
+  const app = ui(); app.run("state=null;claudeDesktopInfo=null");
+  const html = app.run("experimentalAgentsCard()") as string;
+  assert.match(html, /独立窗口暂未开放/); assert.match(html, /状态读取中/);
+  assert.match(html, /data-claude-desktop-ask disabled/);
 });

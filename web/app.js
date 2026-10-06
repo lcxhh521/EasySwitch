@@ -166,8 +166,8 @@ function agentMeta(id) {
 }
 
 const POOL_PROVIDER = { id: "pool", name: "模型池", icon: "letter:池", models: [] };
-const providerById = id => (id === "pool" ? POOL_PROVIDER : state.providers.find(p => p.id === id));
-const modelsOf = p => (p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : []);
+const providerById = id => (id === "pool" ? POOL_PROVIDER : state?.providers?.find(p => p.id === id));
+const modelsOf = p => (Array.isArray(p?.models) && p.models.length ? p.models : p?.defaultModel ? [p.defaultModel] : []);
 const sessionsOf = h => (state.sessionDetails ?? []).filter(s => s.harness === h);
 
 function closePopover() {
@@ -355,6 +355,13 @@ function claudeDesktopCard() {
       ${claudeDesktopError ? `<p class="hint" role="alert" style="padding:0 18px;color:var(--bad)">${esc(claudeDesktopError)}</p>` : ""}
       ${sessions.map(s => `<div class="row"><div class="grow"><div class="title">${esc(labels[s.state] ?? s.state)}${s.pid ? ` · PID ${esc(s.pid)}` : ""}</div><div class="sub">${s.cleaned ? "私有目录已清理" : "私有目录保留中"}${s.error ? ` · ${esc(s.error)}` : ""}</div></div>${s.cleaned ? "" : `<button class="btn secondary" data-claude-desktop-stop="${esc(s.id)}" ${claudeDesktopBusy ? "disabled" : ""}>停止并清理</button>`}</div>`).join("")}
     </div>`;
+}
+
+function experimentalAgentsCard() {
+  const pending = (claudeDesktopInfo?.sessions ?? []).filter(s => !s.cleaned).length;
+  return `<details class="card" data-keep="experimental-agents" ${keepOpen("experimental-agents")} style="margin-top:12px">
+    <summary class="row" style="cursor:pointer"><span class="grow title">实验功能</span><span class="hint">Claude 桌面端${pending ? ` · ${esc(pending)} 个会话待停止或清理` : claudeDesktopInfo?.launchBlocked === false ? " · 独立窗口试用" : " · 独立窗口暂未开放"}</span></summary>
+    <div style="padding:0 16px 16px">${claudeDesktopCard()}</div></details>`;
 }
 
 /** The wider catalog under the two ready rows: what is installed here, then the rest. */
@@ -610,7 +617,7 @@ function renderAgents() {
     <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
     <p class="hint">在每个 agent 那一行里选主模型、想得多深、后台小任务和子 agent 用的模型，再点「启动」。会话里输入 <code>/model</code> 可以随时换。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT 和 Claude Code 永远不受影响。「接入中」的 agent 正在逐个接入；「只能打开」的是闭源或绑定登录的，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>
     ${state.providers.length ? "" : onboarding()}
-    ${claudeDesktopCard()}
+    ${experimentalAgentsCard()}
     ${coverageCard()}
     ${missing.length ? `<div class="section-head"><h2>未安装</h2><span class="aside">${missing.length} 个</span></div><div class="card">${missing.join("")}</div>` : ""}`;
 }
@@ -858,37 +865,70 @@ function budgetBlock(p) {
 }
 
 const PROTOCOL = { chat: "Chat", responses: "Responses", messages: "Messages", gemini: "Gemini" };
-function protocolOptions(p, model = "") {
-  const selected = p.modelProtocols?.[model] ?? p.protocols ?? p.supportedProtocols ?? ["chat"];
+// Keep in-progress choices through polling, collapsing, or an unrelated refresh.
+const protocolDrafts = new Map();
+const providerOperations = new Set();
+function protocolChoices(p, model = "") {
+  const values = p?.modelProtocols?.[model] ?? p?.protocols ?? p?.supportedProtocols ?? ["chat"];
+  return Array.isArray(values) ? [...new Set(values.filter(v => Object.hasOwn(PROTOCOL, v)))] : [];
+}
+function protocolOptions(p, model = "", selected = protocolChoices(p, model)) {
   const order = [...selected, ...Object.keys(PROTOCOL).filter(v => !selected.includes(v))];
   return order.map(v => `<label><input type="checkbox" name="protocols" value="${esc(v)}" ${selected.includes(v) ? "checked" : ""}> ${PROTOCOL[v] ?? esc(v)}</label>`).join(" ");
+}
+function rememberProtocolForm(form) {
+  const id = form?.closest(".detail")?.dataset.provider;
+  if (!id) return;
+  const f = new FormData(form);
+  protocolDrafts.set(id, { model: String(f.get("model") ?? ""), protocols: f.getAll("protocols") });
+}
+async function withProviderOperation(detail, action) {
+  const id = detail?.dataset.provider;
+  if (!id || providerOperations.has(id)) return;
+  providerOperations.add(id);
+  const controls = [...detail.querySelectorAll("button, input, select")];
+  const disabled = controls.map(el => el.disabled);
+  controls.forEach(el => { el.disabled = true; });
+  try { await action(); }
+  finally {
+    providerOperations.delete(id);
+    controls.forEach((el, i) => { el.disabled = disabled[i]; });
+    // A manual refresh may have replaced the locked nodes while awaiting the API.
+    if (controls.some(el => el.isConnected === false)) render();
+  }
 }
 
 function providerRow(p) {
   const models = modelsOf(p);
-  const used = p.usedBy.map(h => icon(agentMeta(h).icon, "sm")).join("");
+  const used = (p.usedBy ?? []).map(h => icon(agentMeta(h).icon, "sm")).join("");
   const open = openProvider === p.id;
   const checks = (p.probe?.checks ?? []).map(c => `
-    <div class="check ${c.status}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${c.latencyMs}ms` : ""}</div>`).join("");
+    <div class="check ${["pass", "fail", "skip"].includes(c.status) ? c.status : ""}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${esc(c.latencyMs)}ms` : ""}</div>`).join("");
   const options = models.map(m => `<option ${m === p.defaultModel ? "selected" : ""}>${esc(m)}</option>`).join("");
   const fixed = p.plan || p.mimoFree || p.vertex || p.kiro || p.antigravity || p.cursor || p.kimi || p.cliTextBridge;
+  const draft = protocolDrafts.get(p.id);
+  const scope = draft?.model ?? "";
+  const busy = providerOperations.has(p.id);
+  const probeBlocked = (state?.budget?.settings?.enabled && state.budget.settings.action === "stop") || p.budget?.stop || p.budgetStatus?.configurationInvalid;
   const detail = open ? `
     <div class="detail" data-provider="${esc(p.id)}">
       <div class="controls">
         <span class="chip">来源协议：${(p.supportedProtocols ?? ["chat"]).map(v => PROTOCOL[v] ?? esc(v)).join(" / ") || "尚不支持"}</span>
       </div>
-      ${fixed ? "" : `<form class="form" data-protocol-form>
-        <div class="field"><label>设置范围</label><select name="model" data-protocol-model><option value="">整个来源</option>${models.map(m => `<option value="${esc(m)}">${esc(m)}${p.modelProtocols?.[m] ? "（单独设置）" : ""}</option>`).join("")}</select></div>
-        <div class="controls" data-protocol-options>${protocolOptions(p)}</div>
+      ${fixed ? "" : `<details data-keep="protocols:${esc(p.id)}" ${keepOpen(`protocols:${p.id}`)}>
+        <summary class="hint" style="cursor:pointer">协议设置 · 通常不用动</summary>
+        <form class="form" data-protocol-form><fieldset ${busy ? "disabled" : ""} style="border:0;padding:0;margin:0;display:grid;gap:12px">
+        <div class="field"><label>设置范围</label><select name="model" data-protocol-model><option value="">整个来源</option>${[...new Set([...models, ...(scope ? [scope] : [])])].map(m => `<option value="${esc(m)}" ${m === scope ? "selected" : ""}>${esc(m)}${p.modelProtocols?.[m] ? "（单独设置）" : ""}</option>`).join("")}</select></div>
+        <div class="controls" data-protocol-options>${protocolOptions(p, scope, draft?.protocols)}</div>
         <div class="hint">按来源文档勾选它支持的协议。与客户端相同的协议优先；需要转换时，按这里的显示顺序选择。单个模型可独立设置。</div>
         <div class="controls"><button class="btn secondary" type="submit">保存协议</button><button class="btn secondary" type="button" data-protocol-auto>恢复默认</button></div>
-      </form>`}
+      </fieldset></form></details>`}
       ${p.cliTextBridge ? `<p class="hint">${esc(cliTextSourceNotice(p))}</p>` : `<div class="controls">
         <label class="hint">测试用模型</label>
         <select class="probe-model">${options || "<option value=''>（没有可选模型）</option>"}</select>
-        <button class="btn" data-probe ${((state.budget?.settings.enabled && state.budget.settings.action === "stop") || p.budget?.stop || p.budgetStatus?.configurationInvalid) ? "disabled title=\"暂停预算开启时不允许未完整计费的探测\"" : ""}>一致性测试</button>
+        <button class="btn" data-probe ${probeBlocked ? "disabled title=\"暂停预算开启时不允许未完整计费的探测\"" : busy || !models.length || p.vertex ? "disabled" : ""}>检测一下</button>
         <span class="hint">${p.probe ? `上次测试：${ago(p.probe.at)}` : "还没测过"}</span>
-      </div>`}
+      </div>${p.vertex ? `<p class="hint">此来源使用专用适配器，通用检测暂不适用。</p>` : `<p class="hint">检测会发送测试请求，可能产生费用；目前检查 Chat、Responses 和 Messages，不覆盖 Gemini，也不会覆盖手动保存的协议。</p>`}`}
       ${checks ? `<div class="checks">${checks}</div>` : ""}
       <div class="hint">${p.cliTextBridge ? "本地CLI标识（不是HTTP接口）" : "OpenAI 兼容地址"}：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
       ${billingBlock(p)}
@@ -1315,7 +1355,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1782,20 +1822,40 @@ document.addEventListener("click", async e => {
       return;
     }
     const button = t.closest("button");
-    if (!button) return;
+    if (!button || button.disabled || providerOperations.has(id)) return;
     if (button.type === "submit" && button.closest("form")) return;
+    if (button.hasAttribute("data-probe") || button.hasAttribute("data-protocol-auto")) {
+      const form = detail.querySelector("[data-protocol-form]");
+      rememberProtocolForm(form);
+      const label = button.textContent;
+      let saved = false;
+      await withProviderOperation(detail, async () => {
+        try {
+          if (button.hasAttribute("data-probe")) {
+            const model = detail.querySelector(".probe-model")?.value;
+            if (!model) { toast("先选一个模型再检测"); return; }
+            button.textContent = "检测中…";
+            await call("POST", `/api/providers/${encodeURIComponent(id)}/probe`, { model });
+            toast("检测完成，结果在来源下方；手动协议设置未更改");
+          } else {
+            const model = detail.querySelector("[data-protocol-model]")?.value ?? "";
+            await call("PUT", `/api/providers/${encodeURIComponent(id)}/protocols`, { protocols: null, ...(model ? { model } : {}) });
+            protocolDrafts.delete(id);
+            toast(model ? "模型已恢复来源设置" : "来源已恢复自动识别");
+          }
+          saved = true;
+        } catch (error) { toast(error.message); }
+        finally { button.textContent = label; }
+      });
+      if (saved) await refresh(true);
+      return;
+    }
     button.disabled = true;
     try {
-      if (button.hasAttribute("data-probe")) {
-        button.textContent = "测试中…";
-        await call("POST", `/api/providers/${id}/probe`, { model: detail.querySelector(".probe-model").value });
-      } else if (button.hasAttribute("data-protocol-auto")) {
-        const model = detail.querySelector("[data-protocol-model]").value;
-        await call("PUT", `/api/providers/${id}/protocols`, { protocols: null, ...(model ? { model } : {}) });
-        toast(model ? "模型已恢复来源设置" : "来源已恢复自动识别");
-      } else if (button.hasAttribute("data-remove")) {
+      if (button.hasAttribute("data-remove")) {
         if (!window.confirm("删除这个模型来源？钥匙串里的 Key 也会一起删除。")) { button.disabled = false; return; }
         await call("DELETE", `/api/providers/${id}`);
+        protocolDrafts.delete(id);
         openProvider = null;
       }
     } catch (error) { toast(error.message); }
@@ -1810,9 +1870,15 @@ document.addEventListener("click", async e => {
 document.addEventListener("change", async e => {
   if (e.target.matches("[data-protocol-model]")) {
     const detail = e.target.closest(".detail");
-    detail.querySelector("[data-protocol-options]").innerHTML = protocolOptions(providerById(detail.dataset.provider), e.target.value);
+    if (!detail || providerOperations.has(detail.dataset.provider)) return;
+    const protocols = protocolChoices(providerById(detail.dataset.provider), e.target.value);
+    protocolDrafts.set(detail.dataset.provider, { model: e.target.value, protocols });
+    const options = detail.querySelector("[data-protocol-options]");
+    if (options) options.innerHTML = protocolOptions(null, "", protocols);
     return;
   }
+  const protocolForm = e.target.closest?.("[data-protocol-form]");
+  if (protocolForm) { rememberProtocolForm(protocolForm); return; }
   if (!e.target.matches(".billing-select")) return;
   const id = e.target.closest(".detail")?.dataset.provider;
   try { await call("PUT", `/api/providers/${id}/billing`, { billing: e.target.value }); toast(e.target.value === "subscription" ? "已改为包月套餐" : "已改为按量计费"); } catch (error) { toast(error.message); }
@@ -1832,18 +1898,24 @@ document.addEventListener("submit", async e => {
     e.preventDefault();
     const form = e.target;
     if (form.dataset.saving) return;
+    const detail = form.closest(".detail");
+    const id = detail?.dataset.provider;
+    if (!id || providerOperations.has(id)) return;
     const f = new FormData(form); const model = f.get("model");
     const protocols = f.getAll("protocols");
     if (!protocols.length) { toast("请至少选择一个来源支持的协议"); return; }
-    const id = form.closest(".detail").dataset.provider;
+    rememberProtocolForm(form);
     form.dataset.saving = "1";
-    form.querySelectorAll("button, input, select").forEach(el => { el.disabled = true; });
+    let saved = false;
     try {
-      await call("PUT", `/api/providers/${id}/protocols`, { protocols, ...(model ? { model } : {}) });
-      toast(model ? "模型协议已保存" : "来源协议已保存");
-      await refresh(true);
+      await withProviderOperation(detail, async () => {
+        await call("PUT", `/api/providers/${encodeURIComponent(id)}/protocols`, { protocols, ...(model ? { model } : {}) });
+        protocolDrafts.delete(id); saved = true;
+        toast(model ? "模型协议已保存" : "来源协议已保存");
+      });
     } catch (error) { toast(error.message); }
-    finally { delete form.dataset.saving; form.querySelectorAll("button, input, select").forEach(el => { el.disabled = false; }); }
+    finally { delete form.dataset.saving; }
+    if (saved) await refresh(true);
     return;
   }
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
@@ -2002,6 +2074,7 @@ document.addEventListener("toggle", e => {
   const id = e.target?.dataset?.keep;
   if (!id) return;
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
+  if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 

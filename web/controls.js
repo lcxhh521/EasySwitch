@@ -10,8 +10,10 @@ function gatewaySessionsCard() {
 }
 function budgetSettingsCard() {
   const b = state?.budget;
-  if (!b) return "";
+  if (!b?.settings) return "";
   const s = b.settings;
+  const reset = b.resetsAt == null ? null : new Date(b.resetsAt);
+  const resetText = reset && Number.isFinite(reset.getTime()) ? reset.toLocaleString() : "暂不可用";
   return `<div class="section-head"><h2>估算费用预算</h2><span class="aside">UTC ${s.period === "day" ? "日" : "月"}累计</span></div><div class="card" style="padding:16px">
     <p>已记录估算：$${Number(b.estimatedCostUsd ?? 0).toFixed(4)} / $${Number(s.limitUsd).toFixed(2)}</p>
     ${b.warning ? `<p class="msg ${b.blocked ? "bad" : ""}">${esc(b.warning)}</p>` : ""}
@@ -21,7 +23,7 @@ function budgetSettingsCard() {
       <div class="field"><label>超额后</label><select name="action"><option value="warn" ${s.action === "warn" ? "selected" : ""}>仅提醒，继续请求</option><option value="stop" ${s.action === "stop" ? "selected" : ""}>暂停新的推理请求</option></select></div>
       <div class="controls"><button class="btn" type="submit" ${budgetSaving ? "disabled" : ""}>${budgetSaving ? "保存中…" : "保存预算"}</button></div></form>
     <p class="hint">${esc(b.limitations)} 通用来源探测目前不完整计费，开启暂停请求预算时会禁止探测；不能当作供应商硬限额。</p>
-    <p class="hint">${b.unknownCostCalls} 次请求缺少完整成本信息；下一周期 ${esc(new Date(b.resetsAt).toLocaleString())} 开始。</p></div>`;
+    <p class="hint">${esc(b.unknownCostCalls ?? 0)} 次请求缺少完整成本信息；下一周期开始时间：${esc(resetText)}。</p></div>`;
 }
 
 document.addEventListener("click", async event => {
@@ -37,12 +39,14 @@ document.addEventListener("submit", async event => {
   event.preventDefault(); event.stopImmediatePropagation();
   if (budgetSaving) return;
   const form = event.target; const f = new FormData(form);
+  if (!state?.budget?.settings) { toast("预算状态暂不可用，请刷新后重试"); return; }
   const settings = { enabled: f.get("enabled") === "on", limitUsd: Number(f.get("limitUsd")), period: f.get("period"), action: f.get("action"), warnAt: state.budget.settings.warnAt };
-  if (!Number.isFinite(settings.limitUsd) || settings.limitUsd < 0) { toast("请填写有效的美元上限"); return; }
-  budgetSaving = true; form.querySelectorAll("button,input,select").forEach(el => { el.disabled = true; });
+  if (!String(f.get("limitUsd") ?? "").trim() || !Number.isFinite(settings.limitUsd) || settings.limitUsd < 0) { toast("请填写有效的美元上限"); return; }
+  const controls = [...form.querySelectorAll("button,input,select")]; const disabled = controls.map(el => el.disabled);
+  budgetSaving = true; controls.forEach(el => { el.disabled = true; });
   try { await call("PUT", "/api/budget", settings); await refresh(true); toast("预算已保存"); }
   catch (error) { toast(error.message); }
-  finally { budgetSaving = false; form.querySelectorAll("button,input,select").forEach(el => { el.disabled = false; }); }
+  finally { budgetSaving = false; controls.forEach((el, i) => { el.disabled = disabled[i]; }); }
 });
 
 function subscriptionSupportCard() {
