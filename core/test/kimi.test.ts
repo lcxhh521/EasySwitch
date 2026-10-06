@@ -68,7 +68,7 @@ test("signing in with the device code makes a source that starts switched off, k
   assert.equal(poll[0]!.headers["x-msh-platform"], "kimi_code_cli");
   assert.match(String(poll[0]!.headers["x-msh-device-id"]), /^[0-9a-f]{32}$/);
   assert.equal(await secrets.get(`kimi:${accountId}`), "kimi-refresh-1");
-  const files = readdirSync(join(dir, "store")).map(f => readFileSync(join(dir, "store", f), "utf8")).join("\n");
+  const files = readdirSync(join(dir, "store"), { recursive: true, withFileTypes: true }).filter(f => f.isFile()).map(f => readFileSync(join(f.parentPath, f.name), "utf8")).join("\n");
   assert.ok(!files.includes("kimi-refresh-1") && !files.includes(".sig"), "no token on disk");
   const shown = (await (await api("GET", "/api/plan")).text()) + (await (await api("GET", "/api/state")).text());
   assert.ok(!shown.includes("kimi-refresh-1") && !shown.includes(".sig"), "no token in anything the console is shown");

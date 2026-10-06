@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { recordLimitReached } from "../quota.ts";
-import type { ChatMessage, ChatRequest } from "../translate.ts";
+import type { ChatRequest } from "../translate.ts";
 import type { Provider } from "../types.ts";
+import { decodeRequest } from "../inbound.ts";
+import type { Conversation, InboundRequest } from "../protocol.ts";
+import { repairConversation, resultText } from "../subscription-input.ts";
 import { CursorError } from "./errors.ts";
 import type { TurnInput } from "./messages.ts";
 import { runTurn, type TurnEvent } from "./transport.ts";
@@ -14,46 +17,51 @@ import { runTurn, type TurnEvent } from "./transport.ts";
 
 type Json = Record<string, any>;
 
-function textOf(content: ChatMessage["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
-}
-
-/** A Chat conversation as Cursor's turn: system apart, history as plain user/assistant messages, the last user message to answer. */
+/** Kept for legacy callers; the selected production source receives Conversation directly. */
 export function chatToTurn(chat: ChatRequest): TurnInput {
-  const system: string[] = [];
+  return conversationToTurn(decodeRequest({ protocol: "chat", body: chat, model: chat.model, stream: chat.stream }), chat.model).turn;
+}
+export function conversationToTurn(value: Conversation, model: string): { turn: TurnInput; dropped: string[] } {
+  const c = repairConversation(value), system: string[] = [];
   const turns: Array<{ role: "user" | "assistant"; text: string }> = [];
   const add = (role: "user" | "assistant", text: string) => {
     if (!text) return;
-    const last = turns[turns.length - 1];
-    if (last?.role === role) last.text += `\n\n${text}`; else turns.push({ role, text });
+    const last = turns.at(-1); if (last?.role === role) last.text += `\n\n${text}`; else turns.push({ role, text });
   };
-  for (const m of chat.messages) {
-    if (m.role === "system" || (m.role as string) === "developer") { const t = textOf(m.content); if (t) system.push(t); }
-    else if (m.role === "user") add("user", textOf(m.content));
-    else if (m.role === "assistant") {
-      const calls = (m.tool_calls ?? []).map(c => `[调用了工具 ${c.function.name}，参数 ${c.function.arguments}]`).join("\n");
-      add("assistant", [textOf(m.content), calls].filter(Boolean).join("\n"));
-    } else add("user", `[工具返回的结果]\n${textOf(m.content)}`);
+  if (c.tools.length || c.choice) c.dropped.push("tools:cursor_text_only");
+  for (const t of c.turns) {
+    const text: string[] = [];
+    for (const p of t.parts) {
+      if (p.type === "text") text.push(p.text);
+      else if (p.type === "call") { text.push(`[调用了工具 ${p.name}，参数 ${p.arguments}]`); c.dropped.push("tool_history:cursor_text_only"); }
+      else if (p.type === "result") { text.push(`[工具返回的结果]\n${resultText(p.content)}`); c.dropped.push("tool_history:cursor_text_only"); }
+      else if (p.type === "image") c.dropped.push("media:cursor_text_only");
+      else if (p.type === "reasoning") c.dropped.push("reasoning:cursor_text_only");
+    }
+    if (t.role === "system" || t.role === "developer") system.push(text.join("\n"));
+    else add(t.role, text.join("\n"));
   }
-  const last = turns[turns.length - 1];
-  let user = "请继续。";
+  const last = turns.at(-1); let user = "请继续。";
   if (last?.role === "user") { user = last.text; turns.pop(); }
-  return { system: system.join("\n\n"), history: turns, user, modelId: chat.model };
+  for (const [name, v] of [["max_tokens", c.maxTokens], ["temperature", c.temperature], ["top_p", c.topP], ["stop", c.stop], ["response_format", c.format], ["effort:cursor", c.effort]] as const) if (v !== undefined) c.dropped.push(name);
+  return { turn: { system: system.filter(Boolean).join("\n\n"), history: turns, user, modelId: model }, dropped: c.dropped };
 }
 
 const failure = (error: unknown): CursorError => (error instanceof CursorError ? error : new CursorError("Cursor 请求失败，请检查网络或稍后重试。"));
 
 /** One Chat request to Cursor. Failures come back as a Response with the status and a plain reason. */
 export async function sendCursor(provider: Provider, token: string | undefined, chat: ChatRequest, signal: AbortSignal, opts: { heartbeatMs?: number; silenceMs?: number } = {}): Promise<Response> {
+  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
+  return sendCursorConversation(provider, token, decodeRequest(request), request, signal, opts);
+}
+export async function sendCursorConversation(provider: Provider, token: string | undefined, conversation: Conversation, request: InboundRequest, signal: AbortSignal, opts: { heartbeatMs?: number; silenceMs?: number } = {}): Promise<Response> {
   const fail = (error: unknown) => {
     const e = failure(error);
     if (e.status === 429) recordLimitReached(provider.id);
     return Response.json({ error: { type: "cursor_error", message: e.message } }, { status: e.status });
   };
   if (!token) return fail(new CursorError("没有拿到 Cursor 的登录，请回到 EasySwitch 重新登录。", 401, true));
-  const turn = runTurn({ baseUrl: provider.baseUrl, token, input: chatToTurn(chat), signal, ...opts });
+  const turn = runTurn({ baseUrl: provider.baseUrl, token, input: conversationToTurn(conversation, request.model).turn, signal, ...opts });
   // The first event decides whether this is an answer or an error, so a failure can still be a proper HTTP error (and a pool can move on).
   let first: IteratorResult<TurnEvent>;
   try { first = await turn.next(); } catch (error) { return fail(error); }
@@ -61,10 +69,10 @@ export async function sendCursor(provider: Provider, token: string | undefined, 
   const id = `chatcmpl-${randomUUID().slice(0, 12)}`;
   const created = Math.floor(Date.now() / 1000);
   const piece = (delta: Json, finish: string | null = null, usage?: Json) =>
-    `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: chat.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`;
+    `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: request.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`;
   const deltaOf = (e: TurnEvent): Json => (e.kind === "text" ? { content: e.text } : e.kind === "thinking" ? { reasoning_content: e.text } : {});
 
-  if (chat.stream) {
+  if (request.stream) {
     const encoder = new TextEncoder();
     let pending: IteratorResult<TurnEvent> | undefined = first;
     let started = false;
@@ -96,5 +104,5 @@ export async function sendCursor(provider: Provider, token: string | undefined, 
     }
   } catch (error) { return fail(error); }
   const message: Json = { role: "assistant", content: text || null, ...(reasoning ? { reasoning_content: reasoning } : {}) };
-  return Response.json({ id, object: "chat.completion", created, model: chat.model, choices: [{ index: 0, message, finish_reason: "stop" }], ...(usage ? { usage } : {}) });
+  return Response.json({ id, object: "chat.completion", created, model: request.model, choices: [{ index: 0, message, finish_reason: "stop" }], ...(usage ? { usage } : {}) });
 }

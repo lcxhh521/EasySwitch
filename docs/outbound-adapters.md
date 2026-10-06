@@ -8,7 +8,7 @@
 - 先按来源、模型选择出站协议。模型配置 `modelProtocols` 优先于来源 `protocols`；模型查找会去掉 `[1m]` 等客户端上下文后缀
 - 来源支持入站协议时优先直通；否则选择来源列出的第一个协议，通过中立的内容和事件结构直接转换到目标。Chat 不是中间协议
 - 没有新配置时兼容既有 `route` / `messagesRoute` 和探测结果。一次失败不会触发临时猜测协议或回放请求
-- 已有 ChatGPT/Codex、Copilot 保持各自协议和鉴权；旧 MiMo Free 的未核实身份路径生产阻塞，官方 API 使用普通出口。按用户确认分工保留 Claude 已推的 Kiro/Antigravity/Cursor/Kimi 模块，通过 `subscription-compat.ts` 接回四入口；这些兼容模块内部仍以 Chat 结构为接口，未冒充中立四协议适配器。新订阅默认关闭，本轮只用合成登录数据和本地假服务测试；真实协议、条款和账号验收另列。未知订阅配置仍在读 Key、联网前拒绝，见 `subscription-support.md`
+- 已有 ChatGPT/Codex、Copilot 保持各自协议和鉴权；旧 MiMo Free 的未核实身份路径生产阻塞，官方 API 使用普通出口。按用户确认分工保留 Claude 已推的 Kiro/Antigravity/Cursor/Kimi 模块，通过 `subscription-compat.ts` 接回四入口；这些入口现直接接收中立Conversation，再各自构造厂商格式；Kimi的Chat是它的出站协议，不再作为Kiro/Antigravity/Cursor的中间格式。工具配对、developer指令、会话缓存键及已保存档位按来源合同处理。新订阅默认关闭，本轮只用合成登录数据和本地假服务测试；真实协议、条款和账号验收另列。未知订阅配置仍在读 Key、联网前拒绝，见 `subscription-support.md`
 
 ## 文件地图
 

@@ -164,7 +164,7 @@ test("importing the Kiro login makes a source that starts switched off, lists th
   assert.equal(seen[0]!.authorization, `Bearer ${TOKEN}`, "the CLI's token goes to Kiro");
 
   // The token is nowhere in what EasySwitch stores or shows.
-  const files = readdirSync(join(dir, "store")).map(f => readFileSync(join(dir, "store", f), "utf8")).join("\n");
+  const files = readdirSync(join(dir, "store"), { recursive: true, withFileTypes: true }).filter(f => f.isFile()).map(f => readFileSync(join(f.parentPath, f.name), "utf8")).join("\n");
   assert.ok(!files.includes(TOKEN), "no token on disk");
   assert.ok(!(await (await api("GET", "/api/plan")).text()).includes(TOKEN) && !(await (await api("GET", "/api/state")).text()).includes(TOKEN));
   const listed = ((await (await api("GET", "/api/plan")).json()) as Json).accounts.find((a: Json) => a.kind === "kiro");

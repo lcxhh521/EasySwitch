@@ -1,22 +1,21 @@
 /**
- * Compatibility boundary for Claude-owned B20 modules from the approved dev handoff.
- * They retain their own login/wire implementations and return Chat-shaped results.
- * New ordinary APIs still use the neutral four-protocol layer. No account is read here.
+ * Dedicated subscription dispatcher. Each vendor consumes neutral Conversation directly.
+ * Existing login boundaries and vendor output parsers remain intact. No account is read here.
  */
 import { isAbsolute } from "node:path";
 import type { Provider } from "./types.ts";
 import type { PreparedOutbound } from "./outbound.ts";
 import { decodeRequest } from "./inbound.ts";
-import { encodeRequest } from "./outbound-format.ts";
 import { ProtocolError, type InboundRequest } from "./protocol.ts";
 import { readOutput } from "./upstream-events.ts";
-import { quirksFor, shapeChat, upstreamModelId } from "./quirks.ts";
-import type { ChatRequest } from "./translate.ts";
-import { sendKiro } from "./kiro.ts";
-import { sendAntigravity } from "./antigravity.ts";
-import { sendCursor } from "./cursor/adapter.ts";
+import { upstreamModelId } from "./quirks.ts";
+import { conversationToKiro, sendKiroConversation } from "./kiro.ts";
+import { sendAntigravityConversation } from "./antigravity.ts";
+import { conversationToTurn, sendCursorConversation } from "./cursor/adapter.ts";
 import { CURSOR_API } from "./cursor/transport.ts";
 import { kimiApi } from "./kimi.ts";
+import { conversationToGemini } from "./gemini-upstream.ts";
+import { conversationToKimi, sendKimiConversation } from "./kimi-upstream.ts";
 
 export type ExistingSubscriptionKind = "kiro" | "antigravity" | "cursor" | "kimi";
 
@@ -70,39 +69,20 @@ export function prepareExistingSubscription(provider: Provider, input: InboundRe
   if (!kind) throw new ProtocolError("没有已登记的专用订阅适配器。", 400);
   const endpoint = kind === "kimi" || kind === "cursor" ? accountEndpoint(kind) : undefined;
   const request = { ...input, model: upstreamModelId(input.model), source: provider.id };
-  const conversation = input.protocol === "chat" ? undefined : decodeRequest(request);
-  const body = conversation ? encodeRequest(conversation, request, "chat") : structuredClone(input.body);
-  body.model = request.model; body.stream = request.stream;
-  const dropped = conversation?.dropped ?? [];
-  if (kind === "cursor") {
-    if (Array.isArray(body.tools) && body.tools.length) dropped.push("tools:cursor_text_only");
-    if (body.messages?.some((m: { role?: string; tool_calls?: unknown[] }) => m.role === "tool" || m.tool_calls?.length)) dropped.push("tool_history:cursor_text_only");
-    if (body.messages?.some((m: { content?: unknown }) => Array.isArray(m.content) && m.content.some((p: { type?: string }) => p.type !== "text"))) dropped.push("media:cursor_text_only");
-  }
-  if (kind === "kimi") {
-    if (conversation) delete body.reasoning_effort;
-    shapeChat(body as ChatRequest, { quirks: quirksFor(endpoint!, request.model), ...(typeof request.body.prompt_cache_key === "string" ? { cacheKey: request.body.prompt_cache_key } : {}) });
-  }
-  const kimiHeaders: Record<string, string> = {};
-  if (kind === "kimi") for (const [name, value] of Object.entries(provider.wire?.headers ?? {})) {
-    if (["user-agent", "x-msh-platform", "x-msh-version", "x-msh-device-name", "x-msh-device-model", "x-msh-os-version", "x-msh-device-id"].includes(name.toLowerCase()) && typeof value === "string" && !/[\r\n]/.test(value)) kimiHeaders[name.toLowerCase()] = value;
-  }
-  if (request.effort) dropped.push("effort:legacy_subscription_adapter");
-  return { adapter: `${kind}-compat`, protocol: "chat", passthrough: input.protocol === "chat", tools: conversation?.tools ?? [], dropped,
+  const conversation = decodeRequest(request);
+  // Pure preparation validates unsupported content before key lookup/native account reads.
+  const dropped = kind === "kiro" ? conversationToKiro(conversation, request, { accessToken: "", region: "", builderId: true }).dropped
+    : kind === "antigravity" ? conversationToGemini(conversation, request).dropped
+    : kind === "cursor" ? conversationToTurn(conversation, request.model).dropped
+    : conversationToKimi(provider, conversation, request).dropped;
+  return { adapter: `${kind}-conversation`, protocol: "chat", passthrough: input.protocol === "chat", tools: kind === "cursor" ? [] : conversation.tools, dropped,
     events: response => readOutput(response, "chat"),
     async send(key, signal) {
       try {
         signal.throwIfAborted();
-        if (kind === "cursor") return await sendCursor({ ...provider, baseUrl: endpoint! }, key, body as ChatRequest, signal);
-        if (kind === "kimi") {
-          if (!key) return Response.json({ error: { type: "kimi_error", message: "没有拿到 Kimi 的有效登录，请回到 EasySwitch 重新登录。" } }, { status: 401 });
-          return await fetch(`${endpoint}/chat/completions`, {
-            method: "POST", redirect: "error", signal,
-            headers: { ...kimiHeaders, "content-type": "application/json", accept: request.stream ? "text/event-stream" : "application/json", authorization: `Bearer ${key}` },
-            body: JSON.stringify(body),
-          });
-        }
-        return kind === "kiro" ? await sendKiro(provider, body as ChatRequest, signal) : await sendAntigravity(provider, key, body as ChatRequest, signal);
+        if (kind === "cursor") return await sendCursorConversation({ ...provider, baseUrl: endpoint! }, key, conversation, request, signal);
+        if (kind === "kimi") return await sendKimiConversation(provider, key, conversation, request, endpoint!, signal);
+        return kind === "kiro" ? await sendKiroConversation(provider, conversation, request, signal) : await sendAntigravityConversation(provider, key, conversation, request, signal);
       } catch { return new Error("订阅适配器请求未完成。"); }
     },
   };

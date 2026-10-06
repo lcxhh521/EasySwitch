@@ -8,11 +8,13 @@ import {
   ANTIGRAVITY_API_VERSION, ANTIGRAVITY_CALLBACK_PORT, ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET, ANTIGRAVITY_SCOPES,
   antigravityEndpoints, antigravityUserAgent,
 } from "./antigravity-client.ts";
-import { chatToGemini, GeminiUpstreamError, geminiToChatResponse } from "./gemini-upstream.ts";
+import { conversationToGemini, GeminiUpstreamError, geminiToChatResponse } from "./gemini-upstream.ts";
 import { isUsageLimit, recordLimitReached } from "./quota.ts";
 import type { SecretStore } from "./secrets.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
+import type { Conversation, InboundRequest } from "./protocol.ts";
+import { decodeRequest } from "./inbound.ts";
 
 /**
  * Google Antigravity (Cloud Code Assist) as a model source: a Google sign-in done in the user's browser, with the
@@ -191,15 +193,19 @@ export async function listAntigravityModels(token: string, projectId?: string): 
 
 /** One Chat request to Antigravity. Failures come back as a Response with the status and a plain reason. */
 export async function sendAntigravity(provider: Provider, token: string | undefined, chat: ChatRequest, signal: AbortSignal): Promise<Response> {
+  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
+  return sendAntigravityConversation(provider, token, decodeRequest(request), request, signal);
+}
+export async function sendAntigravityConversation(provider: Provider, token: string | undefined, conversation: Conversation, request: InboundRequest, signal: AbortSignal): Promise<Response> {
   const fail = (message: string, status: number) => Response.json({ error: { type: "antigravity_error", message } }, { status });
   try {
     if (!token) return fail("没有拿到 Antigravity 的登录，请回到 EasySwitch 重新登录。", 401);
     const info = provider.antigravity;
     if (!info?.projectId) return fail("这个来源缺少 Cloud Code Assist 项目，请重新登录一次。", 409);
-    const prepared = chatToGemini(chat);
-    const envelope = { model: chat.model, userAgent: "antigravity", requestType: "agent", project: info.projectId, requestId: `agent-${randomUUID()}`, request: { ...prepared.body, sessionId: `-${Math.floor(Math.random() * 9e18)}` } };
+    const prepared = conversationToGemini(conversation, request);
+    const envelope = { model: request.model, userAgent: "antigravity", requestType: "agent", project: info.projectId, requestId: `agent-${randomUUID()}`, request: { ...prepared.body, sessionId: `-${Math.floor(Math.random() * 9e18)}` } };
     const upstream = await fetch(`${antigravityEndpoints().api}/${ANTIGRAVITY_API_VERSION}:streamGenerateContent?alt=sse`, {
-      method: "POST", headers: apiHeaders(token), body: JSON.stringify(envelope), signal,
+      method: "POST", redirect: "error", headers: apiHeaders(token), body: JSON.stringify(envelope), signal,
     });
     if (!upstream.ok) {
       const text = await upstream.text().catch(() => "");
@@ -208,7 +214,7 @@ export async function sendAntigravity(provider: Provider, token: string | undefi
         : upstream.status === 429 ? "额度不足或请求过于频繁，请稍后重试。" : "请稍后重试。";
       return fail(`Antigravity 返回 HTTP ${upstream.status}；${detail}`, upstream.status >= 400 ? upstream.status : 502);
     }
-    return await geminiToChatResponse(upstream, { stream: chat.stream, model: chat.model, restoreName: prepared.restoreName });
+    return await geminiToChatResponse(upstream, { stream: request.stream, model: request.model, restoreName: prepared.restoreName });
   } catch (error) {
     if (error instanceof GeminiUpstreamError || error instanceof AntigravityError) return fail(error.message, error.status);
     return fail("Antigravity 请求失败，请检查网络或稍后重试。", 502);

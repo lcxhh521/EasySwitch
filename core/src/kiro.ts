@@ -5,8 +5,11 @@ import { randomUUID } from "node:crypto";
 import { decodeEventStream } from "./aws-eventstream.ts";
 import { KiroError, readKiroLogin, type KiroLogin } from "./kiro-login.ts";
 import { kiroToolSchema } from "./kiro-schema.ts";
-import type { ChatMessage, ChatRequest } from "./translate.ts";
+import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
+import { decodeRequest } from "./inbound.ts";
+import type { Conversation, InboundRequest } from "./protocol.ts";
+import { repairConversation, resultText } from "./subscription-input.ts";
 
 /**
  * Kiro (Amazon's coding agent) as a model source. The user's own Kiro CLI login is read from its local
@@ -81,78 +84,69 @@ function aliases(originals: string[]) {
   return { get: (name: string) => forward.get(name) ?? name, restore: (name: string) => reverse.get(name) ?? name };
 }
 
-function textOf(content: ChatMessage["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map(p => (p.type === "text" ? p.text : "")).filter(Boolean).join("\n");
+/** Legacy callers decode their native input once; production receives Conversation directly. */
+export function chatToKiro(chat: ChatRequest, login: KiroLogin): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
+  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
+  return conversationToKiro(decodeRequest(request), request, login);
 }
 
-/** A Chat Completions request as Kiro's conversation state. */
-export function chatToKiro(chat: ChatRequest, login: KiroLogin): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
-  const choice = chat.tool_choice;
-  if (choice !== undefined && choice !== null && choice !== "auto" && choice !== "none") throw new KiroError("Kiro 暂不支持强制指定工具调用。", 400);
-  const specs = choice === "none" ? [] : (chat.tools ?? []).filter(t => t.type === "function").map(t => t.function as Json);
-  const calls = chat.messages.flatMap(m => m.tool_calls ?? []);
-  const names = aliases([...specs.map(t => String(t.name)), ...calls.map(c => c.function.name)]);
-  const ids = aliases([...calls.map(c => c.id), ...chat.messages.filter(m => m.role === "tool").map(m => String(m.tool_call_id ?? ""))]);
-  const tools = specs.map(t => ({ toolSpecification: { name: names.get(String(t.name)), description: String(t.description || t.name).slice(0, 1024), inputSchema: { json: kiroToolSchema(t.parameters) } } }));
+export function conversationToKiro(value: Conversation, request: InboundRequest, login: KiroLogin): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
+  const c = repairConversation(value), choice = c.choice;
+  if (choice && choice !== "auto" && choice !== "none") throw new KiroError("Kiro 暂不支持强制指定工具调用。", 400);
+  const specs = choice === "none" ? [] : c.tools;
+  const calls = c.turns.flatMap(t => t.parts.filter(p => p.type === "call"));
+  const results = c.turns.flatMap(t => t.parts.filter(p => p.type === "result"));
+  const names = aliases([...specs.map(t => t.name), ...calls.map(p => p.name)]);
+  const ids = aliases([...calls.map(p => p.id), ...results.map(p => p.id)]);
+  const tools = specs.map(t => ({ toolSpecification: { name: names.get(t.name), description: (t.description || t.name).slice(0, 1024), inputSchema: { json: kiroToolSchema(t.parameters) } } }));
   const origin = login.builderId || !login.profileArn ? "KIRO_CLI" : "AI_EDITOR";
-  const history: Entry[] = [];
+  const history: Entry[] = [], systems: string[] = [];
   const user = (): UserMessage => {
-    const last = history.at(-1)?.userInputMessage;
-    if (last) return last;
-    const message: UserMessage = { content: "", modelId: chat.model, origin };
-    history.push({ userInputMessage: message });
-    return message;
+    const last = history.at(-1)?.userInputMessage; if (last) return last;
+    const message: UserMessage = { content: "", modelId: request.model, origin };
+    history.push({ userInputMessage: message }); return message;
   };
-  const systems: string[] = [];
-  for (const m of chat.messages) {
-    const text = textOf(m.content);
-    if (m.role === "system") { systems.push(text); continue; }
-    if (m.role === "assistant") {
+  for (const turn of c.turns) {
+    if (turn.role === "system" || turn.role === "developer") {
+      if (turn.parts.some(p => p.type !== "text")) throw new KiroError("Kiro 系统指令只支持文字。", 400);
+      systems.push(turn.parts.map(p => p.type === "text" ? p.text : "").join("\n")); continue;
+    }
+    const text = turn.parts.filter(p => p.type === "text").map(p => p.text).join("\n");
+    if (turn.role === "assistant") {
       if (!history.length) user().content = "Continue.";
       let assistant = history.at(-1)?.assistantResponseMessage;
       if (!assistant) { assistant = { content: "" }; history.push({ assistantResponseMessage: assistant }); }
       assistant.content += (assistant.content && text ? "\n\n" : "") + text;
-      for (const call of m.tool_calls ?? []) {
-        let input: Json;
-        try { input = JSON.parse(call.function.arguments || "{}"); } catch { throw new KiroError("工具调用历史中的参数不是有效 JSON。", 400); }
-        assistant.toolUses = [...(assistant.toolUses ?? []), { name: names.get(call.function.name), input, toolUseId: ids.get(call.id) }];
+      for (const part of turn.parts) {
+        if (part.type === "call") {
+          let input: Json; try { input = JSON.parse(part.arguments || "{}"); } catch { throw new KiroError("工具调用历史中的参数不是有效 JSON。", 400); }
+          assistant.toolUses = [...(assistant.toolUses ?? []), { name: names.get(part.name), input, toolUseId: ids.get(part.id) }];
+        } else if (part.type === "reasoning") c.dropped.push("reasoning:kiro_history");
+        else if (part.type !== "text") throw new KiroError("Kiro assistant 历史含不支持的内容。", 400);
       }
       continue;
     }
-    const message = user();
-    if (m.role === "tool") {
-      const context = message.userInputMessageContext ??= {};
-      context.toolResults = [...(context.toolResults ?? []), { toolUseId: ids.get(String(m.tool_call_id ?? "")), content: [{ text: text || "(empty tool result)" }], status: "success" }];
-      continue;
-    }
-    message.content += (message.content && text ? "\n\n" : "") + text;
-    for (const part of Array.isArray(m.content) ? m.content : []) {
-      if (part.type !== "image_url") continue;
-      const image = /^data:image\/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=\s]+)$/.exec(part.image_url.url);
-      if (!image) throw new KiroError("Kiro 图片需要 PNG/JPEG/GIF/WebP 的 base64 data URL。", 400);
-      message.images = [...(message.images ?? []), { format: image[1]!, source: { bytes: image[2]!.replace(/\s/g, "") } }];
+    const message = user(); message.content += (message.content && text ? "\n\n" : "") + text;
+    for (const part of turn.parts) {
+      if (part.type === "result") {
+        const context = message.userInputMessageContext ??= {};
+        context.toolResults = [...(context.toolResults ?? []), { toolUseId: ids.get(part.id), content: [{ text: resultText(part.content) || "(empty tool result)" }], status: part.error ? "error" : "success" }];
+      } else if (part.type === "image") {
+        const image = /^data:image\/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=\s]+)$/.exec(part.url);
+        if (!image) throw new KiroError("Kiro 图片需要 PNG/JPEG/GIF/WebP 的 base64 data URL。", 400);
+        message.images = [...(message.images ?? []), { format: image[1]!, source: { bytes: image[2]!.replace(/\s/g, "") } }];
+      } else if (part.type !== "text") throw new KiroError("Kiro user 历史含不支持的内容。", 400);
     }
   }
-  const current = user();
-  if (tools.length) (current.userInputMessageContext ??= {}).tools = tools;
+  const current = user(); if (tools.length) (current.userInputMessageContext ??= {}).tools = tools;
   for (const entry of history) if (entry.userInputMessage && !entry.userInputMessage.content) entry.userInputMessage.content = "Continue.";
-  const first = history[0]!.userInputMessage!;
-  if (systems.length) first.content = systems.join("\n\n") + "\n\n" + first.content;
+  if (systems.length) history[0]!.userInputMessage!.content = systems.join("\n\n") + "\n\n" + history[0]!.userInputMessage!.content;
   history.pop();
-  const dropped = (["max_tokens", "temperature", "top_p", "parallel_tool_calls"] as const).filter(name => chat[name] !== undefined);
-  return {
-    restoreName: names.restore, dropped,
-    body: {
-      conversationState: {
-        chatTriggerType: "MANUAL", conversationId: randomUUID(),
-        ...(origin === "KIRO_CLI" ? { agentContinuationId: randomUUID(), agentTaskType: "vibe" } : {}),
-        currentMessage: { userInputMessage: current }, ...(history.length ? { history } : {}),
-      },
-      ...(login.profileArn ? { profileArn: login.profileArn } : {}),
-    },
-  };
+  for (const [name, v] of [["max_tokens", c.maxTokens], ["temperature", c.temperature], ["top_p", c.topP], ["parallel_tool_calls", c.parallelTools], ["stop", c.stop], ["response_format", c.format], ["effort:kiro", c.effort]] as const) if (v !== undefined) c.dropped.push(name);
+  return { restoreName: names.restore, dropped: c.dropped, body: {
+    conversationState: { chatTriggerType: "MANUAL", conversationId: randomUUID(), ...(origin === "KIRO_CLI" ? { agentContinuationId: randomUUID(), agentTaskType: "vibe" } : {}), currentMessage: { userInputMessage: current }, ...(history.length ? { history } : {}) },
+    ...(login.profileArn ? { profileArn: login.profileArn } : {}),
+  } };
 }
 
 interface Usage { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tokens_details?: { cached_tokens: number } }
@@ -251,13 +245,17 @@ export function kiroToChatResponse(upstream: Response, opts: { stream: boolean; 
 
 /** One Chat request to Kiro. Failures come back as a Response with the status and a plain reason. */
 export async function sendKiro(provider: Provider, chat: ChatRequest, signal: AbortSignal): Promise<Response> {
+  const request: InboundRequest = { protocol: "chat", body: chat, model: chat.model, stream: chat.stream };
+  return sendKiroConversation(provider, decodeRequest(request), request, signal);
+}
+export async function sendKiroConversation(provider: Provider, conversation: Conversation, request: InboundRequest, signal: AbortSignal): Promise<Response> {
   const fail = (error: unknown) => {
     const e = error instanceof KiroError ? error : new KiroError("Kiro 请求失败，请检查网络或稍后重试。");
     return Response.json({ error: { type: "kiro_error", message: e.message } }, { status: e.status });
   };
   try {
     const login = await readKiroLogin(provider.kiro?.loginPath);
-    const prepared = chatToKiro(chat, login);
+    const prepared = conversationToKiro(conversation, request, login);
     const cli = login.builderId || !login.profileArn;
     const platform = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
     const ua = "aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/" + platform + " lang/rust/1.92.0 m/F app/AmazonQ-For-CLI";
@@ -273,7 +271,7 @@ export async function sendKiro(provider: Provider, chat: ChatRequest, signal: Ab
       body: JSON.stringify(prepared.body),
     });
     if (!upstream.ok) { await upstream.body?.cancel(); throw upstreamError(upstream.status); }
-    return await kiroToChatResponse(upstream, { stream: chat.stream, model: chat.model, restoreName: prepared.restoreName });
+    return await kiroToChatResponse(upstream, { stream: request.stream, model: request.model, restoreName: prepared.restoreName });
   } catch (error) {
     return fail(error);
   }

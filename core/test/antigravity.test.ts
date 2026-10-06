@@ -169,7 +169,7 @@ test("signing in with Google makes a source that starts switched off, keeps the 
   // PKCE and the client were checked by the fake Google; the refresh token is in the secret store and nowhere else.
   assert.equal(google.tokenCalls[0]!.grant_type, "authorization_code");
   assert.equal(await secrets.get(`antigravity:${accountId}`), "1//fake-refresh");
-  const files = readdirSync(join(dir, "store")).map(f => readFileSync(join(dir, "store", f), "utf8")).join("\n");
+  const files = readdirSync(join(dir, "store"), { recursive: true, withFileTypes: true }).filter(f => f.isFile()).map(f => readFileSync(join(f.parentPath, f.name), "utf8")).join("\n");
   assert.ok(!files.includes("1//fake-refresh") && !files.includes("ya29."), "no token on disk");
   const shown = (await (await api("GET", "/api/plan")).text()) + (await (await api("GET", "/api/state")).text());
   assert.ok(!shown.includes("1//fake-refresh") && !shown.includes("ya29."), "no token in anything the console is shown");

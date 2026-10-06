@@ -149,7 +149,7 @@ test("signing in makes a source that starts switched off, keeps the refresh toke
   assert.equal(await secrets.get(`cursor:${accountId}`), "refresh-1");
   assert.equal(fake.modelCalls.at(-1)!.bodyLength, 0, "the model list is asked for with an empty body");
   assert.equal(fake.modelCalls.at(-1)!.contentType, "application/proto");
-  const files = readdirSync(join(dir, "store")).map(f => readFileSync(join(dir, "store", f), "utf8")).join("\n");
+  const files = readdirSync(join(dir, "store"), { recursive: true, withFileTypes: true }).filter(f => f.isFile()).map(f => readFileSync(join(f.parentPath, f.name), "utf8")).join("\n");
   assert.ok(!files.includes("refresh-1") && !files.includes(".sig"), "no token on disk");
   const shown = (await (await api("GET", "/api/plan")).text()) + (await (await api("GET", "/api/state")).text());
   assert.ok(!shown.includes("refresh-1") && !shown.includes(".sig"), "no token in anything the console is shown");

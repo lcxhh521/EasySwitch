@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage, ChatRequest } from "./translate.ts";
+import { packState, type Conversation, type InboundRequest } from "./protocol.ts";
+import { encodeRequest } from "./outbound-format.ts";
+import { repairConversation } from "./subscription-input.ts";
+import { applyGeminiThinking } from "./vertex-gemini.ts";
 
 /**
  * A Chat Completions request as a Gemini `GenerateContent` body, and Gemini's event stream as Chat chunks.
@@ -57,6 +61,45 @@ function nameAliases(originals: string[]) {
     forward.set(original, wire); reverse.set(wire, original);
   }
   return { get: (n: string) => forward.get(n) ?? n, restore: (n: string) => reverse.get(n) ?? n };
+}
+
+/** Antigravity's native Gemini envelope is built directly from neutral content. */
+export function conversationToGemini(value: Conversation, request: InboundRequest): { body: Json; restoreName: (name: string) => string; dropped: string[] } {
+  const c = repairConversation(value);
+  // Raw native Gemini signatures are already in their original protocol; cross-protocol
+  // signatures still require the source/model-bound continuation wrapper.
+  if (request.protocol === "gemini") for (const t of c.turns) for (const p of t.parts) if (p.type === "reasoning" && p.protocol === "gemini") {
+    if (p.signature && !p.signature.startsWith("es-state:")) p.signature = packState(request.source ?? "", request.model, { protocol: "gemini", signature: p.signature, text: p.text });
+    if (p.encrypted && !p.encrypted.startsWith("es-state:")) p.encrypted = packState(request.source ?? "", request.model, { protocol: "gemini", encrypted: p.encrypted, text: p.text });
+  }
+  const originals = [...c.tools.map(t => t.name), ...c.turns.flatMap(t => t.parts.filter(p => p.type === "call").map(p => p.name))];
+  const names = nameAliases(originals);
+  if (c.choice === "none") c.tools = [];
+  const body = encodeRequest(c, request, "gemini");
+  if (request.protocol === "gemini") body.generationConfig = { ...structuredClone(request.body.generationConfig ?? {}), ...body.generationConfig };
+  // The dedicated Cloud Code Assist envelope accepts the older OpenAPI schema subset.
+  if (body.tools) body.tools = [{ functionDeclarations: c.tools.map(t => ({ name: names.get(t.name), description: (t.description || t.name).slice(0, 1024), parameters: geminiSchema(t.parameters) })) }];
+  const config = body.toolConfig?.functionCallingConfig;
+  if (config?.allowedFunctionNames) config.allowedFunctionNames = config.allowedFunctionNames.map((n: string) => names.get(n));
+  const contents: Json[] = [];
+  for (const turn of body.contents) {
+    let firstCall = true;
+    for (const part of turn.parts) {
+      if (part.functionCall) {
+        part.functionCall.name = names.get(part.functionCall.name);
+        if (/^gemini[-.\d]/i.test(request.model) && firstCall && !part.thoughtSignature) part.thoughtSignature = THOUGHT_SIGNATURE_BYPASS;
+        firstCall = false;
+      }
+      if (part.functionResponse?.name) part.functionResponse.name = names.get(part.functionResponse.name);
+    }
+    const last = contents.at(-1);
+    if (last && last.role === turn.role) last.parts.push(...turn.parts); else contents.push(turn);
+  }
+  if (contents[0]?.role === "model") contents.unshift({ role: "user", parts: [{ text: "Continue." }] });
+  body.contents = contents;
+  if (c.parallelTools !== undefined) c.dropped.push("parallel_tool_calls");
+  applyGeminiThinking(body, request.model, request.effort ?? (request.protocol === "gemini" ? undefined : c.effort), c.dropped);
+  return { body, restoreName: names.restore, dropped: c.dropped };
 }
 
 function textOf(content: ChatMessage["content"]): string {

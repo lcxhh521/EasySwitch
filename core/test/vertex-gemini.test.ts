@@ -140,3 +140,152 @@ test("mixed Vertex auth configurations fail before any other provider credential
   await assert.rejects(pickKey(secrets, { ...provider(), vertex: {} } as Provider));
   assert.equal(reads, 0);
 });
+
+/** Inspect the actual egress body with fake credentials and an injected, non-network transport. */
+async function thinkingRequest(model: string, effort?: string, input = request()) {
+  input = { ...input, model, effort };
+  const original = structuredClone(input);
+  let body: Record<string, any> | undefined;
+  const prepared = prepareVertex(provider(), input, async (_url, init) => {
+    body = JSON.parse(String(init?.body));
+    return Response.json({});
+  });
+  assert.ok(await prepared.send("fake-token", new AbortController().signal) instanceof Response);
+  assert.ok(body);
+  assert.deepEqual(input, original, "thinking normalization never mutates the caller's request");
+  return { body, dropped: prepared.dropped };
+}
+
+test("Vertex Gemini 2.5 maps saved levels to bounded token budgets for every inbound protocol", async () => {
+  for (const protocol of ["chat", "responses", "messages", "gemini"] as const) {
+    for (const [model, maximum] of [["gemini-2.5-pro", 32768], ["gemini-2.5-flash", 24576], ["gemini-2.5-flash-lite", 24576]] as const) {
+      for (const [effort, budget] of [["low", 1024], ["medium", 8192], ["high", maximum]] as const) {
+        const { body, dropped } = await thinkingRequest(model, effort, request(protocol));
+        assert.deepEqual(body.generationConfig.thinkingConfig, { thinkingBudget: budget });
+        assert.deepEqual(dropped, []);
+      }
+    }
+  }
+  for (const model of ["gemini-2.5-flash", "gemini-2.5-flash-lite"]) {
+    for (const effort of ["none", "off"]) assert.deepEqual((await thinkingRequest(model, effort)).body.generationConfig.thinkingConfig, { thinkingBudget: 0 });
+  }
+  assert.deepEqual((await thinkingRequest("gemini-2.5-pro-preview-05-06[1m]", "high")).body.generationConfig.thinkingConfig, { thinkingBudget: 32768 });
+});
+
+test("Vertex translates agent-supplied effort through the destination Gemini generation", async () => {
+  for (const protocol of ["chat", "responses", "messages"] as const) {
+    const input = request(protocol);
+    if (protocol === "chat") input.body.reasoning_effort = "medium";
+    else if (protocol === "responses") input.body.reasoning = { effort: "medium" };
+    else input.body.output_config = { effort: "medium" };
+    assert.deepEqual((await thinkingRequest("gemini-2.5-flash", undefined, input)).body.generationConfig.thinkingConfig, { thinkingBudget: 8192 });
+    assert.deepEqual((await thinkingRequest("gemini-3-flash-preview", undefined, input)).body.generationConfig.thinkingConfig, { thinkingLevel: "MEDIUM" });
+    const unknown = structuredClone(input);
+    if (protocol === "chat") unknown.body.reasoning_effort = "ultra";
+    else if (protocol === "responses") unknown.body.reasoning.effort = "ultra";
+    else unknown.body.output_config.effort = "ultra";
+    const { body, dropped } = await thinkingRequest("gemini-3-flash-preview", undefined, unknown);
+    assert.equal(body.generationConfig?.thinkingConfig, undefined);
+    assert.ok(dropped.includes("effort:unsupported_gemini"));
+  }
+});
+
+test("Vertex Gemini 3 forwards only each documented model's thinking levels", async () => {
+  for (const [model, levels] of [
+    ["gemini-3-pro-preview", ["low", "high"]],
+    ["gemini-3.1-pro-preview", ["low", "medium", "high"]],
+    ["gemini-3-flash-preview", ["minimal", "low", "medium", "high"]],
+    ["gemini-3.5-flash", ["minimal", "low", "medium", "high"]],
+    ["gemini-3.5-flash-lite", ["minimal", "low", "medium", "high"]],
+    ["gemini-3.8-flash", ["low", "medium", "high"]],
+    ["gemini-3-pro-image-preview", ["high"]],
+    ["gemini-3.1-flash-image-preview", ["minimal", "high"]],
+  ] as const) {
+    for (const effort of levels) {
+      const { body, dropped } = await thinkingRequest(model, effort);
+      assert.deepEqual(body.generationConfig.thinkingConfig, { thinkingLevel: effort.toUpperCase() });
+      assert.deepEqual(dropped, []);
+    }
+  }
+});
+
+test("Vertex omits and reports unsupported levels or unrecognized model generations", async () => {
+  for (const [model, effort] of [
+    ["gemini-2.5-pro", "none"], ["gemini-2.5-pro", "off"], ["gemini-2.5-flash", "xhigh"],
+    ["gemini-3-pro-preview", "medium"], ["gemini-3-pro-preview", "minimal"],
+    ["gemini-3.8-flash", "minimal"], ["gemini-3.5-flash", "off"], ["gemini-3.5-flash", "ultra"],
+    ["gemini-3-pro-image-preview", "low"], ["gemini-3.1-flash-image-preview", "medium"],
+    ["gemini-2.0-flash", "high"], ["gemini-4-pro", "high"], ["gemini-3.7-flash-cyber", "high"],
+    ["gemini-2.5-flash-image", "high"], ["gemini-3.5-flash-unrecognized", "high"],
+  ]) {
+    const { body, dropped } = await thinkingRequest(model!, effort);
+    assert.equal(body.generationConfig?.thinkingConfig, undefined, `${model}: ${effort}`);
+    assert.ok(dropped.includes("effort:unsupported_gemini"));
+  }
+});
+
+test("Vertex preserves valid native thinking budgets and unrelated generation fields without a saved override", async () => {
+  for (const [model, budgets] of [
+    ["gemini-2.5-pro", [-1, 128, 2048, 32768]],
+    ["gemini-2.5-flash", [-1, 0, 1, 24576]],
+    ["gemini-2.5-flash-lite", [-1, 0, 512, 24576]],
+  ] as const) {
+    for (const thinkingBudget of budgets) {
+      const input = request();
+      input.body.generationConfig = { temperature: 0.6, maxOutputTokens: 40000, responseMimeType: "application/json", thinkingConfig: { thinkingBudget, includeThoughts: true } };
+      const { body, dropped } = await thinkingRequest(model, undefined, input);
+      assert.deepEqual(body.generationConfig, input.body.generationConfig);
+      assert.deepEqual(dropped, []);
+      const stale = await thinkingRequest(model, "ultra", input);
+      assert.deepEqual(stale.body.generationConfig, input.body.generationConfig);
+      assert.ok(stale.dropped.includes("effort:unsupported_gemini"));
+    }
+  }
+  const input = request();
+  input.body.generationConfig = { temperature: 0.7, thinkingConfig: { thinkingLevel: "MINIMAL", includeThoughts: false } };
+  assert.deepEqual((await thinkingRequest("gemini-3-flash-preview", undefined, input)).body.generationConfig, input.body.generationConfig);
+  assert.deepEqual((await thinkingRequest("gemini-3-flash-preview", "high", input)).body.generationConfig, { temperature: 0.7, thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: false } });
+});
+
+test("Vertex saved effort overrides native controls without mixing thinkingBudget and thinkingLevel", async () => {
+  const input = request();
+  input.body.generationConfig = { topP: 0.9, thinkingConfig: { thinkingBudget: 2048, thinkingLevel: "LOW", includeThoughts: true } };
+  for (const [model, expected] of [["gemini-2.5-pro", { thinkingBudget: 8192 }], ["gemini-3.5-flash", { thinkingLevel: "MEDIUM" }]] as const) {
+    const { body } = await thinkingRequest(model, "medium", input);
+    assert.deepEqual(body.generationConfig, { topP: 0.9, thinkingConfig: { ...expected, includeThoughts: true } });
+  }
+  const nativeBudget = await thinkingRequest("gemini-2.5-pro", undefined, input);
+  assert.deepEqual(nativeBudget.body.generationConfig.thinkingConfig, { thinkingBudget: 2048, includeThoughts: true });
+  assert.ok(nativeBudget.dropped.includes("field:generationConfig.thinkingConfig.thinkingLevel"));
+  const nativeLevel = await thinkingRequest("gemini-3.5-flash", undefined, input);
+  assert.deepEqual(nativeLevel.body.generationConfig.thinkingConfig, { thinkingLevel: "LOW", includeThoughts: true });
+  assert.ok(nativeLevel.dropped.includes("field:generationConfig.thinkingConfig.thinkingBudget"));
+});
+
+test("Vertex remaps native level-only Gemini 2.5 requests and omits invalid native controls", async () => {
+  const input = request();
+  input.body.generationConfig = { thinkingConfig: { thinkingLevel: "HIGH", includeThoughts: true } };
+  assert.deepEqual((await thinkingRequest("gemini-2.5-flash", undefined, input)).body.generationConfig.thinkingConfig, { thinkingBudget: 24576, includeThoughts: true });
+  for (const [model, config, omitted] of [
+    ["gemini-2.5-pro", { thinkingBudget: 0 }, "thinkingBudget"],
+    ["gemini-2.5-flash-lite", { thinkingBudget: 1 }, "thinkingBudget"],
+    ["gemini-2.5-flash", { thinkingBudget: 24577 }, "thinkingBudget"],
+    ["gemini-2.5-pro", { thinkingBudget: -2 }, "thinkingBudget"],
+    ["gemini-2.5-pro", { thinkingBudget: 128.5 }, "thinkingBudget"],
+    ["gemini-2.5-pro", { thinkingBudget: "2048" }, "thinkingBudget"],
+    ["gemini-2.5-flash", { thinkingLevel: "ULTRA" }, "thinkingLevel"],
+    ["gemini-3-pro-preview", { thinkingLevel: "MEDIUM" }, "thinkingLevel"],
+    ["gemini-3.5-flash", { thinkingBudget: -1 }, "thinkingBudget"],
+    ["gemini-4-pro", { thinkingLevel: "HIGH" }, "thinkingLevel"],
+  ] as const) {
+    input.body.generationConfig = { temperature: 0.5, thinkingConfig: { ...config, includeThoughts: true } };
+    const { body, dropped } = await thinkingRequest(model, undefined, input);
+    assert.deepEqual(body.generationConfig, { temperature: 0.5, thinkingConfig: { includeThoughts: true } });
+    assert.ok(dropped.includes(`field:generationConfig.thinkingConfig.${omitted}`));
+  }
+  for (const model of ["gemini-2.5-pro", "gemini-3.5-flash"]) {
+    const { body, dropped } = await thinkingRequest(model);
+    assert.equal(body.generationConfig?.thinkingConfig, undefined);
+    assert.deepEqual(dropped, []);
+  }
+});
