@@ -502,19 +502,22 @@ function renderTasks() {
     <div class="row" style="cursor:pointer" data-task-toggle="${esc(t.id)}">
       <div class="grow"><div class="title">${esc(t.task.length > 80 ? t.task.slice(0, 80) + "…" : t.task)}</div>
         <div class="sub">${t.from === "console" ? "你" : esc(nameOf(t.from))} → ${esc(nameOf(t.agent))} · ${esc(t.model)} · ${new Date(t.at).toLocaleTimeString()}${t.ms ? ` · ${(t.ms / 1000).toFixed(1)} 秒` : ""}</div>
-        ${t.why ? `<div class="sub" title="${esc(t.why)}">${esc(t.why)}</div>` : ""}</div>
+        ${t.why ? `<div class="sub" title="${esc(t.why)}">${esc(t.why)}</div>` : ""}${t.usage ? `<div class="hint">${t.usage.unknownCost ? "费用未知或尚未完整归集" : `任务及子任务估算费用：${esc(money(t.usage.costUsd ?? 0))}`}</div>` : ""}</div>
       <span class="chip ${tone}">${label}</span>
       ${t.status === "running" ? `<button class="btn secondary" data-task-stop="${esc(t.id)}">停止</button>` : ""}
     </div>
+    ${typeof taskFeedbackControls === "function" ? taskFeedbackControls(t) : ""}
     ${open ? `<div style="padding:0 18px 14px">${t.status === "running" ? `<p class="hint">正在做，做完会出现在这里。</p>` : `<pre class="mono" style="white-space:pre-wrap;max-height:360px;overflow:auto;background:var(--pill);padding:10px;border-radius:9px">${esc(t.output || "(没有输出)")}</pre>`}</div>` : ""}`;
   };
   return `
     <div class="section-head"><h2>交给 Agent 一个任务</h2><span class="aside">它在后台做，你和其他 agent 都能看到进度</span></div>
+    ${typeof taskAccountingNotice === "function" ? taskAccountingNotice() : ""}
     ${form}
     ${typeof parallelCard === "function" ? parallelCard() : ""}
     <div class="section-head"><h2>任务</h2><span class="aside">${list.length ? `${list.length} 条${taskList.running ? `，${taskList.running} 条在运行` : ""}` : ""} ${list.some(t => t.status !== "running") ? `<button class="btn secondary" data-task-clear>清空已完成</button>` : ""}</span></div>
     <div class="card">${list.map(row).join("") || `<div class="empty">还没有任务。你在这里派的、以及 agent 之间互相派的，都会记在这里。</div>`}</div>
     <p class="hint">普通后台任务使用各程序自己的权限设置，不能把它当作已验证的只读沙箱；受限并行功能的开放范围另见上方说明。</p>
+    ${typeof ruleSuggestionsCard === "function" ? ruleSuggestionsCard() : ""}
     ${rulesCard(agents, models)}`;
 }
 
@@ -526,6 +529,7 @@ function rulesCard(agents, models) {
     <div class="row">
       <div class="grow"><div class="title">${esc(r.name)} ${r.enabled ? "" : `<span class="chip">已停用</span>`}</div>
         <div class="sub">${esc(r.summary)} → ${esc(nameOf(r.then.agent))}${r.then.model ? ` · ${esc(r.then.model)}` : ""}${r.then.effort ? ` · ${esc(EFFORT_LABEL[r.then.effort] ?? r.then.effort)}档` : ""}</div></div>
+      <button class="btn secondary" data-rule-edit="${esc(r.id)}">编辑</button>
       <button class="btn secondary" data-rule-move="up" data-rule="${esc(r.id)}" ${i === 0 ? "disabled" : ""} title="提前：前面的规则先匹配">↑</button>
       <button class="btn secondary" data-rule-move="down" data-rule="${esc(r.id)}" ${i === rules.length - 1 ? "disabled" : ""} title="靠后">↓</button>
       <button class="btn secondary" data-rule-toggle="${esc(r.id)}">${r.enabled ? "停用" : "启用"}</button>
@@ -1376,7 +1380,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1387,6 +1391,7 @@ function syncTaskForm() {
   taskForm.cwd = f.elements.cwd?.value ?? "";
 }
 document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
+for(const name of ["input","change"])document.addEventListener(name,e=>{const form=e.target.closest?.("form[data-rule-form]");if(!form||!ruleForm||ruleForm.saving)return;const f=new FormData(form);for(const key of ["name","words","minChars","maxChars","cwdPrefix","agent","model","effort"])ruleForm[key]=String(f.get(key)??"");});
 document.addEventListener("change", async e => {
   const desktopModel = e.target.closest?.("[data-claude-desktop-model]");
   if (desktopModel) { claudeDesktopModel = desktopModel.value; claudeDesktopConfirm = false; claudeDesktopError = ""; render(); return; }
@@ -1419,6 +1424,7 @@ async function refresh(force = false) {
     taskList = await call("GET", "/api/tasks").catch(() => taskList);
     if(typeof loadParallel === "function"&&!parallelBusy)await loadParallel();
     if (!agentList) agentList = await loadAgents();
+    if(typeof loadSuggestions === "function"&&!suggestionSaving)await loadSuggestions();
   }
   if (page === "agents" && !PANEL && !agentList) {
     agentList = await loadAgents();
@@ -1568,7 +1574,9 @@ document.addEventListener("click", async e => {
     render();
     return;
   }
-  if (t.closest("[data-rule-cancel]")) { ruleForm = null; render(); return; }
+  const editRule=t.closest("[data-rule-edit]");
+  if(editRule){const r=(state.rules??[]).find(r=>r.id===editRule.dataset.ruleEdit);if(r){ruleForm={id:r.id,enabled:r.enabled,originalWhen:r.when,name:r.name,words:(r.when.anyWords??[]).join("、"),minChars:r.when.minChars??"",maxChars:r.when.maxChars??"",cwdPrefix:r.when.cwdPrefix??"",agent:r.then.agent,model:r.then.model??"",effort:r.then.effort??""};render();}return;}
+  if (t.closest("[data-rule-cancel]")) { if(ruleForm?.saving)return;ruleForm = null; render(); return; }
   const ruleMove = t.closest("[data-rule-move]");
   if (ruleMove) { await call("POST", `/api/rules/${ruleMove.dataset.rule}/move`, { direction: ruleMove.dataset.ruleMove }).catch(error => showError(error)); await refresh(true); return; }
   const ruleToggle = t.closest("[data-rule-toggle]");
@@ -2016,18 +2024,20 @@ document.addEventListener("submit", async e => {
   const ruleFormEl = e.target.closest("form[data-rule-form]");
   if (ruleFormEl) {
     e.preventDefault();
+    if(ruleForm?.saving)return;
+    const previous={...ruleForm};if(ruleForm)ruleForm.saving=true;
     const f = new FormData(ruleFormEl);
     const body = {
-      name: f.get("name"),
-      when: { anyWords: f.get("words"), minChars: f.get("minChars"), maxChars: f.get("maxChars"), cwdPrefix: f.get("cwdPrefix") },
+      name: f.get("name"), enabled: previous.enabled ?? true,
+      when: { ...previous.originalWhen, anyWords: f.get("words"), minChars: f.get("minChars"), maxChars: f.get("maxChars"), cwdPrefix: f.get("cwdPrefix") },
       then: { agent: f.get("agent"), model: f.get("model"), effort: f.get("effort") },
     };
     try {
-      await call("POST", "/api/rules", body);
+      await call(previous.id ? "PUT" : "POST", previous.id ? `/api/rules/${encodeURIComponent(previous.id)}` : "/api/rules", body);
       ruleForm = null;
       toast("规则已保存");
     } catch (error) {
-      ruleForm = { name: String(f.get("name")), words: String(f.get("words")), minChars: String(f.get("minChars")), maxChars: String(f.get("maxChars")), cwdPrefix: String(f.get("cwdPrefix")), agent: String(f.get("agent")), model: String(f.get("model")), effort: String(f.get("effort")), error: userErrorMessage(error) };
+      ruleForm = { ...previous, saving:false, name: String(f.get("name")), words: String(f.get("words")), minChars: String(f.get("minChars")), maxChars: String(f.get("maxChars")), cwdPrefix: String(f.get("cwdPrefix")), agent: String(f.get("agent")), model: String(f.get("model")), effort: String(f.get("effort")), error: userErrorMessage(error) };
     }
     await refresh(true);
     return;

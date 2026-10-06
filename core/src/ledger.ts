@@ -393,7 +393,7 @@ function addBudgetEntry(summary: LedgerBudgetSummary, entry: GatewayLogEntry): v
     total.calls++;
     if (entry.costNote === "subscription") { total.subscriptionCalls++; continue; }
     const priced = entry.costUsd !== undefined && entry.costNote !== "unpriced";
-    const metered = entry.inputTokens !== undefined && entry.outputTokens !== undefined;
+    const metered = entry.inputTokens !== undefined && entry.outputTokens !== undefined && entry.usageComplete !== false;
     if (priced) total.estimatedCostUsd += entry.costUsd!;
     else total.unpricedCalls++;
     if (!metered) total.unmeteredCalls++;

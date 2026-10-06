@@ -10,7 +10,7 @@ import { Downstream } from "./downstream.ts";
 import { ProtocolError, type InboundRequest, type Json, type Usage } from "./protocol.ts";
 import { reasoningMemory, upstreamModelId } from "./quirks.ts";
 import { sseData } from "./upstream.ts";
-import { usageOf } from "./upstream-events.ts";
+import { OutputUsageTracker } from "./upstream-events.ts";
 import type { ApiProtocol, GatewayLogEntry } from "./types.ts";
 
 /** Only response metadata intended for clients. Never forward cookies or hop-by-hop headers. */
@@ -40,32 +40,25 @@ export function parseRequest(res: ServerResponse, protocol: ApiProtocol, raw: st
 
 /** Observe native replies without translating or filtering their payloads. */
 async function observe(response: Response, protocol: ApiProtocol, onUsage?: (usage: Usage) => void): Promise<{ usage?: Usage; failed?: boolean }> {
-  let usage: Usage | undefined; let failed = false; let messageUsage: Json = {};
+  const streaming = response.headers.get("content-type")?.includes("text/event-stream") ?? false;
+  const meter = new OutputUsageTracker(protocol, streaming);
   const ids: string[] = []; let reasoning = "";
   const take = (j: Json) => {
-    if (j.error || j.type === "error" || j.type === "response.failed") failed = true;
-    if (protocol === "messages") {
-      if (j.type === "message_start") { messageUsage = j.message?.usage ?? {}; usage = usageOf(protocol, messageUsage); }
-      if (j.usage) { messageUsage = { ...messageUsage, ...j.usage }; usage = usageOf(protocol, messageUsage); }
-    } else {
-      const raw = protocol === "gemini" ? j.usageMetadata : j.usage ?? j.response?.usage;
-      if (raw) usage = usageOf(protocol, raw);
-    }
-    if (usage) onUsage?.(usage);
+    const usage = meter.take(j); if (usage) onUsage?.(usage);
     if (protocol === "chat") {
       const m = j.choices?.[0]?.delta ?? j.choices?.[0]?.message ?? {};
       reasoning += m.reasoning_content ?? m.reasoning ?? "";
       for (const c of m.tool_calls ?? []) if (c.id) ids.push(c.id);
     }
   };
-  if (response.headers.get("content-type")?.includes("text/event-stream")) {
+  if (streaming) {
     for await (const data of sseData(response.body!)) {
-      if (data === "[DONE]") break;
-      try { take(JSON.parse(data)); } catch { /* An observation must never change the native reply. */ }
+      if (data === "[DONE]") { meter.done(); break; }
+      try { take(JSON.parse(data)); } catch { meter.invalidate(); /* Observation never changes native bytes. */ }
     }
   } else take(await response.json() as Json);
   reasoningMemory.remember(ids, reasoning);
-  return { usage, failed };
+  return { usage: meter.finish(), failed: meter.failed };
 }
 
 /** Routing is independent of the caller's protocol. Only source adapters own upstream I/O. */
@@ -75,12 +68,12 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
   const resolved = resolveModel(deps.store, input.model);
   if (!resolved) { gatewayError(res, input.protocol, 404, noModelMessage(deps.store, input.model), "model_not_found"); return; }
   const { provider, model } = resolved;
-  let prepared: PreparedOutbound | undefined; let keyId: string | undefined; let usage: Usage | undefined;
+  let prepared: PreparedOutbound | undefined; let keyId: string | undefined; let usage: Usage | undefined; let usageComplete = false;
   const finish = (status: number, note?: string) => deps.log({
     at: new Date().toISOString(), model: input.model, providerId: provider.id, harness,
     route: prepared?.protocol === "responses" ? "responses-native" : prepared?.protocol === "messages" ? "anthropic-native" : "chat-translate",
     inboundProtocol: input.protocol, outboundProtocol: prepared?.protocol, adapter: prepared?.adapter,
-    status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...(keyId ? { keyId } : {}),
+    usageComplete, status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...(keyId ? { keyId } : {}),
     ...(prepared?.dropped.length ? { dropped: [...new Set(prepared.dropped)] } : {}),
     ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
   } satisfies GatewayLogEntry);
@@ -99,6 +92,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
       ? { response: await prepared.send(undefined, abort.signal), keyId: undefined }
       : await withKey(deps.store, deps.secrets, provider, key => prepared!.send(key, abort.signal));
     keyId = sent.keyId;
+    const unobservedRetry = ("hadRetry" in sent && sent.hadRetry === true) || prepared.dropped.includes("max_tokens:upstream_limit");
     const upstream = sent.response;
     if (upstream instanceof Error) throw new ProtocolError("上游连接失败，请检查来源地址和网络。", 502);
     if (prepared.passthrough) {
@@ -112,7 +106,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
       source.once("error", () => { if (!abort.signal.aborted) upstreamFailed = true; });
       await pipeline(source, res);
       const tap = await observed as { usage?: Usage; failed?: boolean };
-      usage = tap.usage; finish(upstream.ok && tap.failed ? 502 : upstream.status, tap.failed ? "upstream error" : undefined); return;
+      usage = tap.usage ?? usage; usageComplete = upstream.ok && tap.usage?.complete === true && !tap.failed && !unobservedRetry; finish(upstream.ok && tap.failed ? 502 : upstream.status, tap.failed ? "upstream error" : undefined); return;
     }
     if (!upstream.ok || !upstream.body) {
       const status = upstream.ok ? 502 : upstream.status;
@@ -131,8 +125,10 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     reasoningMemory.remember(downstream.items.filter(i => i.kind === "call").map(i => i.callId!), downstream.items.filter(i => i.kind === "reasoning").map(i => i.text).join(""));
     if (input.stream) downstream.finish();
     else { const result = downstream.result(); res.writeHead(200, { "content-type": "application/json" }); res.write(JSON.stringify(result)); }
+    usageComplete = usage?.complete === true && !unobservedRetry;
     res.end(); finish(200);
   } catch (error) {
+    usageComplete = false;
     usage = downstream?.usage ?? usage;
     const status = error instanceof ProtocolError ? error.status : 502;
     const message = error instanceof ProtocolError ? error.message : "上游响应无法完成，请检查来源或重试。";

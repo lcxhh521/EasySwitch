@@ -80,3 +80,20 @@ test("markResult clears the rest flag when a key works again", async () => {
   assert.equal(key.lastError, undefined);
   assert.ok(!isKeyFailure(500) && isKeyFailure(401) && isKeyFailure(403) && isKeyFailure(429));
 });
+
+
+test("retry metadata is present only after an actual second run, without changing key selection", async () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "es-keypool-metadata-"))), secrets = createSecretStore();
+  const p = { ...provider([{ id: "a" }, { id: "b" }]), id: "retry-metadata" }; store.upsertProvider(p);
+  await secrets.set("retry-metadata#a", "first"); await secrets.set("retry-metadata#b", "second");
+  let calls = 0;
+  const retried = await withKey(store, secrets, p, async () => new Response("", { status: ++calls === 1 ? 429 : 200 }));
+  assert.equal(calls, 2); assert.equal(retried.hadRetry, true);
+  calls = 0;
+  const success = await withKey(store, secrets, p, async () => { calls++; return new Response("", { status: 200 }); });
+  assert.equal(calls, 1); assert.notEqual(success.hadRetry, true);
+  const one = { ...provider([{ id: "only" }]), id: "one-key-metadata" }; store.upsertProvider(one); await secrets.set("one-key-metadata#only", "fake");
+  calls = 0;
+  const exhausted = await withKey(store, secrets, one, async () => { calls++; return new Response("", { status: 429 }); });
+  assert.equal(calls, 1); assert.notEqual(exhausted.hadRetry, true);
+});

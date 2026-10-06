@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rena
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Ledger } from "../src/ledger.ts";
+import { Ledger, summarizeBudgetEntries } from "../src/ledger.ts";
 import { BudgetController, DEFAULT_BUDGET } from "../src/global-budget.ts";
 import { ProviderBudgetController } from "../src/budget.ts";
 import type { GatewayLogEntry } from "../src/types.ts";
@@ -19,6 +19,23 @@ function fixture(t: { after(fn: () => void): void }) {
   const ledger = new Ledger(dir);
   return { dir, ledger, file: join(dir, "usage.jsonl"), summary: (now = NOW) => ledger.budgetSummary(START, END, now) };
 }
+
+test("explicitly partial usage preserves priced amounts but remains unknown without changing legacy rows", t => {
+  const { dir, ledger, summary } = fixture(t);
+  const rows = [entry({ costUsd: 2, usageComplete: false }), entry({ costUsd: 3, usageComplete: true }), entry({ costUsd: 5 })];
+  rows.forEach(row => ledger.append(row));
+  for (const totals of [summary(), summarizeBudgetEntries(rows, START, END, NOW), new Ledger(dir).budgetSummary(START, END, NOW)]) {
+    assert.equal(totals.calls, 3);
+    assert.equal(totals.estimatedCostUsd, 10, "partial amounts remain part of the known estimate");
+    assert.equal(totals.unknownCostCalls, 1, "only explicit incomplete usage is newly unknown; absent legacy markers remain compatible");
+    assert.equal(totals.unmeteredCalls, 1);
+    assert.equal(totals.unpricedCalls, 0);
+    assert.equal(totals.accountingUnavailable, false);
+    assert.equal(totals.byProvider.p!.estimatedCostUsd, 10);
+    assert.equal(totals.byProvider.p!.unknownCostCalls, 1);
+    assert.equal(totals.byProvider.p!.unmeteredCalls, 1);
+  }
+});
 
 test("200k-row accounting warms once; repeated global/source decisions parse and read no historical bytes", t => {
   const { dir, ledger, file } = fixture(t);

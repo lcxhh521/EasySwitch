@@ -150,10 +150,13 @@ export class Store {
     return structuredClone(this.state.rules ?? []);
   }
 
-  addRule(rule: Omit<DispatchRule, "id">): DispatchRule {
+  addRule(rule: Omit<DispatchRule, "id">, beforeId?: string): DispatchRule {
     const added: DispatchRule = { id: `r-${createHash("sha256").update(`${rule.name}${Date.now()}${Math.random()}`).digest("hex").slice(0, 6)}`, ...rule };
-    this.state.rules = [...(this.state.rules ?? []), added];
-    this.save();
+    const previous=this.state.rules;const next=[...(previous??[])];
+    if(next.some(r=>r.id===added.id))throw new Error("规则记录冲突，请重试，原规则未更改");
+    const index=beforeId?next.findIndex(r=>r.id===beforeId):next.length;
+    if(index<0)throw new Error("原规则已不存在，请刷新建议");next.splice(index,0,added);this.state.rules=next;
+    try{this.save();}catch(error){this.state.rules=previous;throw error;}
     return structuredClone(added);
   }
 

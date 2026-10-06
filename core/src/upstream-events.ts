@@ -44,11 +44,72 @@ class ArgumentBoundary {
 
 
 const stopOf = (reason: string): Stop => /tool|function/i.test(reason) ? "tool" : /length|max.*token/i.test(reason) ? "length" : /filter|safety|recitation|block|refusal/i.test(reason) ? "filter" : "stop";
+const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const amount = (value: unknown): number => count(value) ? value : 0;
+const optionalCount = (value: unknown): boolean => value === undefined || count(value);
 export function usageOf(protocol: ApiProtocol, u: Json): Usage {
-  if (protocol === "chat") return { input: u.prompt_tokens ?? 0, output: u.completion_tokens ?? 0, cached: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0, reasoning: u.completion_tokens_details?.reasoning_tokens };
-  if (protocol === "responses") return { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cached: u.input_tokens_details?.cached_tokens ?? 0, reasoning: u.output_tokens_details?.reasoning_tokens };
-  if (protocol === "messages") return { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), output: u.output_tokens ?? 0, cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 };
-  return { input: u.promptTokenCount ?? 0, output: u.candidatesTokenCount ?? 0, cached: u.cachedContentTokenCount ?? 0, reasoning: u.thoughtsTokenCount };
+  if (!u || typeof u !== "object" || Array.isArray(u)) return { input: 0, output: 0, complete: false };
+  if (protocol === "chat") {
+    const cached = u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens;
+    return { input: amount(u.prompt_tokens), output: amount(u.completion_tokens), cached: amount(cached), reasoning: count(u.completion_tokens_details?.reasoning_tokens) ? u.completion_tokens_details.reasoning_tokens : undefined, complete: count(u.prompt_tokens) && count(u.completion_tokens) && optionalCount(cached) && amount(cached) <= amount(u.prompt_tokens) };
+  }
+  if (protocol === "responses") {
+    const cached = u.input_tokens_details?.cached_tokens;
+    return { input: amount(u.input_tokens), output: amount(u.output_tokens), cached: amount(cached), reasoning: count(u.output_tokens_details?.reasoning_tokens) ? u.output_tokens_details.reasoning_tokens : undefined, complete: count(u.input_tokens) && count(u.output_tokens) && optionalCount(cached) && amount(cached) <= amount(u.input_tokens) };
+  }
+  if (protocol === "messages") {
+    const input = amount(u.input_tokens) + amount(u.cache_read_input_tokens) + amount(u.cache_creation_input_tokens);
+    return { input: amount(input), output: amount(u.output_tokens), cached: amount(u.cache_read_input_tokens), cacheWrite: amount(u.cache_creation_input_tokens),
+      // The current price path does not distinguish cache-write billing; keep that estimate unknown.
+      complete: count(input) && count(u.input_tokens) && count(u.output_tokens) && optionalCount(u.cache_read_input_tokens) && optionalCount(u.cache_creation_input_tokens) && amount(u.cache_creation_input_tokens) === 0 };
+  }
+  return { input: amount(u.promptTokenCount), output: amount(u.candidatesTokenCount), cached: amount(u.cachedContentTokenCount), reasoning: count(u.thoughtsTokenCount) ? u.thoughtsTokenCount : undefined,
+    // Do not call an estimate complete while the price path lacks a separate thought-token mapping.
+    complete: count(u.promptTokenCount) && count(u.candidatesTokenCount) && optionalCount(u.cachedContentTokenCount) && amount(u.cachedContentTokenCount) <= amount(u.promptTokenCount) && optionalCount(u.thoughtsTokenCount) && amount(u.thoughtsTokenCount) === 0 };
+}
+
+/** A side-effect-free meter shared by native observation and translated response decoders. */
+export class OutputUsageTracker {
+  #protocol: ApiProtocol;
+  #streaming: boolean;
+  #usage?: Usage;
+  #messageUsage: Json = {};
+  #terminal = false;
+  #finalUsage = false;
+  #invalid = false;
+  failed = false;
+  constructor(protocol: ApiProtocol, streaming: boolean) { this.#protocol = protocol; this.#streaming = streaming; }
+  done(): void { if (this.#protocol === "chat") this.#terminal = true; }
+  invalidate(): void { this.#invalid = true; }
+  take(j: Json): Usage | undefined {
+    if (!j || typeof j !== "object" || Array.isArray(j)) { this.invalidate(); return undefined; }
+    if (j.error || j.response?.error || j.type === "error" || j.type === "response.failed" || j.status === "failed") this.failed = true;
+    let raw: Json | undefined; let terminal = false; let final = false;
+    if (this.#protocol === "messages") {
+      if (!this.#streaming) { raw = j.usage; terminal = typeof j.stop_reason === "string" && !!j.stop_reason; final = terminal; }
+      else {
+        if (j.type === "message_start") { this.#messageUsage = j.message?.usage ?? {}; raw = this.#messageUsage; }
+        if (j.usage) { this.#messageUsage = { ...this.#messageUsage, ...j.usage }; raw = this.#messageUsage; final = j.type === "message_delta" && count(j.usage.output_tokens); }
+        terminal = j.type === "message_stop";
+      }
+    } else if (this.#protocol === "responses") {
+      terminal = this.#streaming ? j.type === "response.completed" || j.type === "response.incomplete" : j.status === "completed" || j.status === "incomplete";
+      raw = j.usage ?? j.response?.usage; final = terminal || this.#terminal;
+    } else if (this.#protocol === "gemini") {
+      terminal = !!j.candidates?.some((c: Json) => typeof c.finishReason === "string" && c.finishReason) || !!j.promptFeedback?.blockReason;
+      raw = j.usageMetadata; final = terminal || this.#terminal;
+    } else {
+      terminal = !!j.choices?.some((c: Json) => typeof c.finish_reason === "string" && c.finish_reason);
+      raw = j.usage;
+      final = terminal || this.#terminal || this.#streaming && Array.isArray(j.choices) && j.choices.length === 0;
+    }
+    this.#terminal ||= terminal;
+    const moreContent = j.type === "content_block_delta" || typeof j.type === "string" && j.type.startsWith("response.") && j.type.endsWith(".delta") || j.choices?.some((c: Json) => c.delta?.content || c.delta?.reasoning_content || c.delta?.tool_calls?.length) || j.candidates?.some((c: Json) => c.content?.parts?.length);
+    if (this.#streaming && !raw && moreContent) this.#finalUsage = false;
+    if (raw) { this.#usage = usageOf(this.#protocol, raw); this.#finalUsage = final; return { ...this.#usage, complete: false }; }
+    return undefined;
+  }
+  finish(): Usage | undefined { return this.#usage && { ...this.#usage, complete: this.#usage.complete === true && this.#terminal && this.#finalUsage && !this.failed && !this.#invalid }; }
 }
 
 /** Wire decoders feed neutral events; none of them fabricates a Chat response. */
@@ -64,7 +125,7 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
   }
   let stopped = false;
   let reason: Stop = "stop";
-  let messageUsage: Json = {};
+  const meter = new OutputUsageTracker(protocol, true);
   const calls = new Map<number, { id: string; name: string; arguments: string; emitted?: boolean; ended?: boolean; outputIndex?: number; boundary?: ArgumentBoundary }>();
   const messageKinds = new Map<number, OutputKind>();
   let chatNext = 0; let chatContent: { kind: "text" | "reasoning"; index: number } | undefined;
@@ -112,11 +173,11 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
     yield { type: "block_end", kind: i.type === "function_call" ? "call" : i.type === "reasoning" ? "reasoning" : "text", index };
   }
   for await (const data of outputData(response.body, true)) {
-    if (data === "[DONE]") break;
+    if (data === "[DONE]") { meter.done(); break; }
     const j = JSON.parse(data) as Json;
+    const measured = meter.take(j); if (measured) yield { type: "usage", usage: measured };
     if (j.error || j.type === "error" || j.type === "response.failed") throw new ProtocolError("上游在生成过程中返回错误。", 502);
     if (protocol === "chat") {
-      if (j.usage) yield { type: "usage", usage: usageOf(protocol, j.usage) };
       const c = j.choices?.[0]; if (!c) continue;
       const d = c.delta ?? {};
       if (d.refusal) throw new ProtocolError("上游拒绝生成回复。", 502);
@@ -156,7 +217,6 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
         reason = stopOf(c.finish_reason); stopped = true;
       }
     } else if (protocol === "messages") {
-      if (j.type === "message_start") messageUsage = j.message?.usage ?? {};
       if (j.type === "content_block_start") {
         const b = j.content_block;
         messageKinds.set(j.index, b.type === "tool_use" ? "call" : b.type === "text" ? "text" : "reasoning");
@@ -176,10 +236,9 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
       }
       if (j.type === "content_block_stop") { const kind = messageKinds.get(j.index); if (kind) yield { type: "block_end", kind, index: j.index }; }
       if (j.type === "message_delta") {
-        messageUsage = { ...messageUsage, ...j.usage };
         reason = stopOf(j.delta?.stop_reason ?? "end_turn");
       }
-      if (j.type === "message_stop") { yield { type: "usage", usage: usageOf(protocol, messageUsage) }; stopped = true; }
+      if (j.type === "message_stop") stopped = true;
     } else if (protocol === "responses") {
       const index = j.output_index ?? 0;
       if (j.type === "response.output_text.delta") { seenText.add(index); yield { type: "text", index, text: j.delta }; }
@@ -194,12 +253,10 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
         yield* completeItem(j.item, index);
       } else if (j.type === "response.completed" || j.type === "response.incomplete") {
         for (const [slot, item] of (j.response?.output ?? []).entries()) yield* completeItem(item, slot);
-        if (j.response?.usage) yield { type: "usage", usage: usageOf(protocol, j.response.usage) };
         reason = j.type === "response.incomplete" ? stopOf(j.response?.incomplete_details?.reason ?? "max_output_tokens") : calls.size ? "tool" : "stop";
         stopped = true;
       } else if (j.type === "response.refusal.delta") throw new ProtocolError("上游拒绝生成回复。", 502);
     } else {
-      if (j.usageMetadata) yield { type: "usage", usage: usageOf(protocol, j.usageMetadata) };
       const c = j.candidates?.[0];
       if (!c && j.promptFeedback?.blockReason) { stopped = true; reason = "filter"; }
       for (const p of c?.content?.parts ?? []) {
@@ -226,6 +283,7 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
   }
   if (!stopped) throw new ProtocolError("上游响应流在结束事件前中断。", 502);
   if (protocol === "gemini") yield* endGemini();
+  const finalUsage = meter.finish(); if (finalUsage) yield { type: "usage", usage: finalUsage };
   yield { type: "stop", reason };
 }
 
@@ -274,7 +332,7 @@ function* wholeOutput(j: Json, protocol: ApiProtocol): Generator<OutputEvent> {
     }
     reason = c ? c.finishReason === "STOP" && c.content?.parts?.some((p: Json) => p.functionCall) ? "tool" : stopOf(c.finishReason ?? "STOP") : "filter"; usage = j.usageMetadata;
   }
-  if (usage) yield { type: "usage", usage: usageOf(protocol, usage) };
+  if (usage) { const meter = new OutputUsageTracker(protocol, false); meter.take(j); const measured = meter.finish(); if (measured) yield { type: "usage", usage: measured }; }
   yield { type: "stop", reason };
 }
 

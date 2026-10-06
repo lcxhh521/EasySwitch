@@ -69,7 +69,8 @@ export class TaskBook {
 
   /** Starts a record and returns it with an abort handle for the run. */
   start(input: { agent: string; model: string; from: string; task: string; cwd?: string; effort?: string; why?: string }): { task: Task; signal: AbortSignal } {
-    const task: Task = { id: `t-${crypto.randomUUID().slice(0, 8)}`, at: new Date().toISOString(), status: "running", ...input };
+    const task: Task = { id: `t-${crypto.randomUUID().replace(/-/g, "")}`, at: new Date().toISOString(), status: "running", ...input };
+    if(this.tasks.has(task.id))throw new Error("本地任务记录冲突，请重试，原记录未更改");
     const abort = new AbortController();
     this.tasks.set(task.id, task);
     this.aborts.set(task.id, abort);

@@ -148,7 +148,7 @@ export async function markResult(store: Store, provider: Provider, keyId: string
 export async function withKey(
   store: Store, secrets: SecretStore, provider: Provider,
   run: (apiKey?: string) => Promise<Response | Error>,
-): Promise<{ response: Response | Error; keyId?: string }> {
+): Promise<{ response: Response | Error; keyId?: string; hadRetry?: boolean }> {
   const first = await pickKey(secrets, provider);
   const response = await run(first.apiKey);
   if (response instanceof Error || !isKeyFailure(response.status)) return { response, keyId: first.keyId };
@@ -157,5 +157,6 @@ export async function withKey(
   if (!next.apiKey || next.keyId === first.keyId) return { response, keyId: first.keyId };
   await response.body?.cancel();
   const retry = await run(next.apiKey);
-  return { response: retry, keyId: next.keyId };
+  // Earlier attempts have no usage observation here; callers must not claim complete fees.
+  return { response: retry, keyId: next.keyId, hadRetry: true };
 }

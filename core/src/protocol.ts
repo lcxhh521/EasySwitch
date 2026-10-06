@@ -30,7 +30,7 @@ export interface Conversation {
   effort?: string; parallelTools?: boolean; format?: Json;
   dropped: string[];
 }
-export interface Usage { input: number; output: number; cached?: number; cacheWrite?: number; reasoning?: number }
+export interface Usage { /** Explicit full counters at a verified terminal, never default-zero evidence. */ complete?: boolean; input: number; output: number; cached?: number; cacheWrite?: number; reasoning?: number }
 export type Stop = "stop" | "tool" | "length" | "filter";
 export const OUTPUT_LIMITS = { frameBytes: 2 * 1024 * 1024, responseBytes: 32 * 1024 * 1024, items: 4096, toolHeaderBytes: 64 * 1024 } as const;
 export type OutputKind = "text" | "reasoning" | "call";

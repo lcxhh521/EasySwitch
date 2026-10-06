@@ -233,6 +233,8 @@ export interface GatewayLogEntry {
   pool?: string;
   attempt?: number;
   attempts?: number;
+  /** True only when reported usage and protocol termination are both complete. */
+  usageComplete?: boolean;
   /** Token usage when the upstream reported it; absent on passthrough routes. */
   inputTokens?: number;
   outputTokens?: number;

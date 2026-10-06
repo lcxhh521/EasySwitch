@@ -1,3 +1,6 @@
+import { FeedbackBook, FeedbackStoreError } from "./feedback.ts";
+import { buildRuleSuggestions } from "./suggestions.ts";
+import { TaskAccounting, type TaskAccountingCall } from "./task-accounting.ts";
 import { ParallelTaskCoordinator, ParallelTaskError, TaskCapacity, type ReadonlyRelayFixtureAdapter } from "./parallel-tasks.ts";
 import { buildDoctorReport, runDoctorChecks, DoctorCheckRequestError, type DoctorInput, type DoctorAgent, type DoctorCheckRunners } from "./doctor.ts";
 import { verifyLauncher, type Verdict } from "./verify-launchers.ts";
@@ -90,6 +93,8 @@ export interface ServerDeps {
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
   taskRunner?: typeof runHeadless;
+  /** Known availability only; test seam avoids executing program discovery for suggestions. */
+  taskAgentAvailable?: (id: string) => boolean;
   /** Opaque Node-test-only relay fixtures; the production registry is empty. */
   readonlyFixtures?: readonly ReadonlyRelayFixtureAdapter[];
   /** Explicit metadata/runner seams for fake diagnostics. Never configurable through HTTP. */
@@ -215,9 +220,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   let desktopClosing = false;
   const desktopExecutable = () => deps.claudeDesktop?.executable ?? findClaudeDesktopExecutable({ home: process.env.HOME });
   const log: GatewayLogEntry[] = [];
-  /** The log writer for one try: inside a pool it also says which pool and which try this is. */
-  const logFor = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) =>
-    pushLog(ctx ? { ...entry, pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : entry);
   const pushLog = (entry: GatewayLogEntry, price = true) => {
     if (price) priceEntry(store, entry);
     log.unshift(entry);
@@ -235,10 +237,23 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   const tasks = new TaskBook(store.dir);
+  const feedback = new FeedbackBook(store.dir);
+  const taskAccounting = new TaskAccounting(store.dir);
+  const sessionTasks = new Map<string,{taskId:string;expiresAt:string}>();
+  const accountingSafely = (action:()=>void) => {try{action();}catch{/* Incomplete attribution remains unknown; this never substitutes for the budget ledger. */}};
+  const taskUsage = () => taskAccounting.usage(tasks.list(5000).map(t=>t.id));
+  const taskAvailable = (id:string) => Boolean(LAUNCHERS[id]?.headless) && (deps.taskAgentAvailable?.(id) ?? agentCache?.list.some(a=>a.id===id&&a.installed) ?? false);
+  const suggestions = () => buildRuleSuggestions({tasks:tasks.list(5000),feedback:feedback.list(),usage:taskUsage(),rules:store.rules(),
+    isTargetAvailable:target=>taskAvailable(target.agent)&&Boolean(resolveModel(store,target.model)),
+    resolveRuleTarget:rule=>{const b=store.binding(rule.then.agent),first=store.catalog()[0];const model=rule.then.model??(b?`${b.providerId}/${b.model}`:first?`${first.providerId}/${first.model}`:undefined);const effort=rule.then.effort??store.prefs(rule.then.agent).effort;return {...rule.then,...(model?{model}:{}),...(effort?{effort}:{})};},
+  });
   const taskCapacity = new TaskCapacity();
   const taskGroups = new ParallelTaskCoordinator({book:tasks,adapters:deps.readonlyFixtures,limiter:taskCapacity,
-    assertBudget: ({model}) => {budget.assertAllowed();if(!resolveModel(store,model))throw new ParallelTaskError("model_unavailable","所选来源或模型暂不可用。",409);},
-    recordUsage: entry => {pushLog({at:new Date().toISOString(),taskId:entry.taskId,taskGroupId:entry.groupId,taskPhase:entry.phase,model:entry.model,providerId:entry.model.split("/")[0],harness:entry.agent,route:"chat-translate",inboundProtocol:"chat",outboundProtocol:"chat",adapter:"readonly-relay-fixture",status:entry.status,ms:entry.ms,inputTokens:entry.inputTokens,outputTokens:entry.outputTokens,costUsd:entry.costUsd,costNote:entry.costNote,note:"只读模拟通道；未运行真实agent"},false);},
+    assertBudget: ({model,taskId}) => {accountingSafely(()=>taskAccounting.beginTask(taskId));budget.assertAllowed();if(!resolveModel(store,model))throw new ParallelTaskError("model_unavailable","所选来源或模型暂不可用。",409);},
+    recordUsage: entry => {
+      const row:GatewayLogEntry={at:new Date().toISOString(),taskId:entry.taskId,taskGroupId:entry.groupId,taskPhase:entry.phase,model:entry.model,providerId:entry.model.split("/")[0],harness:entry.agent,route:"chat-translate",inboundProtocol:"chat",outboundProtocol:"chat",adapter:"readonly-relay-fixture",usageComplete:!entry.unknownCost,status:entry.status,ms:entry.ms,inputTokens:entry.inputTokens,outputTokens:entry.outputTokens,costUsd:entry.costUsd,costNote:entry.unknownCost?"unpriced":entry.costNote,note:"只读模拟通道；未运行真实agent"};pushLog(row,false);
+      accountingSafely(()=>{const call=taskAccounting.beginCall(entry.taskId);call.record(row,{complete:!entry.unknownCost&&entry.status>=200&&entry.status<300});call.end();taskAccounting.finishTask(entry.taskId);});
+    },
   });
 
   /** Whether an agent can take a task right now: installed, and it has a headless form. */
@@ -270,7 +285,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** Hands a task to an agent ("auto": the dispatch rules choose): records it, runs it headlessly in the background, records how it ended. */
-  async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string }): Promise<{ task: Task; done: Promise<Task> }> {
+  async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string; parentTaskId?: string }): Promise<{ task: Task; done: Promise<Task> }> {
     if(!Number.isInteger(input.depth)||input.depth<1||input.depth>2)throw new ParallelTaskError("invalid_depth","任务深度不能超过两层。",403);
     const release=taskCapacity.reserve(1);
     try {
@@ -294,9 +309,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const wanted = input.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
     const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) });
-    const done = (deps.taskRunner ?? runHeadless)(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: auth, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    accountingSafely(()=>taskAccounting.beginTask(task.id,input.parentTaskId));
+    const ownTokens = new Map<string,string>();
+    const taskAuthority: Pick<GatewayTokenAuthority,"issue"|"revoke"> = {
+      issue:(agent,options)=>{const session=auth.issue(agent,options);for(const [id,value] of sessionTasks)if(Date.parse(value.expiresAt)<=Date.now())sessionTasks.delete(id);sessionTasks.set(session.id,{taskId:task.id,expiresAt:session.expiresAt});ownTokens.set(session.token,session.id);return session;},
+      revoke:token=>{const result=auth.revoke(token),id=ownTokens.get(token);if(id)sessionTasks.delete(id);ownTokens.delete(token);return result;},
+    };
+    const done = (deps.taskRunner ?? runHeadless)(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: taskAuthority, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
-      .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!).finally(release);
+      .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!).finally(()=>{accountingSafely(()=>taskAccounting.finishTask(task.id));ownTokens.clear();release();});
     return { task, done };
     } catch(error) {release();throw error;}
   }
@@ -1108,9 +1129,31 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }catch(error){if(error instanceof ParallelTaskError||error instanceof BudgetExceededError){json(res,error.status,{error:error.message,code:error.code});return;}throw error;}
     }
 
+    const feedbackMatch=/^\/api\/tasks\/(t-[a-z0-9]+)\/feedback$/.exec(path);
+    if(feedbackMatch&&method==="PUT"){
+      const task=tasks.get(feedbackMatch[1]!);if(!task){json(res,404,{error:"没有这个任务"});return;}
+      if(Object.keys(body).some(k=>k!=="rating")||!["good","bad",null].includes(body.rating as any)){json(res,400,{error:"请选择好、不好或取消评价"});return;}
+      try{json(res,200,{feedback:feedback.set(task,body.rating as "good"|"bad"|null)??null});}
+      catch(error){json(res,error instanceof FeedbackStoreError?503:400,{error:(error as Error).message,...(error instanceof FeedbackStoreError?{code:error.code}:{})});}return;
+    }
+    if(path==="/api/rules/suggestions"&&method==="GET"){
+      if(req.headers["x-easyswitch"]!=="1"){json(res,403,{error:"missing x-easyswitch header"});return;}
+      try{json(res,200,{...suggestions(),accounting:taskAccounting.status(),taskLimit:5000});}
+      catch(error){json(res,503,{error:(error as Error).message,code:error instanceof FeedbackStoreError?error.code:"task_accounting_unavailable"});}return;
+    }
+    const applySuggestion=/^\/api\/rules\/suggestions\/(suggestion-[a-f0-9]{20})\/apply$/.exec(path);
+    if(applySuggestion&&method==="POST"){
+      if(Object.keys(body).length){json(res,400,{error:"建议操作只接受当前建议标识"});return;}
+      try{const suggestion=suggestions().suggestions.find(s=>s.id===applySuggestion[1]);if(!suggestion){json(res,409,{error:"建议已变化或不再适用，请刷新后重新选择"});return;}
+        json(res,201,{rule:store.addRule(suggestion.draft,suggestion.insertBeforeRuleId)});
+      }catch(error){json(res,503,{error:(error as Error).message,code:"task_accounting_unavailable"});}return;
+    }
+
     // --- tasks: hand work to an agent, watch it, read what came back ---------
     if (path === "/api/tasks" && method === "GET") {
-      json(res, 200, { tasks: tasks.list(), running: tasks.running() });
+      let ratings:ReturnType<FeedbackBook["list"]>=[],feedbackUnavailable=false;try{ratings=feedback.list();}catch{feedbackUnavailable=true;}
+      const usage=new Map(taskUsage().map(u=>[u.taskId,u]));
+      json(res,200,{tasks:tasks.list().map(t=>({...t,feedback:ratings.find(r=>r.taskId===t.id)??null,usage:usage.get(t.id)??{taskId:t.id,unknownCost:true}})),running:tasks.running(),feedbackUnavailable,accounting:taskAccounting.status()});
       return;
     }
     if (path === "/api/tasks" && method === "DELETE") {
@@ -1798,6 +1841,16 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const path = url.pathname;
     let session: GatewaySession | undefined;
     let isDesktop = false;
+    let accountingCall: TaskAccountingCall | undefined, ownerTaskId:string|undefined, routeSettled=false,responseSettled=false,ending=false;
+    const endAccounting=()=>{if(routeSettled&&responseSettled&&!ending){ending=true;setImmediate(()=>accountingSafely(()=>accountingCall?.end()));}};
+    res.once("finish",()=>{responseSettled=true;endAccounting();});res.once("close",()=>{responseSettled=true;endAccounting();});
+    const beginAccounting=()=>{if(ownerTaskId||!session)return;ownerTaskId=sessionTasks.get(session.id)?.taskId;if(ownerTaskId)accountingSafely(()=>{accountingCall=taskAccounting.beginCall(ownerTaskId!);});};
+    const taskLog=(ctx?:{pool:string;attempt:number;attempts:number})=>(entry:GatewayLogEntry)=>{
+      const attributed={...entry,...(ownerTaskId?{taskId:ownerTaskId}:{}),...(ctx?{pool:ctx.pool,attempt:ctx.attempt,attempts:ctx.attempts}:{})};
+      try{pushLog(attributed);}catch(error){accountingSafely(()=>accountingCall?.record({}));throw error;}
+      let unavailable=true;try{const status=budget.status();unavailable=status.accountingUnavailable||status.pendingPartialLine;}catch{}
+      accountingSafely(()=>accountingCall?.record(attributed,{complete:!unavailable&&attributed.status>=200&&attributed.status<300&&attributed.usageComplete===true}));
+    };
     try {
       // DNS-rebinding guard: only our own loopback authority may talk to us.
       if (!allowedHosts.has(String(req.headers.host ?? ""))) {
@@ -1822,6 +1875,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         isDesktop = session.agentId === "claude-desktop";
         const inference = req.method === "POST" && !isMcp && !path.endsWith("count_tokens") && gemini?.[3] !== "countTokens";
         if (inference || (isChatgptPath(path) && req.method !== "GET")) {
+          beginAccounting();
           try { budget.assertAllowed(); }
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
@@ -1832,20 +1886,25 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const localSupplied = req.headers["x-easyswitch-session"] !== undefined || [req.headers.authorization, req.headers["x-api-key"], req.headers["x-goog-api-key"]].some(value => typeof value === "string" && /^(?:Bearer\s+)?es-session-/i.test(value));
         if (localSupplied && !session) { gatewayError(res, protocol, 401, "本地会话令牌无效、已撤销或已过期", "invalid_gateway_session"); return; }
         if (req.method !== "GET") {
+          beginAccounting();
           try { budget.assertAllowed(); }
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
-        await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog, session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+        await handleChatgpt(req, res, path, url.search, { store, secrets, log: taskLog(), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         return;
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (path === "/mcp") {
-        await handleMcp(req, res, req.method === "POST" ? await readBody(req) : "", { ...mcpDeps, session });
+        const parentTaskId=session?sessionTasks.get(session.id)?.taskId:undefined;
+        let hold:{end():void}|undefined;if(parentTaskId)accountingSafely(()=>{hold=taskAccounting.beginHold(parentTaskId);});
+        try{await handleMcp(req,res,req.method==="POST"?await readBody(req):"",{...mcpDeps,session,
+          run:async(id,input)=>{const {done}=await startTask(id,{...input,...(parentTaskId?{parentTaskId}:{})});const t=await done;return {exitCode:t.exitCode??null,output:t.output??"",timedOut:t.status==="timeout",model:t.model,agent:t.agent};},
+        });}finally{accountingSafely(()=>hold?.end());}
         return;
       }
       if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
@@ -1860,27 +1919,27 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+          return handleGemini(req, r, m, raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await handleCountTokens(req, res, raw, { store, secrets, log: pushLog, session });
+        await handleCountTokens(req, res, raw, { store, secrets, log: taskLog(), session });
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages" || path === "/messages")) {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
@@ -1914,7 +1973,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, authError ? error.status : 500, { error: String((error as Error).message ?? error), ...(authError ? { code: error.code } : {}) });
       }
       else res.end();
-    }
+    } finally {routeSettled=true;endAccounting();}
   });
   function nativeRequestAllowed(raw: string, req: IncomingMessage, res: ServerResponse, session?: GatewaySession): boolean {
     const model = modelOfBody(raw);

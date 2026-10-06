@@ -34,12 +34,12 @@ function ui() {
   return {
     run: (source: string) => vm.runInContext(source, context),
     async click(selector: string, dataset: Record<string, string> = {}) {
-      const target = { dataset, closest: (query: string) => query === selector ? target : null };
-      await handlers.click![0]!({ target });
+      const target = { dataset, matches: (query: string) => query === selector, closest: (query: string) => query === selector ? target : null };
+      let stopped=false; for(const handler of handlers.click ?? []) {await handler({target,preventDefault(){},stopImmediatePropagation(){stopped=true;}});if(stopped)break;}
     },
     async change(selector: string, value: string) {
-      const target = { value, closest: (query: string) => query === selector ? target : null };
-      await handlers.change![0]!({ target });
+      const target = { value, matches: (query: string) => query === selector, closest: (query: string) => query === selector ? target : null };
+      let stopped=false; for(const handler of handlers.change ?? []) {await handler({target,preventDefault(){},stopImmediatePropagation(){stopped=true;}});if(stopped)break;}
     },
     async escape() { await handlers.keydown![0]!({ key: "Escape" }); },
     async toggle(open: boolean) { for (const handler of handlers.toggle ?? []) await handler({ target: { dataset: { keep: "experimental-agents" }, open } }); },
