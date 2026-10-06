@@ -491,11 +491,25 @@ function profileBar() {
     </div></div>`;
 }
 
+/** The menu-bar panel: each subscription with its switch, so one can be turned on or off without opening the console. */
+function panelSubscriptions() {
+  const accounts = (planInfo?.accounts ?? []).filter(a => a.planUsage && !a.needsSignIn);
+  if (!accounts.length) return "";
+  const row = a => `
+    <div class="row">
+      ${icon(a.kind === "copilot" ? "github-copilot-color" : a.kind === "kiro" ? "kiro-color" : a.kind === "antigravity" ? "antigravity-color" : "openai", "sm")}
+      <div class="grow"><div class="title">${esc(a.label)}</div>${a.on && a.quota ? `<div class="sub ${a.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(a.quota.text)}</div>` : ""}</div>
+      <button class="switch ${a.on ? "on" : ""}" role="switch" aria-checked="${a.on ? "true" : "false"}" data-plan-switch="${esc(a.id)}" data-on="${a.on ? "1" : "0"}"><span class="knob"></span><span class="lbl">${a.on ? "已打开" : "已关闭"}</span></button>
+    </div>`;
+  return `<div class="section-head"><h2>订阅</h2></div><div class="card">${accounts.map(row).join("")}</div>`;
+}
+
 function renderAgents() {
   if (PANEL) {
     const rows = Object.keys(HARNESS).map(agentRow).join("");
     return `
       <div class="card">${rows}</div>
+      ${panelSubscriptions()}
       <div class="panel-foot">
         <button data-bridge="openConsole">打开控制台</button>
         <span>
@@ -1206,7 +1220,7 @@ async function refresh(force = false) {
   } catch {
     state = null;
   }
-  if (page === "providers") planInfo = await call("GET", "/api/plan").catch(() => planInfo);
+  if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
   if (page === "agents" && !PANEL) chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
   if (page === "tasks") {
     taskList = await call("GET", "/api/tasks").catch(() => taskList);
