@@ -322,6 +322,22 @@ let guideOpen = null; // agent id whose setup guide is shown
 let guideData = null; // what /api/agents/:id/setup returned
 let guideReveal = false; // the token is shown masked until asked for
 
+let vertexForm = null; // { message?, busy? } while the Vertex form is open
+
+/** Adding a Google Vertex AI project: its id, a location, and the service account's key file pasted in. */
+function renderVertexForm() {
+  return `<form id="vertex-form" class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <div class="title">添加 Google Vertex AI</div>
+    <div class="sub">在 Google Cloud 里给项目建一个服务账号（角色「Vertex AI 用户」），下载它的 JSON 密钥，把内容整段粘到下面。密钥只存在钥匙串里，我们用它换短期令牌。</div>
+    <input type="text" name="project" placeholder="项目 ID，比如 my-project-123456" required>
+    <input type="text" name="location" placeholder="区域，默认 global（也可以是 us-central1）">
+    <textarea name="serviceAccount" rows="6" placeholder='{ "type": "service_account", "client_email": "…", "private_key": "-----BEGIN PRIVATE KEY-----…" }' required></textarea>
+    <input type="text" name="models" placeholder="模型（可不填；多个用逗号分隔，默认 google/gemini-2.5-pro 等三个）">
+    <div class="msg ${vertexForm.message ? "err" : ""}" id="vertex-msg">${esc(vertexForm.message ?? "")}</div>
+    <div style="display:flex;gap:8px"><button class="btn" type="submit" ${vertexForm.busy ? "disabled" : ""}>${vertexForm.busy ? "正在验证…" : "验证并添加"}</button><button class="btn secondary" type="button" data-vertex-close>取消</button></div>
+  </form>`;
+}
+
 /** The manual-setup helper: what to type into an app that has no per-launch override, each value ready to copy. */
 function guidePanel(a) {
   const g = guideData;
@@ -933,7 +949,8 @@ function renderProviders() {
     <div class="card">
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
       ${ocxImport ? renderOcxImport() : ""}
-      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-ocx-open>从 opencodex 导入</button>`}
+      ${vertexForm ? renderVertexForm() : ""}
+      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-vertex-open>${icon("gemini-color", "sm")} 添加 Google Vertex AI（服务账号）</button><button class="add-row" data-ocx-open>从 opencodex 导入</button>`}
     </div>
     ${state.providers.length ? poolsCard() : ""}`;
 }
@@ -1191,7 +1208,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1389,6 +1406,8 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
+  if (t.closest("[data-vertex-open]")) { vertexForm = {}; render(); return; }
+  if (t.closest("[data-vertex-close]")) { vertexForm = null; render(); return; }
   const guideBtn = t.closest("[data-guide]");
   if (guideBtn) {
     const id = guideBtn.dataset.guide;
@@ -1624,6 +1643,22 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("submit", async e => {
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
+  if (e.target.id === "vertex-form") {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const models = String(f.get("models") ?? "").split(",").map(x => x.trim()).filter(Boolean);
+    vertexForm = { busy: true };
+    render();
+    try {
+      const out = await call("POST", "/api/vertex", { project: String(f.get("project")).trim(), location: String(f.get("location") ?? "").trim() || "global", serviceAccount: String(f.get("serviceAccount")), ...(models.length ? { models } : {}) });
+      vertexForm = null;
+      toast(`已添加，有 ${out.models} 个模型`);
+    } catch (error) {
+      vertexForm = { message: error.message };
+    }
+    await refresh(true);
+    return;
+  }
   if (e.target.id === "import-form") {
     e.preventDefault();
     const msg = $("#import-msg");

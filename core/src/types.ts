@@ -33,6 +33,8 @@ export interface Provider {
   reasoningEffort?: boolean;
   /** Thinking levels the user says a model on this provider has, by model id. Overrides what EasySwitch knows. */
   modelEfforts?: Record<string, string[]>;
+  /** This provider is Google Vertex AI: the project and location, and the service account whose key (in the secret store) is turned into access tokens (see vertex.ts). */
+  vertex?: { project: string; location: string; clientEmail: string };
   /** This provider is Google Antigravity (Cloud Code Assist): the Google account that signed in and the project found for it (see antigravity.ts). */
   antigravity?: { accountId: string; email: string; projectId: string };
   /** This provider is Kiro: the user's own Kiro CLI login is read for each request (see kiro.ts). `loginPath` overrides where it is read from. */

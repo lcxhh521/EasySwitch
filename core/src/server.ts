@@ -26,7 +26,8 @@ import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
-import { setAntigravityToken, setPlanToken } from "./keypool.ts";
+import { setAntigravityToken, setPlanToken, setVertexToken } from "./keypool.ts";
+import { DEFAULT_VERTEX_MODELS, forgetServiceAccount, mintAccessToken, parseServiceAccount, storeServiceAccount, VertexError, vertexAccessToken, vertexBaseUrl } from "./vertex.ts";
 import { nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
 import { describeQuota, exhaustedUntil, quotaOf } from "./quota.ts";
@@ -338,6 +339,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     return provider;
   };
 
+  // ---- Google Vertex AI: a service account key in the secret store becomes access tokens
+  setVertexToken(async provider => {
+    try { return await vertexAccessToken(secrets, provider); } catch (error) { throw new Error(String((error as Error).message)); }
+  });
+
   const mcpDeps: McpDeps = {
     store, secrets, log: pushLog,
     async agents() {
@@ -580,6 +586,31 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
     // --- Google Antigravity: a Google sign-in in the browser. The refresh token goes to the Keychain; the account becomes a source that starts off.
+    // --- Google Vertex AI: project, location and a service account key. The key goes to the secret store; the first token is minted now to prove it works.
+    if (path === "/api/vertex" && method === "POST") {
+      try {
+        const project = String(body.project ?? "").trim();
+        const location = String(body.location ?? "global").trim() || "global";
+        if (!/^[a-z][a-z0-9-]{4,29}$/.test(project)) throw new VertexError("项目 ID 不对：小写字母、数字和短横线，以字母开头（在 Google Cloud 控制台里能看到）。");
+        if (!/^(global|[a-z]+-[a-z]+[0-9]+)$/.test(location)) throw new VertexError("区域不对，比如 global 或 us-central1。");
+        const sa = parseServiceAccount(body.serviceAccount as string | object);
+        const name = String(body.name ?? "").trim() || `Google Vertex · ${project}`;
+        const id = slugify(name, [...store.providers().map(p => p.id), "pool"]);
+        await mintAccessToken(id, sa);
+        const models = Array.isArray(body.models) && body.models.length ? (body.models as unknown[]).map(String).filter(Boolean) : DEFAULT_VERTEX_MODELS;
+        await storeServiceAccount(secrets, id, sa);
+        const provider: Provider = {
+          id, name, baseUrl: vertexBaseUrl(project, location), models, defaultModel: models[0]!, route: "chat-translate", routePinned: true,
+          streamUsage: true, vertex: { project, location, clientEmail: sa.client_email }, icon: "gemini-color", createdAt: new Date().toISOString(),
+        };
+        store.upsertProvider(provider);
+        json(res, 200, { id, models: models.length });
+      } catch (error) {
+        const e = error as VertexError;
+        json(res, e.status === 401 ? 409 : e.status || 400, { error: e.message });
+      }
+      return;
+    }
     if (path === "/api/antigravity/signin" && method === "POST") {
       planSignIn?.cancel();
       try {
@@ -1113,6 +1144,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const action = providerMatch[2];
       if (method === "DELETE" && !action) {
         for (const key of provider.keys ?? []) await secrets.delete(keySecretId(provider.id, key.id));
+        if (provider.vertex) await forgetServiceAccount(secrets, provider.id);
         store.removeProvider(provider.id);
         await secrets.delete(provider.id);
         json(res, 200, { ok: true });

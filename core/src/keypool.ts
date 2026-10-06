@@ -75,9 +75,16 @@ export function setAntigravityToken(fn: ((provider: Provider) => Promise<string>
   antigravityToken = fn;
 }
 
+/** Supplies the access token for a provider that is a Google Vertex AI project; the server sets it (see vertex.ts). */
+let vertexToken: ((provider: Provider) => Promise<string>) | undefined;
+export function setVertexToken(fn: ((provider: Provider) => Promise<string>) | undefined): void {
+  vertexToken = fn;
+}
+
 export async function pickKey(secrets: SecretStore, provider: Provider): Promise<{ keyId?: string; apiKey: string | undefined }> {
   if (provider.plan && planToken) return { apiKey: await planToken(provider) };
   if (provider.antigravity && antigravityToken) return { apiKey: await antigravityToken(provider) };
+  if (provider.vertex && vertexToken) return { apiKey: await vertexToken(provider) };
   const key = pick(provider);
   if (!key) return { apiKey: await secrets.get(provider.id) };
   return { keyId: key.id, apiKey: await secrets.get(keySecretId(provider.id, key.id)) };
