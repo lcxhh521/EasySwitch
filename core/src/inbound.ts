@@ -79,7 +79,10 @@ export function decodeRequest(request: InboundRequest): Conversation {
       if (t.type !== "function") { out.dropped.push(`tool:${t.type}`); continue; }
       out.tools.push(functionTool(t.function));
     }
-    out.choice = typeof b.tool_choice === "object" ? { name: b.tool_choice.function.name } : b.tool_choice;
+    if (b.tool_choice && typeof b.tool_choice === "object") {
+      if (b.tool_choice.type !== "function" || typeof b.tool_choice.function?.name !== "string" || !out.tools.some(t => t.name === b.tool_choice.function.name)) throw new ProtocolError("跨协议无法执行指定的工具选择。");
+      out.choice = { name: b.tool_choice.function.name };
+    } else out.choice = b.tool_choice;
     out.maxTokens = b.max_completion_tokens ?? b.max_tokens;
     out.effort ??= b.reasoning_effort;
     out.stop = typeof b.stop === "string" ? [b.stop] : b.stop;
@@ -107,7 +110,11 @@ export function decodeRequest(request: InboundRequest): Conversation {
         out.tools.push({ name: t.name, description: (t.description ?? "") + grammar, custom: true, parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] } });
       } else out.dropped.push(`tool:${t.type}`); // a tool the vendor runs itself (web_search...): nothing to translate it to; it is dropped and recorded
     }
-    out.choice = typeof b.tool_choice === "object" ? { name: flat(b.tool_choice.namespace, b.tool_choice.name) } : b.tool_choice;
+    if (b.tool_choice && typeof b.tool_choice === "object") {
+      const choice = b.tool_choice;
+      if (!["function", "custom"].includes(choice.type) || typeof choice.name !== "string" || !out.tools.some(t => t.name === flat(choice.namespace, choice.name))) throw new ProtocolError("跨协议无法执行指定的服务端或未知工具。");
+      out.choice = { name: flat(choice.namespace, choice.name) };
+    } else out.choice = b.tool_choice;
     out.maxTokens = b.max_output_tokens;
     out.effort ??= b.reasoning?.effort;
     out.format = b.text?.format;
@@ -166,5 +173,10 @@ export function decodeRequest(request: InboundRequest): Conversation {
   }
   out.temperature ??= b.temperature; out.topP ??= b.top_p; out.parallelTools ??= b.parallel_tool_calls;
   if (new Set(out.tools.map(t => t.name)).size !== out.tools.length) throw new ProtocolError("跨协议工具名称重复或 namespace 压平后冲突。");
+  if (out.choice && typeof out.choice === "object") {
+    const name = out.choice.name;
+    if (typeof name !== "string" || !out.tools.some(tool => tool.name === name)) throw new ProtocolError("跨协议无法执行指定的服务端或未知工具。");
+  }
+  if (out.choice === "required" && !out.tools.length) throw new ProtocolError("跨协议没有可执行的指定工具。");
   return out;
 }

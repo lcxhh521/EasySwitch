@@ -1,3 +1,5 @@
+import { boundedUpstreamErrorText } from "./upstream-error.ts";
+import { subscriptionCacheKey } from "./subscription-input.ts";
 import { prepareCodeBuddyTextBridge } from "./codebuddy-text-bridge.ts";
 import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { prepareQoderTextBridge, type QoderExecutor } from "./qoder-text-bridge.ts";
@@ -92,17 +94,28 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
   if (!conversation) restoreNativeState(body, request, dropped);
   // A Messages request meant for Anthropic carries Claude-only fields and the account's identifier in `metadata`; they go to Anthropic itself (and to a relay on this machine), not to a third party.
   const keepClaudeFields = (() => { try { const host = new URL(provider.anthropicBaseUrl ?? provider.baseUrl).hostname; return /(^|\.)anthropic\.com$/i.test(host) || ["127.0.0.1", "localhost", "[::1]", "::1"].includes(host); } catch { return false; } })();
+  const legacyMessagesRelay = (() => { try { return /(^|\.)(?:bigmodel\.cn|z\.ai)$/.test(new URL(provider.anthropicBaseUrl ?? provider.baseUrl).hostname); } catch { return false; } })();
   if (target === "messages" && !conversation && !keepClaudeFields) {
-    for (const key of ["metadata", "context_management", "safeguards", "output_config"]) if (key in body) { delete body[key]; dropped.push(`field:${key}`); }
-    if (body.thinking && body.thinking.type !== "enabled") { delete body.thinking; dropped.push("field:thinking"); }
+    // Remove account identity without silently deleting supported format or reasoning controls.
+    if (body.metadata && typeof body.metadata === "object" && "user_id" in body.metadata) {
+      delete body.metadata.user_id; dropped.push("field:metadata.user_id");
+      if (!Object.keys(body.metadata).length) delete body.metadata;
+    }
+    // Retain the reviewed GLM compatibility adjustment, rather than applying it to all relays.
+    if (legacyMessagesRelay) {
+      for (const key of ["context_management", "safeguards"]) if (key in body) { delete body[key]; dropped.push(`field:${key}`); }
+      if (body.thinking && body.thinking.type !== "enabled") { delete body.thinking; dropped.push("field:thinking"); }
+    }
   }
   if (target !== "gemini") { body.model = request.model; if (conversation) body.stream = request.stream; }
   if (target === "chat") {
     const quirks = quirksFor(provider.baseUrl, request.model);
     const style = provider.plan ? "effort" : provider.reasoningEffort === undefined ? quirks.reasoning : provider.reasoningEffort ? "effort" : "none";
     // Known provider quirks live at egress. An ordinary same-protocol call retains its fields.
-    if (conversation || Object.values(quirks).some(v => v === true)) shapeChat(body as ChatRequest, { quirks, ...(typeof request.body.prompt_cache_key === "string" ? { cacheKey: request.body.prompt_cache_key } : {}) });
-    const effort = request.effort ?? conversation?.effort ?? (officialThinkingProfile(provider.baseUrl, request.model) ? body.reasoning_effort : undefined);
+    shapeChat(body as ChatRequest, { quirks, cacheKey: subscriptionCacheKey(request) });
+    const switchStyle = ["thinking", "thinking-effort", "enable_thinking"].includes(style);
+    const effort = request.effort ?? (switchStyle ? undefined : conversation?.effort ?? (officialThinkingProfile(provider.baseUrl, request.model) ? body.reasoning_effort : undefined));
+    if (switchStyle && !request.effort && !(style === "thinking-effort" && body.thinking?.type === "enabled")) delete body.reasoning_effort;
     if (conversation) delete body.reasoning_effort;
     applyEffort(body as ChatRequest, effort, style, modelEfforts(provider, request.model));
     if (request.stream && provider.streamUsage && !body.stream_options) body.stream_options = { include_usage: true };
@@ -140,18 +153,18 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
           headers = { ...(key && !provider.wire?.authHeader ? { "x-goog-api-key": key } : {}), ...upstreamHeaders(provider, provider.wire?.authHeader ? key : undefined) };
         } else {
           url = endpointUrl(provider, target);
-          headers = target === "messages" ? { ...anthropicHeaders(key, provider), ...(keepClaudeFields ? request.headers : Object.fromEntries(Object.entries(request.headers ?? {}).filter(([name]) => name.toLowerCase() !== "anthropic-beta"))) } : upstreamHeaders(provider, key);
+          headers = target === "messages" ? { ...anthropicHeaders(key, provider), ...(!legacyMessagesRelay ? request.headers : Object.fromEntries(Object.entries(request.headers ?? {}).filter(([name]) => name.toLowerCase() !== "anthropic-beta"))) } : upstreamHeaders(provider, key);
         }
         const init: RequestInit = { method: "POST", redirect: "error", signal, headers: { "content-type": "application/json", accept: plan || request.stream ? "text/event-stream" : "application/json", ...headers } };
         const response = await fetch(url, { ...init, body: JSON.stringify(payload) });
         if (provider.plan) {
           recordQuotaHeaders(provider.id, response.headers);
-          if (response.status === 429 && isUsageLimit(429, await response.clone().text().catch(() => ""))) recordLimitReached(provider.id);
+          if (response.status === 429 && isUsageLimit(429, await boundedUpstreamErrorText(response.clone()))) recordLimitReached(provider.id);
         }
         // Claude Code commonly requests 32k output. Retry only an explicit limit rejection,
         // using the same destination, key and source shaping as the original attempt.
         if (input.protocol === "messages" && target === "chat" && response.status === 400 && body.max_tokens !== undefined) {
-          const detail = await response.clone().text();
+          const detail = await boundedUpstreamErrorText(response.clone());
           if (/max[_ ](?:completion[_ ])?tokens/i.test(detail) && /exceed|too (?:large|high)|at most|less than|maximum|limit|range|超出|上限/i.test(detail)) {
             await response.body?.cancel();
             const retry = { ...(payload as Json) }; delete retry.max_tokens;

@@ -1,3 +1,4 @@
+import { safeUpstreamReason } from "./upstream-error.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -38,18 +39,19 @@ export function parseRequest(res: ServerResponse, protocol: ApiProtocol, raw: st
 }
 
 /** Observe native replies without translating or filtering their payloads. */
-async function observe(response: Response, protocol: ApiProtocol): Promise<{ usage?: Usage; failed?: boolean }> {
+async function observe(response: Response, protocol: ApiProtocol, onUsage?: (usage: Usage) => void): Promise<{ usage?: Usage; failed?: boolean }> {
   let usage: Usage | undefined; let failed = false; let messageUsage: Json = {};
   const ids: string[] = []; let reasoning = "";
   const take = (j: Json) => {
     if (j.error || j.type === "error" || j.type === "response.failed") failed = true;
     if (protocol === "messages") {
-      if (j.type === "message_start") messageUsage = j.message?.usage ?? {};
+      if (j.type === "message_start") { messageUsage = j.message?.usage ?? {}; usage = usageOf(protocol, messageUsage); }
       if (j.usage) { messageUsage = { ...messageUsage, ...j.usage }; usage = usageOf(protocol, messageUsage); }
     } else {
       const raw = protocol === "gemini" ? j.usageMetadata : j.usage ?? j.response?.usage;
       if (raw) usage = usageOf(protocol, raw);
     }
+    if (usage) onUsage?.(usage);
     if (protocol === "chat") {
       const m = j.choices?.[0]?.delta ?? j.choices?.[0]?.message ?? {};
       reasoning += m.reasoning_content ?? m.reasoning ?? "";
@@ -105,7 +107,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
       res.writeHead(upstream.status, passthroughHeaders(upstream.headers));
       if (!upstream.body) { res.end(); finish(upstream.status); return; }
       const [bytes, side] = upstream.body.tee();
-      const observed = observe(new Response(side, { headers: upstream.headers }), input.protocol).catch(() => ({}));
+      const observed = observe(new Response(side, { headers: upstream.headers }), input.protocol, value => { usage = value; }).catch(() => ({}));
       const source = Readable.fromWeb(bytes as import("node:stream/web").ReadableStream);
       source.once("error", () => { if (!abort.signal.aborted) upstreamFailed = true; });
       await pipeline(source, res);
@@ -114,8 +116,8 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     }
     if (!upstream.ok || !upstream.body) {
       const status = upstream.ok ? 502 : upstream.status;
-      const reason = upstream.ok ? "" : await upstreamReason(upstream);
-      await upstream.body?.cancel().catch(() => undefined);
+      const reason = upstream.ok ? "" : await safeUpstreamReason(upstream);
+      void upstream.body?.cancel().catch(() => undefined);
       // The reason is shown to the agent (it needs "prompt too long" or "model not found" to react) but not logged: upstream bodies can echo request data.
       gatewayError(res, input.protocol, status, (status === 429 ? "upstream rate limit (HTTP 429)" : "upstream HTTP " + status) + (reason ? `: ${reason}` : "")); finish(status, "upstream HTTP " + status); return;
     }
@@ -131,6 +133,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     else { const result = downstream.result(); res.writeHead(200, { "content-type": "application/json" }); res.write(JSON.stringify(result)); }
     res.end(); finish(200);
   } catch (error) {
+    usage = downstream?.usage ?? usage;
     const status = error instanceof ProtocolError ? error.status : 502;
     const message = error instanceof ProtocolError ? error.message : "上游响应无法完成，请检查来源或重试。";
     if (res.destroyed || abort.signal.aborted) { finish(upstreamFailed ? 502 : 499, upstreamFailed ? "upstream stream interrupted" : "client disconnected"); return; }
@@ -139,15 +142,4 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     else { downstream?.fail(message); res.end(); }
     finish(status, message);
   }
-}
-
-
-/** The short message inside an upstream error body, with anything that looks like a credential removed, or "". */
-async function upstreamReason(upstream: Response): Promise<string> {
-  try {
-    const text = (await upstream.clone().text()).slice(0, 4000);
-    let message = text;
-    try { const j = JSON.parse(text) as Record<string, any>; message = String(j.error?.message ?? j.message ?? j.error ?? ""); } catch { /* not JSON: use the text */ }
-    return message.replace(/\s+/g, " ").replace(/(Bearer\s+)?\b(sk|es-session|key|tok|ya29|gh[pousr])[-_][\w.-]{8,}/gi, "[hidden]").trim().slice(0, 300);
-  } catch { return ""; }
 }

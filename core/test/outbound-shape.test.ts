@@ -52,10 +52,10 @@ test("a source that takes both Chat and Messages is reached by Chat for a reques
 test("Claude-only fields and the account identifier are not sent to a third-party Messages relay, but are kept for Anthropic and for a relay on this machine", () => {
   const body = { max_tokens: 9, messages: [{ role: "user", content: "hi" }], metadata: { user_id: "acct-uuid" }, context_management: { edits: [] }, thinking: { type: "adaptive" } };
   const sent = (baseUrl: string) => (prepareOutbound(relay(baseUrl), { ...request("messages", structuredClone(body)) } as never) as unknown as { dropped: string[] });
-  assert.ok(sent("https://open.bigmodel.cn/api/anthropic").dropped.includes("field:metadata"));
+  assert.ok(sent("https://open.bigmodel.cn/api/anthropic").dropped.includes("field:metadata.user_id"));
   assert.ok(sent("https://open.bigmodel.cn/api/anthropic").dropped.includes("field:thinking"));
-  assert.ok(!sent("https://api.anthropic.com").dropped.includes("field:metadata"));
-  assert.ok(!sent("http://127.0.0.1:9").dropped.includes("field:metadata"));
+  assert.ok(!sent("https://api.anthropic.com").dropped.includes("field:metadata.user_id"));
+  assert.ok(!sent("http://127.0.0.1:9").dropped.includes("field:metadata.user_id"));
 });
 
 test("a Responses tool output made of input_text blocks reaches a Chat relay as its text", () => {
