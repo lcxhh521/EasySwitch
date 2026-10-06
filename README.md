@@ -16,7 +16,7 @@
 
 **模型来源**
 - 中转站、各家官方 API、本地模型、Google Vertex AI（服务账号）、小米 MiMo 免 key 档位：预设一键添加，加进来先自动测一遍（能否列出模型、普通回答、流式、工具调用、走哪种协议）。
-- 订阅：ChatGPT（用 Codex 客户端的登录）、GitHub Copilot、Kiro（读你本机 Kiro CLI 的登录）、Google Antigravity（浏览器里 Google 登录）、Cursor（浏览器里登录，目前只能纯文字对话、不能替 agent 执行工具）。每个订阅一个开关，新的默认关；用量和重置时间显示在卡片上，用完了模型池自动跳过它。
+- 订阅：ChatGPT（用 Codex 客户端的登录）、GitHub Copilot、Kiro（读你本机 Kiro CLI 的登录）、Google Antigravity（浏览器里 Google 登录）、Cursor（浏览器里登录，目前只能纯文字对话、不能替 agent 执行工具）、Kimi 会员（设备码登录）。每个订阅一个开关，新的默认关；用量和重置时间显示在卡片上，用完了模型池自动跳过它。
 - 模型池：同一个模型多个来源合成一个名字，一个挂了自动换下一个。
 - 每月预算：给按量计费的来源设一个估算预算，可以只提醒，也可以用完就停用到下个月。
 - Key 存在 macOS 钥匙串；订阅的令牌只发给它所属的厂商。
@@ -59,7 +59,7 @@ npm run typecheck
 npm test             # 单元测试 + 端到端测试
 ```
 
-端到端测试会调用**真实的 Codex、Claude Code、Hermes 和 DeepSeek Harness**：agent → EasySwitch 网关 → 严格的假中转站，走完「下令执行命令 → agent 执行 → 带回输出作答」；这些测试在开着网关鉴权的情况下跑。agent 运行在临时的目录里，并检查你真实的配置里没有出现 EasySwitch 的痕迹。各家订阅（Kiro、Antigravity、Cursor、Vertex、ChatGPT、Copilot）只用本地的假服务验证过，没有用真账号测。
+端到端测试会调用**真实的 Codex、Claude Code、Hermes 和 DeepSeek Harness**：agent → EasySwitch 网关 → 严格的假中转站，走完「下令执行命令 → agent 执行 → 带回输出作答」；这些测试在开着网关鉴权的情况下跑。agent 运行在临时的目录里，并检查你真实的配置里没有出现 EasySwitch 的痕迹。各家订阅（Kiro、Antigravity、Cursor、Kimi、Vertex、ChatGPT、Copilot）只用本地的假服务验证过，没有用真账号测。
 
 ## 安全
 

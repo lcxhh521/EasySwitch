@@ -37,6 +37,8 @@ export interface Provider {
   vertex?: { project: string; location: string; clientEmail: string };
   /** This provider is Google Antigravity (Cloud Code Assist): the Google account that signed in and the project found for it (see antigravity.ts). */
   antigravity?: { accountId: string; email: string; projectId: string };
+  /** This provider is a Kimi Code account signed in with a device code (see kimi.ts). */
+  kimi?: { accountId: string; email?: string };
   /** This provider is a Cursor account: who signed in (the login itself is in the secret store; see cursor/auth.ts). */
   cursor?: { accountId: string; email?: string };
   /** This provider is Kiro: the user's own Kiro CLI login is read for each request (see kiro.ts). `loginPath` overrides where it is read from. */

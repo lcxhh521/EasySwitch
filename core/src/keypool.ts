@@ -75,6 +75,12 @@ export function setAntigravityToken(fn: ((provider: Provider) => Promise<string>
   antigravityToken = fn;
 }
 
+/** Supplies the access token for a provider that is a Kimi Code account; the server sets it (see kimi.ts). */
+let kimiToken: ((provider: Provider) => Promise<string>) | undefined;
+export function setKimiToken(fn: ((provider: Provider) => Promise<string>) | undefined): void {
+  kimiToken = fn;
+}
+
 /** Supplies the access token for a provider that is a Cursor account; the server sets it (see cursor/auth.ts). */
 let cursorToken: ((provider: Provider) => Promise<string>) | undefined;
 export function setCursorToken(fn: ((provider: Provider) => Promise<string>) | undefined): void {
@@ -90,6 +96,7 @@ export function setVertexToken(fn: ((provider: Provider) => Promise<string>) | u
 export async function pickKey(secrets: SecretStore, provider: Provider): Promise<{ keyId?: string; apiKey: string | undefined }> {
   if (provider.plan && planToken) return { apiKey: await planToken(provider) };
   if (provider.antigravity && antigravityToken) return { apiKey: await antigravityToken(provider) };
+  if (provider.kimi && kimiToken) return { apiKey: await kimiToken(provider) };
   if (provider.cursor && cursorToken) return { apiKey: await cursorToken(provider) };
   if (provider.vertex && vertexToken) return { apiKey: await vertexToken(provider) };
   const key = pick(provider);

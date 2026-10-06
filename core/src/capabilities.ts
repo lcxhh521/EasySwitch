@@ -97,7 +97,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     source: { state: "impossible", note: "个人账号的 Google 登录已不再提供给 Gemini CLI 的 Code Assist（只有标准版/企业版账号，且要自备 Cloud 项目）；想用自己的 Gemini 额度，走 API Key（已有 Google 预设）。企业账号走 Code Assist 的路是可做的，但我们没有这类账号可测" },
   },
   "kimi-cli": {
-    source: { state: "documented", note: "Kimi 编程套餐已经是现成的预设（kimi-coding，地址 api.kimi.com/coding/v1，填会员页的 Key）；官方允许会员在第三方工具里用。「登录即用」（设备码登录，要带 X-Msh-* 一整套头）还没做，见 research/subscription-sources-3.md" },
+    source: { state: "documented", note: "两种办法：Kimi 编程套餐的 Key（预设）；或用 Kimi 会员设备码登录（令牌存钥匙串、额度能显示）。官方允许会员在第三方工具里用；都只用假服务验证过，没有用真账号测" },
   },
   codex: {
     picker: { state: "verified", note: "模型目录里原生模型和外接模型放在一起（用真实 Codex 验证过）" },
