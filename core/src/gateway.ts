@@ -1,3 +1,4 @@
+import { isBudgetStopped } from "./budget.ts";
 import { anthropicModelList, catalogModels } from "./catalog.ts";
 import { withKey } from "./keypool.ts";
 import { applyEffort, quirksFor, reasoningMemory, shapeChat, upstreamModelId, type Quirks } from "./quirks.ts";
@@ -33,12 +34,13 @@ export function resolveModel(store: Store, exposed: string): { provider: Provide
   if (slash <= 0) return undefined;
   const provider = store.provider(exposed.slice(0, slash));
   const model = exposed.slice(slash + 1);
-  return provider && !provider.off && model ? { provider, model } : undefined;
+  return provider && !provider.off && !isBudgetStopped(provider) && model ? { provider, model } : undefined;
 }
 
 /** Why a name resolves to nothing, in words for the agent: a switched-off subscription says so. */
 export function noModelMessage(store: Store, exposed: string): string {
   const provider = store.provider(exposed.slice(0, Math.max(0, exposed.indexOf("/"))));
+  if (provider && isBudgetStopped(provider)) return `The monthly budget of "${provider.name}" is used up in EasySwitch, so it is not used until next month. Raise or remove the budget in the console (Model sources) to use "${exposed}".`;
   if (provider?.off) return `The subscription "${provider.name}" is switched off in EasySwitch. Switch it on in the console (Model sources) to use "${exposed}".`;
   return `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`;
 }

@@ -1,3 +1,4 @@
+import { isBudgetStopped } from "./budget.ts";
 import { execFile } from "node:child_process";
 import { modelEfforts } from "./model-efforts.ts";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -28,7 +29,7 @@ export interface CatalogModel {
 
 export function catalogModels(providers: readonly Provider[]): CatalogModel[] {
   // A subscription the user switched off is used nowhere.
-  return providers.filter(p => !p.off).flatMap(p => {
+  return providers.filter(p => !p.off && !isBudgetStopped(p)).flatMap(p => {
     const models = p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : [];
     return models.map(model => ({ providerId: p.id, providerName: p.name, model, efforts: modelEfforts(p, model) }));
   });

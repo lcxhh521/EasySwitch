@@ -28,6 +28,7 @@ import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setAntigravityToken, setPlanToken, setVertexToken } from "./keypool.ts";
 import { isGatewayPath, loadGatewayKey, requestHasValidToken } from "./gateway-auth.ts";
+import { addSpend, budgetStatus, loadMonth, monthStart } from "./budget.ts";
 import { DEFAULT_VERTEX_MODELS, forgetServiceAccount, mintAccessToken, parseServiceAccount, storeServiceAccount, VertexError, vertexAccessToken, vertexBaseUrl } from "./vertex.ts";
 import { nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
@@ -127,6 +128,7 @@ function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
   const priced = sample ? ratesFor(p, sample) : undefined;
   return {
     ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
+    ...(budgetStatus(p) ? { budgetStatus: budgetStatus(p) } : {}),
     ...(sample ? { priceSample: { model: sample, ...(priced ? { rates: priced.rates, source: priced.source } : {}) } } : {}),
   };
 }
@@ -137,8 +139,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   /** The log writer for one try: inside a pool it also says which pool and which try this is. */
   const logFor = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) =>
     pushLog(ctx ? { ...entry, pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : entry);
+  // This month's spend is rebuilt from the ledger, so a restart does not forget what the budgets have used.
+  if (ledger) loadMonth(ledger.read(monthStart()));
   const pushLog = (entry: GatewayLogEntry) => {
     priceEntry(store, entry);
+    if (entry.providerId && entry.costUsd) addSpend(entry.providerId, entry.costUsd, new Date(entry.at));
     log.unshift(entry);
     log.length = Math.min(log.length, 100);
     ledger?.append(entry);
@@ -1135,6 +1140,21 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (Object.keys(modelEffortsSet).length) provider.modelEfforts = modelEffortsSet; else delete provider.modelEfforts;
       store.upsertProvider(provider);
       json(res, 200, { model, levels: modelEfforts(provider, model) });
+      return;
+    }
+    const budgetMatch = /^\/api\/providers\/([a-z0-9-]+)\/budget$/.exec(path);
+    if (budgetMatch && method === "PUT") {
+      // A monthly budget for one source: how much it may cost this month, and whether it stops when that is gone.
+      const provider = store.provider(budgetMatch[1] ?? "");
+      if (!provider) { json(res, 404, { error: "没有这个模型来源" }); return; }
+      if (body.monthlyUsd === null || body.monthlyUsd === undefined || body.monthlyUsd === "") delete provider.budget;
+      else {
+        const usd = Number(body.monthlyUsd);
+        if (!(usd > 0) || usd > 1_000_000) { json(res, 400, { error: "预算要是一个大于 0 的数（美元）" }); return; }
+        provider.budget = { monthlyUsd: usd, ...(body.stop === true ? { stop: true } : {}) };
+      }
+      store.upsertProvider(provider);
+      json(res, 200, { budget: provider.budget ?? null, status: budgetStatus(provider) ?? null });
       return;
     }
     const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route))?$/.exec(path);

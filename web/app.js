@@ -783,6 +783,26 @@ function keyList(p) {
     </form>`;
 }
 
+/** "本月约 $1.20 / $5（24%）", and what it means when it is gone. */
+function budgetText(b) {
+  const money = n => `$${n < 10 ? n.toFixed(2) : n.toFixed(0)}`;
+  const base = `本月约 ${money(b.spent)} / ${money(b.limit)}（${Math.round(b.ratio * 100)}%）`;
+  return b.level === "over" ? `${base}，预算用完了${b.stop ? "，已停用到下个月" : "（只提醒，没有停用）"}` : b.level === "near" ? `${base}，快用完了` : base;
+}
+
+/** The monthly budget of one source: how much it may cost, and whether it stops when that is gone. The cost is the estimate at the vendor's own prices. */
+function budgetBlock(p) {
+  if (p.billing === "subscription") return "";
+  const b = p.budget;
+  return `<form class="controls" data-budget-form="${esc(p.id)}">
+    <label class="hint">每月预算（美元，估算）</label>
+    <input type="number" name="monthlyUsd" min="0" step="0.5" placeholder="不设" value="${b ? esc(String(b.monthlyUsd)) : ""}" style="width:110px">
+    <label class="hint" style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="stop" ${b?.stop ? "checked" : ""}> 用完就停用到下个月</label>
+    <button class="btn secondary" type="submit">保存</button>
+    <span class="hint">${p.budgetStatus ? esc(budgetText(p.budgetStatus)) : "按各家公开的按量价格估算；没设就不限"}</span>
+  </form>`;
+}
+
 function providerRow(p) {
   const models = modelsOf(p);
   const used = p.usedBy.map(h => icon(agentMeta(h).icon, "sm")).join("");
@@ -808,13 +828,14 @@ function providerRow(p) {
       ${checks ? `<div class="checks">${checks}</div>` : ""}
       <div class="hint">OpenAI 兼容地址：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
       ${billingBlock(p)}
+      ${budgetBlock(p)}
       ${keyList(p)}
       <div><button class="btn danger" data-remove>删除这个来源</button></div>
     </div>` : "";
   return `
     <div class="row clickable ${open ? "open" : ""}" data-toggle="${esc(p.id)}">
       ${icon(p.icon, "lg")}
-      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型</div></div>
+      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}</div></div>
       ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
       <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
       <span class="chev">›</span>
@@ -1650,6 +1671,17 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("submit", async e => {
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
+  if (e.target.dataset?.budgetForm) {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const usd = String(f.get("monthlyUsd") ?? "").trim();
+    try {
+      await call("PUT", `/api/providers/${e.target.dataset.budgetForm}/budget`, { monthlyUsd: usd === "" ? null : Number(usd), stop: f.get("stop") === "on" });
+      toast(usd === "" ? "已取消预算" : "预算已保存");
+    } catch (error) { toast(error.message); }
+    await refresh(true);
+    return;
+  }
   if (e.target.id === "vertex-form") {
     e.preventDefault();
     const f = new FormData(e.target);

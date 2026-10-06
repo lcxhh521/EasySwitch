@@ -43,6 +43,8 @@ export interface Provider {
   mimoFree?: boolean;
   probe?: ProbeReport;
 
+  /** A monthly budget in USD (the ledger's estimate at the vendor's prices); with `stop`, the source is used nowhere once it is gone, until the month turns. */
+  budget?: { monthlyUsd: number; stop?: boolean };
   /**
    * The user has switched this subscription off: it is kept (login and settings stay) but used nowhere: not in
    * model menus, pools or dispatch, and a request that names it is refused with a plain reason. New
