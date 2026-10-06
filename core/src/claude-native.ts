@@ -26,12 +26,13 @@ export function isNativeClaude(model: string): boolean {
 }
 
 /** The caller's own headers, minus the ones that belong to this hop or to EasySwitch. */
-const NOT_FORWARDED = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "upgrade", "expect", "x-easyswitch", "x-easyswitch-session", "keep-alive", "proxy-connection"]);
+const NOT_FORWARDED = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "upgrade", "expect", "x-easyswitch", "x-easyswitch-session", "keep-alive", "proxy-connection", "x-easyswitch-session"]);
 
 export function forwardHeaders(headers: IncomingHttpHeaders): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     if (value === undefined || NOT_FORWARDED.has(name)) continue;
+    if (["authorization", "x-api-key", "x-goog-api-key"].includes(name) && /^(?:Bearer\s+)?es-session-/i.test(String(value))) continue;
     out[name] = Array.isArray(value) ? value.join(", ") : value;
   }
   return out;
@@ -57,7 +58,7 @@ export async function forwardNative(
   const abort = new AbortController();
   res.on("close", () => abort.abort());
   const upstream = await fetch(`${anthropicUpstream()}${pathAndQuery}`, {
-    method: "POST", headers: forwardHeaders(req.headers), body, signal: abort.signal,
+    method: "POST", redirect: "error", headers: forwardHeaders(req.headers), body, signal: abort.signal,
   }).catch((error: Error) => error);
   const entry = (status: number, note?: string): GatewayLogEntry => ({
     at: new Date().toISOString(), model, providerId: "claude", route: "anthropic-native", harness: "claude",
@@ -103,7 +104,7 @@ export async function nativeModels(headers: IncomingHttpHeaders): Promise<Json[]
     if (typeof v === "string") send[name] = v;
   }
   try {
-    const res = await fetch(`${anthropicUpstream()}/v1/models?limit=100`, { headers: send, signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${anthropicUpstream()}/v1/models?limit=100`, { redirect: "error", headers: send, signal: AbortSignal.timeout(4000) });
     if (!res.ok) return [];
     const json = (await res.json()) as { data?: Json[] };
     const models = (json.data ?? []).filter(m => typeof m.id === "string");

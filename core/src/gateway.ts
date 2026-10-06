@@ -1,18 +1,15 @@
-import { isBudgetStopped } from "./budget.ts";
-import { anthropicModelList, catalogModels } from "./catalog.ts";
-import { withKey } from "./keypool.ts";
-import { applyEffort, quirksFor, reasoningMemory, shapeChat, upstreamModelId, type Quirks } from "./quirks.ts";
-import { agentOf } from "./gateway-chat.ts";
+import type { GatewaySession } from "./gateway-auth.ts";
+import { anthropicModelList } from "./catalog.ts";
+import { applyEffort, type Quirks } from "./quirks.ts";
+import { agentOfHeaders } from "./gateway-chat.ts";
 import { modelEfforts } from "./model-efforts.ts";
 import { liveMembers, poolOf } from "./pools.ts";
-import { sendChat, sendResponses } from "./upstream-chat.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable } from "node:stream";
 import type { SecretStore } from "./secrets.ts";
 import type { Store } from "./store.ts";
-import { type ChatRequest, ResponsesStream, responsesToChat } from "./translate.ts";
+import type { ChatRequest } from "./translate.ts";
 import type { GatewayLogEntry, Provider } from "./types.ts";
-import { describeFailure, endpointUrl, sseData, upstreamHeaders } from "./upstream.ts";
+import { parseRequest, routeRequest } from "./gateway-route.ts";
 
 type Json = Record<string, unknown>;
 
@@ -20,6 +17,7 @@ export interface GatewayDeps {
   store: Store;
   secrets: SecretStore;
   log: (entry: GatewayLogEntry) => void;
+  session?: GatewaySession;
 }
 
 /** `<provider id>/<upstream model>`: the provider is everything before the first slash. */
@@ -34,24 +32,15 @@ export function resolveModel(store: Store, exposed: string): { provider: Provide
   if (slash <= 0) return undefined;
   const provider = store.provider(exposed.slice(0, slash));
   const model = exposed.slice(slash + 1);
-  return provider && !provider.off && !isBudgetStopped(provider) && model ? { provider, model } : undefined;
+  return provider && !provider.off && !store.providerBudgetStopped(provider) && model ? { provider, model } : undefined;
 }
 
 /** Why a name resolves to nothing, in words for the agent: a switched-off subscription says so. */
 export function noModelMessage(store: Store, exposed: string): string {
   const provider = store.provider(exposed.slice(0, Math.max(0, exposed.indexOf("/"))));
-  if (provider && isBudgetStopped(provider)) return `The monthly budget of "${provider.name}" is used up in EasySwitch, so it is not used until next month. Raise or remove the budget in the console (Model sources) to use "${exposed}".`;
+  if (provider && store.providerBudgetStopped(provider)) return `The source budget of "${provider.name}" is blocked or its accounting is unavailable. Check its monthly budget and ledger in the console (Model sources) to use "${exposed}".`;
   if (provider?.off) return `The subscription "${provider.name}" is switched off in EasySwitch. Switch it on in the console (Model sources) to use "${exposed}".`;
   return `EasySwitch has no provider for model "${exposed}". Expected "<provider>/<model>".`;
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-function errorBody(message: string, type = "easyswitch_error") {
-  return { error: { message, type } };
 }
 
 /** OpenAI's list shape by default; Anthropic's ModelInfo list when Claude Code asks. */
@@ -75,106 +64,6 @@ export function listExposedModels(store: Store, anthropic = false): Json {
 }
 
 export async function handleResponses(req: IncomingMessage, res: ServerResponse, rawBody: string, deps: GatewayDeps): Promise<void> {
-  const started = performance.now();
-  let body: Json;
-  try {
-    body = JSON.parse(rawBody) as Json;
-  } catch {
-    sendJson(res, 400, errorBody("request body is not JSON"));
-    return;
-  }
-  const exposed = String(body.model ?? "");
-  const resolved = resolveModel(deps.store, exposed);
-  if (!resolved) {
-    sendJson(res, 404, errorBody(noModelMessage(deps.store, exposed), "model_not_found"));
-    return;
-  }
-  const { provider, model } = resolved;
-  const finish = (status: number, note?: string, extra: Partial<GatewayLogEntry> = {}) =>
-    deps.log({
-      at: new Date().toISOString(), model: exposed, providerId: provider.id, route: provider.route, harness: agentOf(req.headers.authorization, "codex"),
-      status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...extra,
-    });
-
-  const abort = new AbortController();
-  res.on("close", () => abort.abort());
-
-  if (provider.route === "responses-native") {
-    // The relay speaks Responses itself: forward the request untouched except
-    // for the model name, and stream its bytes straight back.
-    const forwarded: Json = { ...body, model: upstreamModelId(model) };
-    // The thinking level saved for this agent is carried in the request's own `reasoning` field.
-    const saved = deps.store.prefs(agentOf(req.headers.authorization, "codex")).effort;
-    if (saved && modelEfforts(provider, model).includes(saved)) forwarded.reasoning = { ...((body.reasoning as Json | undefined) ?? {}), effort: saved };
-    const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-      sendResponses(provider, apiKey, forwarded, String(req.headers.accept ?? "text/event-stream"), abort.signal));
-    if (upstream instanceof Error) {
-      sendJson(res, 502, errorBody(`upstream unreachable: ${upstream.message}`));
-      finish(502, "unreachable");
-      return;
-    }
-    res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "text/event-stream" });
-    if (upstream.body) Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream).pipe(res);
-    else res.end();
-    res.on("finish", () => finish(upstream.status, undefined, keyId ? { keyId } : {}));
-    return;
-  }
-
-  const { chat, customTools, dropped, namespaced } = responsesToChat(body, model, { streamUsage: provider.streamUsage });
-  const quirks = quirksFor(provider.baseUrl, model);
-  applyThinking(chat, deps.store, agentOf(req.headers.authorization, "codex"), (body.reasoning as Json | undefined)?.effort, provider, quirks);
-  shapeChat(chat, {
-    quirks,
-    ...(typeof body.prompt_cache_key === "string" ? { cacheKey: body.prompt_cache_key } : {}),
-  });
-  const { response: upstream, keyId } = await withKey(deps.store, deps.secrets, provider, apiKey =>
-    sendChat(provider, apiKey, chat, abort.signal));
-  const droppedList = [...new Set(dropped)];
-  const note = undefined;
-  if (upstream instanceof Error) {
-    sendJson(res, 502, errorBody(`upstream unreachable: ${upstream.message}`));
-    finish(502, "unreachable");
-    return;
-  }
-  if (!upstream.ok || !upstream.body) {
-    // Keep the upstream status: Codex retries 429 and 5xx on its own.
-    const detail = await describeFailure(upstream);
-    sendJson(res, upstream.status || 502, errorBody(`upstream ${detail}`, "upstream_error"));
-    finish(upstream.status, detail.slice(0, 120));
-    return;
-  }
-
-  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-  const stream = new ResponsesStream(model, customTools, chunk => res.write(chunk), namespaced);
-  stream.start();
-  try {
-    for await (const data of sseData(upstream.body)) {
-      if (data === "[DONE]") break;
-      let json: Json;
-      try {
-        json = JSON.parse(data) as Json;
-      } catch {
-        continue;
-      }
-      if (json.error) {
-        stream.fail("upstream_error", JSON.stringify(json.error).slice(0, 300));
-        res.end();
-        finish(200, "upstream error mid-stream");
-        return;
-      }
-      stream.chunk(json);
-    }
-    stream.finish();
-    reasoningMemory.remember(stream.turn.callIds, stream.turn.reasoning);
-    const usage = stream.usageSummary;
-    finish(200, note, {
-      ...(droppedList.length ? { dropped: droppedList } : {}),
-      ...(keyId ? { keyId } : {}),
-      ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
-    });
-  } catch (error) {
-    stream.fail("stream_interrupted", String((error as Error).message ?? error));
-    finish(200, "stream interrupted");
-  }
-  res.end();
+  const body = parseRequest(res, "responses", rawBody);
+  if (body) await routeRequest(req, res, { protocol: "responses", body, model: String(body.model ?? ""), stream: body.stream === true }, agentOfHeaders(req.headers, "codex"), deps);
 }

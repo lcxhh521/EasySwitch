@@ -40,14 +40,14 @@ export function expandUrl(url: string, params?: Record<string, string>): string 
   return out;
 }
 
-export type CallKind = "chat" | "responses" | "messages" | "models";
+export type CallKind = "chat" | "responses" | "messages" | "gemini" | "models";
 
 const DEFAULT_PATH: Record<CallKind, string> = {
-  chat: "chat/completions", responses: "responses", messages: "messages", models: "models",
+  chat: "chat/completions", responses: "responses", messages: "messages", gemini: "models", models: "models",
 };
 
 /** The full URL for one kind of call, with placeholders filled and extra query parameters added. */
-export function endpointUrl(provider: Pick<Provider, "baseUrl" | "anthropicBaseUrl" | "urlParams" | "wire">, kind: CallKind): string {
+export function endpointUrl(provider: Pick<Provider, "baseUrl" | "anthropicBaseUrl" | "urlParams" | "wire">, kind: CallKind, model?: string, stream = false): string {
   const base = expandUrl(kind === "messages" ? provider.anthropicBaseUrl ?? provider.baseUrl : provider.baseUrl, provider.urlParams);
   const path = provider.wire?.paths?.[kind] ?? DEFAULT_PATH[kind];
   // A base that already names the chat endpoint (some relays) must not get it twice.
@@ -55,6 +55,10 @@ export function endpointUrl(provider: Pick<Provider, "baseUrl" | "anthropicBaseU
   // An explicitly empty path override means "the base address is the whole endpoint".
   if (provider.wire?.paths?.[kind] === "") return trimmed;
   const url = new URL(joinUrl(trimmed, path));
+  if (kind === "gemini") {
+    url.pathname = url.pathname.replace(/\/$/, "") + "/" + encodeURIComponent(model ?? "") + (stream ? ":streamGenerateContent" : ":generateContent");
+    if (stream) url.searchParams.set("alt", "sse");
+  }
   for (const [k, v] of Object.entries(provider.wire?.query ?? {})) url.searchParams.set(k, v);
   return url.toString();
 }
@@ -66,19 +70,15 @@ export interface TimedResponse {
 
 export async function timedFetch(url: string, init: RequestInit, timeoutMs = 30_000): Promise<TimedResponse> {
   const started = performance.now();
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const response = await fetch(url, { ...init, redirect: "error", signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
   return { response, ms: Math.round(performance.now() - started) };
 }
 
 /** A short, secret-free description of a failed upstream response. */
 export async function describeFailure(response: Response): Promise<string> {
-  let text = "";
-  try {
-    text = (await response.text()).slice(0, 300);
-  } catch {
-    // Body unreadable; the status alone has to do.
-  }
-  return `HTTP ${response.status}${text ? `: ${text.replace(/\s+/g, " ")}` : ""}`;
+  // Error bodies may echo the submitted key, URL or prompt. Persist only status.
+  await response.body?.cancel().catch(() => {});
+  return `HTTP ${response.status}`;
 }
 
 /**

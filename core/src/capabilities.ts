@@ -1,3 +1,4 @@
+import { subscriptionSourceCapability, type SubscriptionVendor } from "./subscription-support.ts";
 import { AGENTS, type AgentInfo } from "./agents.ts";
 import { LAUNCHERS, effortsOf, type AgentLauncher, type LaunchInput, type LaunchSpec } from "./agent-launch.ts";
 
@@ -118,12 +119,12 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   kiro: {
     launch: { state: "impossible", note: "绑定 AWS 登录，没有本地可改的端点" },
     task: { state: "impossible", note: "绑定 AWS 登录，没有本地可改的端点" },
-    source: { state: "todo", note: "订阅适配由 Claude 做（起点：云端 gpt-wip 里的草稿）" },
+    source: { state: "documented", note: "Claude 已实现专用适配器并做假服务测试；新来源默认关闭，未做真实账号验收，条款及账号风险需单独核对" },
   },
   antigravity: {
     launch: { state: "impossible", note: "绑定 Google 登录，没有自定义端点" },
     task: { state: "impossible", note: "绑定 Google 登录，没有自定义端点" },
-    source: { state: "todo", note: "订阅适配由 Claude 做（起点：云端 gpt-wip 里的草稿）" },
+    source: { state: "documented", note: "Claude 已实现专用适配器并做假服务测试；新来源默认关闭，未做真实账号验收，条款及账号风险需单独核对" },
   },
   trae: {
     source: { state: "impossible", note: "国际版没有文档化的接口；国内版只有靠逆向 IDE 登录的社区做法，风险自担，我们暂不做" },
@@ -146,13 +147,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     task: { state: "impossible", note: "闭源，没有自定义端点" },
     source: { state: "todo", note: "还没调研它的订阅怎么接" },
   },
-  dsh: {
-    mcp: { state: "verified", note: "用真实 dsh 验证过：模型拿到了 EasySwitch 的三个 MCP 工具。前提：MCP 插件不在 dsh 的安装包里，要你自己的 dsh 里装过它（我们从你放插件的位置找到它，链接进这次启动的私有目录），没装就挂不上" },
-    tiers: { state: "verified", note: "用真实 dsh 验证过：起会话标题这类小任务走了配的小任务模型；子 agent 的模型只写进了配置，没有触发过" },
-  },
-  droid: {
-    source: { state: "todo", note: "稳妥的路是用 droid exec 做本地桥（只有文字、没有工具）；直连 Factory 的接口没有公开文档，会被 403；Droid 自己的登录是加密的读不了，要另登一次" },
-  },
+
   amp: {
     source: { state: "impossible", note: "没有公开的兼容接口，额度是 Amp 内部的，转不成通用来源" },
     launch: { state: "impossible", note: "请求走它自己的 ampcode.com 并要求账号登录，没有 OpenAI 兼容的自定义端点；只能检测并打开" },
@@ -162,21 +157,14 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     tiers: { state: "impossible", note: "它自己挑模型，不开放" },
   },
   // CodeBuddy Code (the command line) and WorkBuddy (the desktop app) are two products: they are never described as one.
-  codebuddy: {
-    source: { state: "todo", note: "官方稳妥的路是用 CODEBUDDY_API_KEY 并通过它的命令行包装，没有直接的 HTTP；见 research/subscription-sources-2.md" },
-    launch: { state: "impossible", note: "命令行版只有区域和账号两个开关，没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它" },
-    task: { state: "impossible", note: "同一个原因：改不了它连的服务地址，别的模型接不进去" },
-    mcp: { state: "impossible", note: "改不了它连的服务地址，别的模型接不进去，也就没法每次启动给它挂我们的 MCP" },
-    effort: { state: "impossible", note: "改不了它连的服务地址，用什么模型、什么档位由腾讯自己的服务决定" },
-    tiers: { state: "impossible", note: "改不了它连的服务地址，用什么模型由腾讯自己的服务决定" },
-  },
+
   workbuddy: {
-    source: { state: "todo", note: "做得了但要自己走一遍腾讯的登录和 /v2/chat/completions（见 research/subscription-sources-2.md）；它会拒绝 Codex 和 Claude Code 的系统提示（只让 Hermes、OpenCode、Pi 这类用）；是否符合腾讯的使用条款待查" },
-    launch: { state: "manual", note: "配置向导：给出 models.json 的内容和位置，你自己放进去，WorkBuddy 会自己发现变化；我们不改 ~/.workbuddy。以后可以做成另开一个用私有目录的 WorkBuddy（WORKBUDDY_CONFIG_DIR），那时才算一键；具体用哪个模型要在它的窗口里按任务选，没法替你选好；使用条款待核实" },
-    picker: { state: "manual", note: "向导给出的 models.json 里有所有可用的模型，在它的窗口里按任务选名字带 custom-local 的" },
+    source: { state: "todo", note: "远端 B68 记录了私有客户端方案的研究方向；不是已获官方支持的接口，本轮未实现或启用" },
+    launch: { state: "manual", note: "配置向导：按官方 Settings → Model 的 Custom 设置给出完整地址、临时令牌和模型列表；用户自己填写，不改 WorkBuddy 文件。真实应用尚未实测，和 CodeBuddy Code 命令行分开" },
+    picker: { state: "manual", note: "向导给出所有可用模型 ID，你在官方自定义模型设置中逐个添加，之后在应用窗口切换" },
     task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
     mcp: { state: "todo", note: "还没查它的 MCP 配置怎么给" },
-    effort: { state: "todo", note: "models.json 里有档位字段（reasoning.supportedEfforts），还没做" },
+    effort: { state: "todo", note: "还没核实当前桌面设置是否能传自定义模型档位，不编造能力字段" },
     tiers: { state: "todo", note: "还没查它有没有子 agent / 小任务的模型设置" },
   },
   "minimax-code": {
@@ -186,15 +174,21 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
   pi: {
     mcp: { state: "impossible", note: "核心没有内置 MCP（靠扩展包）" },
   },
+  dsh: {
+    mcp: { state: "documented", note: "私有 DSH_HOME 只链接已安装的 dsh-mcp-client，缺失即拒绝；配置和假调用已测试；Claude 历史版本实测过 MCP 工具可见，本次插件隔离合并尚未真机验收" },
+    effort: { state: "documented", note: "按模型提供的档位生成 dsh 映射，不自造档位；仅配置测试，真实 CLI 未实测" },
+    tiers: { state: "documented", note: "子 agent、小任务、标题和压缩模型写入私有 patch；Claude 历史版本实测标题走小模型，未触发子 agent；本次合并仅配置测试，真实 CLI 未实测" },
+  },
   aider: {
     mcp: { state: "impossible", note: "原版 Aider 没有 MCP 客户端" },
   },
   "trae-agent": {
     picker: { state: "impossible", note: "它没有模型菜单，每次只能用命令行参数指定一个模型" },
+    mcp: { state: "documented", note: "已通过私有配置及本地 stdio/HTTP 桥挂载，假服务测试通过，真实 CLI 未实测" },
   },
   "claude-desktop": {
     picker: { state: "todo", note: "第三方网关模式下它会读网关的模型列表，还没做" },
-    launch: { state: "todo", note: "做得了：Claude 桌面端有官方的「第三方推理（网关）」配置，且能用 CLAUDE_USER_DATA_DIR 换一个独立数据目录。做法是另开一个独立的 Claude 窗口，指向 EasySwitch，不碰你平时那个 Claude，也不拦截任何流量。代价：这个窗口里只有外接模型，没有 claude.ai 账号功能；原生 Claude 在平时的窗口里用" },
+    launch: { state: "todo", note: "官方签名版 2.19675.1 忽略 CLAUDE_USER_DATA_DIR；隔离后台与界面只有模拟测试，真实应用尚未实测，真实启动已阻塞。不拦截、不绕过安全机制" },
     task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
     mcp: { state: "todo", note: "还没查桌面端的 MCP 配置在第三方模式下怎么给" },
     effort: { state: "todo", note: "网关模式下档位由我们返回的模型信息决定（opencodex 就是这么做的），还没做" },
@@ -204,6 +198,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
 };
 
 /** The agents whose own subscription is worth turning into a model source (everyone else: not applicable). */
+const SUBSCRIPTION_VENDOR: Record<string, SubscriptionVendor> = { "gemini-cli": "gemini-cli", "qoder-cli": "qoder", codebuddy: "codebuddy", trae: "trae", amp: "amp", doubao: "doubao", "grok-build": "grok", "minimax-code": "minimax", "kimi-cli": "kimi", droid: "droid" };
 const HAS_SUBSCRIPTION = new Set(["gemini-cli", "qoder-cli", "codebuddy", "trae", "amp", "doubao", "grok-build", "minimax-code", "kimi-cli", "droid"]);
 
 function derive(agent: AgentInfo): AgentCaps {
@@ -233,7 +228,7 @@ function derive(agent: AgentInfo): AgentCaps {
     : !hasLauncher ? { state: "todo", note: "要先有启动方式" }
     : launcherListsModels(l) ? { state: l!.verified ? "verified" : "documented", note: "所有可用的模型都写进了它的私有配置，EasySwitch 里选的只是默认" + (l!.verified ? "" : "；还没在真实程序上确认它的菜单真的列出来") }
     : { state: "todo", note: l!.pickerNote ?? "它的配置一次只能指定一个模型，还没查它启动后能不能列出或切换到别的模型" });
-  const source: Cap = d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
+  const source: Cap = SUBSCRIPTION_VENDOR[agent.id] ? subscriptionSourceCapability(SUBSCRIPTION_VENDOR[agent.id]!) : d.source ?? (HAS_SUBSCRIPTION.has(agent.id) ? { state: "todo", note: "还没调研它的订阅怎么接" } : { state: "na", note: "没有可借用的订阅" });
 
   return { launch, task, mcp, effort, tiers, picker, source };
 }

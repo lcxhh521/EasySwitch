@@ -4,15 +4,10 @@ import { join } from "node:path";
 import type { Provider } from "./types.ts";
 
 /**
- * Xiaomi MiMo Free: Xiaomi's free public tier of its MiMo models, reached through the same
- * endpoint its MiMoCode CLI uses. No key: the endpoint hands out a short-lived JWT to any
- * client that asks through /api/free-ai/bootstrap with a client id, and chat calls present
- * that JWT with fixed client headers and a required system marker. Written from the
- * protocol as observed; the endpoint is not a public API and Xiaomi may change or restrict
- * it at any time. Prompts go to Xiaomi — the provider row in the console says so.
- *
- * The client id is a random UUID kept in EasySwitch's own directory: per install, not
- * derived from the machine. Deleting the file rotates it.
+ * Historical, undocumented MiMo Free experiment. Its identity marker/bootstrap are not a
+ * documented third-party API, so production access is disabled. Retained only to regression-test
+ * old fixtures; this code does not provide quota bypass or an official/free-access guarantee.
+ * Supported MiMo API/Token Plan routes use user-supplied official keys; see docs/mimo-sources.md.
  */
 
 const DEFAULT_BOOTSTRAP_URL = "https://api.xiaomimimo.com/api/free-ai/bootstrap";
@@ -28,6 +23,19 @@ export function mimoChatUrl(): string {
 }
 
 export const MIMO_CHAT_URL = DEFAULT_CHAT_URL;
+
+/** Strictly local fixtures only. An environment flag can never enable a real vendor request. */
+export function mimoFreeIssue(): string | undefined {
+  const loopback = (value: string): boolean => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname) && !url.username && !url.password;
+    } catch { return false; }
+  };
+  if (process.env.EASYSWITCH_TEST_MIMO_FIXTURES === "1" && loopback(mimoBootstrapUrl()) && loopback(mimoChatUrl())) return undefined;
+  return "MiMo Free 是未获官方第三方接入确认的历史实验入口，现已停用。请使用 MiMo 官方 API 或 Token Plan；不会伪装 MiMoCode 身份或绕过配额。";
+}
+
 
 /** The free endpoint 403s ("Illegal access") unless a system message contains this exact string. */
 export const MIMO_SYSTEM_MARKER =
@@ -81,6 +89,8 @@ function jwtExpiry(jwt: string): number {
 
 /** One shared bootstrap for concurrent callers; a stalled one can never hang past 15s. */
 export async function mimoJwt(stateDir: string): Promise<string> {
+  const blocked = mimoFreeIssue();
+  if (blocked) throw new Error(blocked);
   if (cache && cache.until - REFRESH_EARLY_MS > Date.now()) return cache.jwt;
   if (running) return running;
   running = (async () => {

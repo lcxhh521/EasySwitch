@@ -1,3 +1,4 @@
+import { fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -104,7 +105,7 @@ const dir = mkdtempSync(join(tmpdir(), "es-ag-"));
 const H = { "content-type": "application/json", "x-easyswitch": "1" };
 const api = (m: string, p: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${p}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
 const ask = (extra: Json = {}, model = () => `${providerId}/gemini-fake-pro`) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-  method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+  method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
   body: JSON.stringify({ model: model(), messages: [{ role: "user", content: "hi" }], ...extra }),
 });
 const hello = () => ({ events: [{ response: { candidates: [{ content: { role: "model", parts: [{ text: "Hello" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 1, totalTokenCount: 5 } } }] });
@@ -121,7 +122,14 @@ before(async () => {
   server = createEasySwitchServer({
     store, secrets, port,
     // The "browser": go to Google (the fake), approve, and come back to the page this machine opened.
-    openUrl: async url => { void fetch(authorizeUrl(google, url)).then(r => r.text()); },
+    openUrl: async url => {
+      const callback = new URL(authorizeUrl(google, url));
+      assert.equal(callback.protocol, "http:");
+      assert.equal(callback.hostname, "127.0.0.1", "only the fake local callback is opened");
+      // The callback's redirect back to the UI is unnecessary for this fake browser step.
+      // Never enable automatic redirect following under the local-only test guard.
+      await fetch(callback, { redirect: "manual" }).then(r => r.text());
+    },
   });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
 });

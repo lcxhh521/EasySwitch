@@ -7,8 +7,6 @@ import { LAUNCHERS, type AgentLauncher } from "../src/agent-launch.ts";
 import { capabilityMatrix, coverage, FEATURES, launcherCarriesMcp, launcherHasOwnEffort, launcherListsModels, type CapState } from "../src/capabilities.ts";
 
 const STATES: CapState[] = ["verified", "documented", "manual", "impossible", "todo", "na"];
-// dsh's MCP plugin is whatever the person's own dsh has; the table must not depend on that, so it is pinned here.
-process.env.EASYSWITCH_DSH_MCP_PLUGIN = tmpdir();
 const matrix = capabilityMatrix();
 
 test("every agent has an explicit state for every feature: nothing is left unsaid", () => {
@@ -56,12 +54,11 @@ test("closed apps are never claimed to launch, and a launcher implies launch or 
 test("MCP and thinking-level support are read off what the launchers really do", () => {
   // The launchers that carry the MCP server today; a new one has to be added here on purpose.
   const carrying = AGENTS.filter(a => launcherCarriesMcp(LAUNCHERS[a.id])).map(a => a.id).sort();
-  assert.deepEqual(carrying, ["claude", "cline", "codex", "copilot-cli", "crush", "droid", "dsh", "gemini-cli", "goose", "grok-build", "hermes", "openclaw", "opencode", "qoder-cli", "qwen-code", "trae-agent"], "update the matrix expectation when another launcher learns to carry MCP");
+  assert.deepEqual(carrying, ["atomcode", "claude", "cline", "codebuddy", "codex", "copilot-cli", "crush", "droid", "dsh", "gemini-cli", "goose", "grok-build", "hermes", "kimi-cli", "omp", "openclaw", "opencode", "qoder-cli", "qwen-code", "trae-agent"], "update the matrix expectation when another launcher learns to carry MCP");
   assert.equal(matrix.codex!.mcp.state, "verified");
   assert.equal(matrix.claude!.mcp.state, "verified");
   assert.equal(matrix.hermes!.mcp.state, "documented");
-  assert.equal(matrix.dsh!.mcp.state, "verified", "dsh takes an MCP plugin through its patch, checked against the real program");
-  assert.match(matrix.dsh!.mcp.note ?? "", /插件不在 dsh 的安装包里/);
+  assert.equal(matrix.dsh!.mcp.state, "documented", "dsh MCP is configured but has no real CLI acceptance");
   assert.equal(matrix.aider!.mcp.state, "impossible");
   // A launcher that grows an MCP argument is noticed without anyone editing a table.
   const fake: AgentLauncher = { verified: false, headless: i => ({ command: i.bin, args: i.mcp ? ["--mcp", i.mcp.url] : [], env: {} }) };
@@ -81,6 +78,9 @@ test("Claude's subscription is never offered to other harnesses, and Claude's de
   assert.equal(matrix["claude-desktop"]!.launch.state, "todo");
   assert.match(matrix["claude-desktop"]!.launch.note!, /官方/);
   assert.match(matrix["claude-desktop"]!.launch.note!, /不拦截/);
+  assert.match(matrix["claude-desktop"]!.launch.note!, /模拟/);
+  assert.match(matrix["claude-desktop"]!.launch.note!, /尚未实测/);
+  assert.match(matrix["claude-desktop"]!.launch.note!, /真实启动已阻塞/);
 });
 
 test("the coverage summary adds up, and says plainly how much is still to do", t => {
@@ -168,7 +168,7 @@ test("a thinking level and the extra models reach the files of the launchers tha
     assert.match(config, /defaultThinkingLevel: "xhigh"/);
     assert.match(config, /task: "easyswitch\/kimi\/k2"/);
     assert.match(config, /smol: "easyswitch\/deepseek\/fast"/);
-    assert.deepEqual(spec.unset, ["OMP_PROFILE", "PI_PROFILE"], "a profile variable would send omp to the user's own directory");
+    assert.deepEqual(spec.unset, ["OMP_PROFILE", "PI_PROFILE", "CLAUDE_CONFIG_DIR", "PI_CONFIG_FILES", "PI_SMOL_MODEL", "PI_SLOW_MODEL", "PI_PLAN_MODEL"], "a profile variable would send omp to the user's own directory");
     const crush = EXTRA_LAUNCHERS.crush!.headless!(input(dir, { effort: "high", tiers: { small: "deepseek/fast" } }));
     materialize(crush, dir);
     const parsed = JSON.parse(readFileSync(join(dir, "crush-config", "crush.json"), "utf8"));
@@ -212,7 +212,7 @@ test("every launcher that has a model list in its own configuration gets all the
     const l = LAUNCHERS[id]!;
     const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
     try {
-      const spec = (l.headless ?? l.interactive!)(input(dir, { model: models[1]!, models, stateDir: dir }));
+      const spec = (l.headless ?? l.interactive!)(input(dir, { model: models[1]!, models, stateDir: dir, mcp: undefined }));
       materialize(spec, dir);
       const text = JSON.stringify(spec.args) + JSON.stringify(spec.env) + walk(dir).map(f => readFileSync(f, "utf8")).join("\n");
       for (const m of models) assert.ok(text.includes(m.slice(m.indexOf("/") + 1)), `${id}: ${m} is not in the agent's own list`);
@@ -240,10 +240,12 @@ test("Copilot's level is a settings file in a private home used only when a leve
   assert.equal(settings.security.auth.selectedType, "gemini-api-key");
   assert.equal(JSON.parse(Object.values(LAUNCHERS["gemini-cli"]!.headless!(base).files!)[0]!).modelConfigs, undefined, "no level, no override");
   const trae = LAUNCHERS["trae-agent"]!.headless!({ ...base, mcp: { url: "http://127.0.0.1:18765/mcp", headers: { Authorization: "Bearer es-session-x-1" } } });
-  const yaml = Object.values(trae.files!)[0]!;
-  assert.match(yaml, /mcp_servers:\n  easyswitch:\n    command: /);
-  assert.match(yaml, /es-mcp-stdio\.ts/);
-  assert.ok(yaml.includes("--header") && yaml.includes("allow_mcp_servers: [easyswitch]"));
+  const config = JSON.parse(Object.values(trae.files!)[0]!);
+  assert.equal(config.mcp_servers.easyswitch.command, process.execPath);
+  assert.match(config.mcp_servers.easyswitch.args[0], /es-mcp-stdio\.ts$/);
+  assert.deepEqual(config.allow_mcp_servers, ["easyswitch"]);
+  assert.equal(JSON.parse(config.mcp_servers.easyswitch.env.EASYSWITCH_MCP_HEADERS).Authorization, "Bearer es-session-x-1");
+  assert.ok(!JSON.stringify(config.mcp_servers.easyswitch.args).includes("es-session-x-1"), "the token is not in bridge argv");
   assert.ok(!Object.values(LAUNCHERS["trae-agent"]!.headless!(base).files!)[0]!.includes("mcp_servers"), "no MCP attached, none configured");
   assert.equal(matrix["trae-agent"]!.mcp.state, "documented");
   assert.equal(matrix["copilot-cli"]!.effort.state, "documented");

@@ -50,7 +50,7 @@ before(async () => {
   relay = await startMockRelay(0);
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-home-"))), secrets: createSecretStore(), port, gatewayAuth: true });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-home-"))), secrets: createSecretStore(), port });
   await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
   await api("POST", "/api/providers", { name: "Mock Relay", baseUrl: relay.baseUrl });
 });

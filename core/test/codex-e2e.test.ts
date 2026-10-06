@@ -7,12 +7,11 @@
  * Codex runs with a throwaway CODEX_HOME, and the user's real
  * ~/.codex/config.toml is fingerprinted before and after.
  */
-import { sessionToken } from "../src/gateway-chat.ts";
 import { withoutProjectPaths } from "../src/native.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +22,7 @@ import { codexArgs, findCodex, SESSION_MARKER } from "../src/launch.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
+import { gatewayTokens, sessionToken } from "../src/gateway-auth.ts";
 import { SHELL_MARKER, startMockRelay } from "./mock-relay.ts";
 
 type Json = Record<string, unknown>;
@@ -67,7 +67,7 @@ before(async () => {
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
   store = new Store(mkdtempSync(join(tmpdir(), "es-home-")));
-  server = createEasySwitchServer({ store, secrets: createSecretStore(), port, gatewayAuth: true });
+  server = createEasySwitchServer({ store, secrets: createSecretStore(), port });
   await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
 });
 
@@ -115,10 +115,12 @@ test("Codex's own model list in an augmented session is every EasySwitch model",
   const catalog = await writeCodexCatalog(codex, store.dir, store.providers());
   assert.ok(catalog, "a catalog was generated from the installed Codex");
   const codexHome = mkdtempSync(join(tmpdir(), "es-codex-home-"));
+  const token = sessionToken("codex", { allowMcp: false, allowNativeClaude: false });
+  t.after(() => { gatewayTokens.revoke(token); rmSync(codexHome, { recursive: true, force: true }); });
   // `codex debug models` renders the catalog the /model menu is built from.
   const configOnly = codexArgs(port, "mock-relay/mock-coder", catalog).slice(0, -2); // `debug models` takes no -m
   const { stdout } = await run(codex, ["debug", "models", ...configOnly],
-    { cwd: codexHome, env: { ...process.env, HOME: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "" }, timeout: 60_000 });
+    { cwd: codexHome, env: { ...process.env, HOME: codexHome, USERPROFILE: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "", EASYSWITCH_GATEWAY_TOKEN: token }, timeout: 60_000 });
   const listed = ((JSON.parse(stdout) as Json).models as Json[]).filter(m => m.visibility === "list").map(m => m.slug);
   assert.deepEqual(listed, ["mock-relay/mock-coder", "mock-relay/mock-mini"]);
 });
@@ -131,6 +133,8 @@ test("the real Codex binary completes a tool round trip through the gateway", as
   }
   const codexHome = mkdtempSync(join(tmpdir(), "es-codex-home-"));
   const work = mkdtempSync(join(tmpdir(), "es-work-"));
+  const token = sessionToken("codex", { allowMcp: false, allowNativeClaude: false });
+  t.after(() => { gatewayTokens.revoke(token); rmSync(codexHome, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true }); });
   const before = relay.requests.length;
   // A throwaway HOME as well as CODEX_HOME: even a helper that ignored
   // CODEX_HOME could not reach the user's real files from here.
@@ -139,9 +143,9 @@ test("the real Codex binary completes a tool round trip through the gateway", as
   const pending = run(codex, [
     "exec", "--skip-git-repo-check",
     // As a real launch has it: with the launch's own token, which the gateway requires.
-    ...codexArgs(port, "mock-relay/mock-coder", catalog, undefined, sessionToken("codex")),
+    ...codexArgs(port, "mock-relay/mock-coder", catalog),
     "Run the shell command you are given and report what it printed.",
-  ], { cwd: work, env: { ...process.env, HOME: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "" }, timeout: 120_000 });
+  ], { cwd: work, env: { ...process.env, HOME: codexHome, USERPROFILE: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "", EASYSWITCH_GATEWAY_TOKEN: token }, timeout: 120_000 });
   // `codex exec` waits for more prompt text on an open stdin pipe.
   pending.child.stdin?.end();
   const result = await pending

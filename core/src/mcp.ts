@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { agentFromAuth } from "./gateway-chat.ts";
+import { gatewayTokens } from "./gateway-auth.ts";
 import { catalogModels } from "./catalog.ts";
 import type { GatewayDeps } from "./gateway.ts";
 import type { RunResult } from "./agent-launch.ts";
@@ -128,19 +128,19 @@ async function handleMessage(msg: Json, depth: number, caller: string, deps: Mcp
   }
 }
 
-/** POST /mcp. The depth comes from the header the launch put in the MCP config, never from the body. */
+/** POST /mcp. Depth and caller identity come only from the authenticated session capability. */
 export async function handleMcp(req: IncomingMessage, res: ServerResponse, rawBody: string, deps: McpDeps): Promise<void> {
   if (req.method !== "POST") {
     // No server-initiated stream: this server only answers requests.
     res.writeHead(405, { allow: "POST" }).end();
     return;
   }
-  const token = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-  if (!token.startsWith("es-session-")) {
-    res.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" }).end(JSON.stringify(rpcError(null, -32001, "A per-launch EasySwitch token is required")));
+  const session = deps.session ?? gatewayTokens.authenticate(req.headers, undefined, "mcp");
+  if (!session?.allowMcp) {
+    res.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" }).end(JSON.stringify(rpcError(null, -32001, "An issued MCP-capable EasySwitch session is required")));
     return;
   }
-  const depth = Math.max(0, Math.min(Number(req.headers["x-easyswitch-depth"] ?? 0) || 0, MAX_DEPTH));
+  const depth = session.depth;
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
@@ -151,7 +151,7 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse, rawBo
   const batch = Array.isArray(parsed);
   const out: Json[] = [];
   for (const msg of batch ? (parsed as Json[]) : [parsed as Json]) {
-    const answer = await handleMessage(msg, depth, agentFromAuth(req.headers.authorization), deps);
+    const answer = await handleMessage(msg, depth, session.agentId, deps);
     if (answer) out.push(answer);
   }
   if (!out.length) {

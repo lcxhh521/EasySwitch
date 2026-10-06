@@ -118,6 +118,12 @@ class Gate extends Writable {
     if (!this.discard) this.real.end();
     cb();
   }
+
+  override _destroy(error: Error | null, cb: (error?: Error | null) => void): void {
+    // A broken forwarded stream must stay broken; a clean EOF could look like success.
+    if (error && !this.discard) this.real.destroy();
+    cb(error);
+  }
 }
 
 /** Runs one request against a pool's members in turn. Anything that is not a pool runs once, as it is. */
@@ -135,10 +141,12 @@ export async function runWithPool(
   const members = exposed ? poolMembers(store, exposed) : undefined;
   if (!members?.length) { await attempt(res, undefined); return; }
   for (let i = 0; i < members.length; i++) {
+    if (res.destroyed || res.writableEnded) return;
     const gate = new Gate(res, i < members.length - 1);
     const settled = new Promise<void>(resolve => { gate.once("finish", resolve); gate.once("close", resolve); });
     await attempt(gate as unknown as ServerResponse, members[i], { pool: exposed!, attempt: i + 1, attempts: members.length });
     await settled;
+    if (res.destroyed || res.writableEnded) return;
     if (!gate.retry) return;
     markFailed(members[i]!);
   }

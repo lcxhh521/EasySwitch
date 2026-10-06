@@ -1,3 +1,6 @@
+import { existingSubscriptionKind, prepareExistingSubscription } from "../src/subscription-compat.ts";
+import { pickKey, setCursorToken } from "../src/keypool.ts";
+import { fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -95,11 +98,12 @@ const dir = mkdtempSync(join(tmpdir(), "es-cursor-"));
 const H = { "content-type": "application/json", "x-easyswitch": "1" };
 const api = (m: string, p: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${p}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
 const ask = (extra: Json = {}) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-  method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+  method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
   body: JSON.stringify({ model: `${providerId}/fake-claude-high`, messages: [{ role: "system", content: "Be brief." }, { role: "user", content: "hi" }], ...extra }),
 });
 
 before(async () => {
+  process.env.EASYSWITCH_TEST_SUBSCRIPTION_FIXTURES = "1";
   fake = await startFakeCursor();
   process.env.EASYSWITCH_CURSOR_API = fake.base;
   process.env.EASYSWITCH_CURSOR_WEB = fake.base;
@@ -110,6 +114,7 @@ before(async () => {
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
 });
 after(() => {
+  delete process.env.EASYSWITCH_TEST_SUBSCRIPTION_FIXTURES;
   server.closeAllConnections(); server.close(); fake.close(); rmSync(dir, { recursive: true, force: true });
   for (const k of ["API", "WEB", "POLL_MS"]) delete process.env[`EASYSWITCH_CURSOR_${k}`];
 });
@@ -189,6 +194,18 @@ test("while it is off Cursor is asked for nothing; on, a request is answered str
   assert.ok(!JSON.stringify(answer).includes(".sig") && !streamed.includes(".sig"), "the token never comes back");
 });
 
+test("Cursor uses its configured endpoint rather than a persisted arbitrary source URL", async () => {
+  const provider = store.provider(providerId)!;
+  provider.baseUrl = "https://must-not-contact.invalid";
+  provider.wire = { authHeader: "x-leak", headers: { "x-leak": "must-not-forward" } };
+  store.upsertProvider(provider);
+  assert.equal((await ask()).status, 200);
+  assert.equal(fake.runs.at(-1)!.headers["x-leak"], undefined);
+  const prepared = prepareExistingSubscription(provider, { protocol: "chat", model: "fake-claude-high", stream: false, body: { messages: [{ role: "assistant", tool_calls: [{ id: "x", type: "function", function: { name: "f", arguments: "{}" } }] }], tools: [{ type: "function", function: { name: "f", parameters: {} } }] } });
+  assert.ok(prepared.dropped.includes("tools:cursor_text_only"));
+  assert.ok(prepared.dropped.includes("tool_history:cursor_text_only"));
+});
+
 test("failures reach the agent as plain errors with the right status, and an exhausted account is marked so pools skip it", async () => {
   clearQuota();
   fake.script = () => ({ plain: true, error: { code: "resource_exhausted", message: "rate limit exceeded" } });
@@ -257,4 +274,18 @@ test("removing the account forgets the login and the source", async () => {
   assert.equal(store.providers().find(p => p.cursor), undefined);
   assert.equal(await secrets.get(`cursor:${accountId}`), undefined);
   assert.equal((await api("DELETE", `/api/cursor/${accountId}`)).status, 404);
+});
+
+
+test("Cursor metadata is validated and missing account resolver never falls back to an API key", async () => {
+  const base = { id: "fixture", baseUrl: fake.base, cursor: { accountId: "fixture-user" } } as Provider;
+  for (const metadata of [null, {}, [], { accountId: "" }, { accountId: "x", loginPath: "/must-not-read" }]) assert.throws(() => existingSubscriptionKind({ ...base, cursor: metadata } as Provider));
+  assert.equal(existingSubscriptionKind(base), "cursor");
+  let reads = 0;
+  const empty = createSecretStore(); empty.get = async () => { reads++; return "must-not-fallback"; };
+  setCursorToken(async () => "fixture-cursor-token");
+  try { assert.equal((await pickKey(empty, base)).apiKey, "fixture-cursor-token"); assert.equal(reads, 0); }
+  finally { setCursorToken(undefined); }
+  await assert.rejects(pickKey(empty, base), /不会改用普通 API Key/);
+  assert.equal(reads, 0);
 });

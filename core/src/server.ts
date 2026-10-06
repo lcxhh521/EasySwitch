@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, isAbsolute } from "node:path";
 import { antigravityAccessToken, AntigravityError, beginAntigravitySignIn, forgetAntigravityAccount, listAntigravityModels, type AntigravityAccount } from "./antigravity.ts";
@@ -15,7 +15,7 @@ import { listKiroModels } from "./kiro.ts";
 import { GUIDE_IDS, setupGuide } from "./setup-guides.ts";
 import { KiroError } from "./kiro-login.ts";
 import { fileURLToPath } from "node:url";
-import { writeCodexCatalog } from "./catalog.ts";
+import { claudeModelId, fromClaudeModelId, writeCodexCatalog } from "./catalog.ts";
 import { handleChatgpt, handleChatgptUpgrade, isChatgptPath } from "./chatgpt-gateway.ts";
 import { handleChatCompletions } from "./gateway-chat.ts";
 import { GEMINI_PATH, handleGemini, listGeminiModels } from "./gateway-gemini.ts";
@@ -23,7 +23,7 @@ import { handleMcp, mcpEndpoint, type McpDeps } from "./mcp.ts";
 import { handleResponses, listExposedModels, resolveModel } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCapabilities, claudeLoggedIn, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
-import { rangeStart, summarize, type Ledger, type UsageRange } from "./ledger.ts";
+import { rangeStart, summarize, Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
@@ -32,19 +32,23 @@ import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSession
 import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setAntigravityToken, setCursorToken, setKimiToken, setPlanToken, setVertexToken } from "./keypool.ts";
-import { isGatewayPath, loadGatewayKey, requestHasValidToken } from "./gateway-auth.ts";
-import { addSpend, budgetStatus, loadMonth, monthStart } from "./budget.ts";
+import { ProviderBudgetController, validateProviderBudget } from "./budget.ts";
 import { DEFAULT_VERTEX_MODELS, forgetServiceAccount, mintAccessToken, parseServiceAccount, storeServiceAccount, VertexError, vertexAccessToken, vertexBaseUrl } from "./vertex.ts";
-import { nativeModels } from "./claude-native.ts";
+import { isNativeClaude, nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
 import { describeQuota, exhaustedUntil, quotaOf } from "./quota.ts";
 import { AUTO_AGENT, describeWhen, matchingRules, parseRule, type TaskFacts } from "./dispatch.ts";
-import { isMimoFree } from "./mimo-free.ts";
+import { isMimoFree, mimoFreeIssue } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
 import { TaskBook, type Task } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
+import { GatewayTokenAuthority, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
+import { BudgetController, BudgetExceededError } from "./global-budget.ts";
+import { gatewayError } from "./gateway-route.ts";
+import { vertexConfigIssue, vertexKind as vertexMode, type VertexConfig } from "./vertex-config.ts";
+import { CLAUDE_DESKTOP_ISOLATION_BLOCKER, findClaudeDesktopExecutable, prepareClaudeDesktopFixtureSession, type ClaudeDesktopOptions, type ClaudeDesktopSession } from "./claude-desktop.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
 import { costOf, ratesFor } from "./pricing/cost.ts";
 import { accountCommandLine, clearResting, createAccount, isResting, markResting, pickAccount, touch as touchAccount } from "./accounts.ts";
@@ -55,7 +59,10 @@ import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { slugify, type Store } from "./store.ts";
 import { expandUrl, UnresolvedPlaceholder } from "./upstream.ts";
-import type { Account, DisplaySettings, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
+import { officialThinkingProfile, upstreamModelId } from "./quirks.ts";
+import { sourceProtocols } from "./outbound.ts";
+import { subscriptionSourceIssue, subscriptionSignInIssue, subscriptionSupport } from "./subscription-support.ts";
+import type { ApiProtocol, Account, DisplaySettings, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -72,8 +79,21 @@ export interface ServerDeps {
   port: number;
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
-  /** Only requests that carry a token EasySwitch signed may use the gateway (see gateway-auth.ts). The real service turns it on. */
-  gatewayAuth?: boolean;
+  gatewayAuth?: GatewayTokenAuthority;
+  /** In-process test seam; never configurable over HTTP or environment variables. */
+  interactiveRuntime?: {
+    findBinary: (id: string) => Promise<string | undefined>;
+    newSessionDir: () => string;
+    launchInTerminal: typeof launchInTerminal;
+  };
+  /** Explicit dependency injection for local fixture tests; never accepted from HTTP input. */
+  claudeDesktop?: Pick<ClaudeDesktopOptions, "executable" | "baseDir" | "parentEnv" | "platform">;
+}
+
+const desktopShutdown = new WeakMap<Server, () => Promise<void>>();
+/** The main process awaits this before exiting; it never stops a native app. */
+export async function stopClaudeDesktopSessions(server: Server): Promise<void> {
+  await desktopShutdown.get(server)?.();
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -126,31 +146,52 @@ function publicAccount(a: Account) {
   return { ...a, resting: isResting(a) };
 }
 
-function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
+function basePublicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
   // Key metadata is public inside the console; the secrets themselves never leave the Keychain.
   const keys = (p.keys ?? []).map(({ id, label, enabled, addedAt, lastUsedAt, restUntil, lastError }) =>
     ({ id, label, enabled, addedAt, ...(lastUsedAt ? { lastUsedAt } : {}), ...(restUntil ? { restUntil } : {}), ...(lastError ? { lastError } : {}) }));
   const sample = p.defaultModel ?? p.models[0];
   const priced = sample ? ratesFor(p, sample) : undefined;
   return {
-    ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
-    ...(budgetStatus(p) ? { budgetStatus: budgetStatus(p) } : {}),
+    ...p, hasKey, supportedProtocols: sourceProtocols(p, ""), ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
     ...(describeQuota(quotaOf(p.id)) ? { quota: { text: describeQuota(quotaOf(p.id))!, ...(exhaustedUntil(p.id) ? { exhaustedUntil: exhaustedUntil(p.id)! } : {}) } } : {}),
     ...(sample ? { priceSample: { model: sample, ...(priced ? { rates: priced.rates, source: priced.source } : {}) } } : {}),
   };
 }
 
+/** Reject mixed/unknown protocol values rather than silently narrowing user choices. */
+function protocolList(value: unknown): ApiProtocol[] | undefined {
+  const allowed: readonly string[] = ["chat", "responses", "messages", "gemini"];
+  if (!Array.isArray(value) || !value.length || !value.every(p => typeof p === "string" && allowed.includes(p))) return undefined;
+  return [...new Set(value)] as ApiProtocol[];
+}
+
+function repeatedGatewayCredential(req: IncomingMessage): boolean {
+  return ["authorization", "x-api-key", "x-goog-api-key", "x-easyswitch-session"].some(name => (req.headersDistinct[name]?.length ?? 0) > 1);
+}
+
 export function createEasySwitchServer(deps: ServerDeps): Server {
-  const { store, secrets, port, ledger } = deps;
+  const { store, secrets, port } = deps;
+  const ledger = deps.ledger ?? new Ledger(store.dir);
+  const auth = deps.gatewayAuth ?? gatewayTokens;
+  const budget = new BudgetController(store.dir, { readEntries: since => ledger.readForBudget(since) });
+  const providerBudgets = new ProviderBudgetController({ readEntries: since => ledger.readForBudget(since) });
+  store.setProviderBudgetChecker(p => providerBudgets.isBudgetStopped(p));
+  const publicProvider = (p: Provider, hasKey: boolean, usedBy: Harness[] = []) => {
+    const status = providerBudgets.budgetStatus(p);
+    return { ...basePublicProvider(p, hasKey, usedBy), ...(status ? { budgetStatus: status } : {}) };
+  };
+  const providerHasKey = async (p: Provider): Promise<boolean> => Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id));
+  const desktopSessions = new Map<string, ClaudeDesktopSession>();
+  const pendingVertexIds = new Set<string>();
+  let desktopClosing = false;
+  const desktopExecutable = () => deps.claudeDesktop?.executable ?? findClaudeDesktopExecutable({ home: process.env.HOME });
   const log: GatewayLogEntry[] = [];
   /** The log writer for one try: inside a pool it also says which pool and which try this is. */
   const logFor = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) =>
     pushLog(ctx ? { ...entry, pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : entry);
-  // This month's spend is rebuilt from the ledger, so a restart does not forget what the budgets have used.
-  if (ledger) loadMonth(ledger.read(monthStart()));
   const pushLog = (entry: GatewayLogEntry) => {
     priceEntry(store, entry);
-    if (entry.providerId && entry.costUsd) addSpend(entry.providerId, entry.costUsd, new Date(entry.at));
     log.unshift(entry);
     log.length = Math.min(log.length, 100);
     ledger?.append(entry);
@@ -158,6 +199,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   };
   /** The executable for an agent: the two built-ins have their own finders, the rest come from detection. */
   async function agentBinary(id: string): Promise<string | undefined> {
+    if (deps.interactiveRuntime) return deps.interactiveRuntime.findBinary(id);
     if (id === "codex") return findCodex();
     if (id === "claude") return findClaude();
     const found = (agentCache?.list ?? (agentCache = { at: Date.now(), list: await detectAgents() }).list).find(a => a.id === id);
@@ -215,7 +257,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const wanted = input.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
     const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) });
-    const done = runHeadless(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const done = runHeadless(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: auth, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
       .then(r => tasks.finish(task.id, r)!)
       .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!);
     return { task, done };
@@ -247,7 +289,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
-  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string } | { error: string; status: number }> {
+  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; cleanup: () => Promise<void> } | { error: string; status: number }> {
     const launcher = LAUNCHERS[id];
     const known = AGENTS.find(a => a.id === id);
     const bin = await agentBinary(id);
@@ -265,12 +307,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const wanted = opts.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model || undefined)).includes(wanted) ? wanted : undefined;
     const tiers = tiersFor(id);
-    const sessionDir = newSessionDir();
-    const token = sessionToken(id);
+    const sessionDir = deps.interactiveRuntime?.newSessionDir() ?? newSessionDir();
+    let token: string | undefined;
+    try {
+    token = auth.issue(id, { depth: 0, allowMcp: store.settings().agentCalls, allowNativeClaude: keepLogin }).token;
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
-    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
+    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
     materialize(spec, sessionDir);
-    return { spec, sessionDir, model, name: known.name };
+    return { spec, sessionDir, model, name: known.name, cleanup: async () => { if (token) auth.revoke(token); await rm(sessionDir, { recursive: true, force: true }); } };
+    } catch (error) { if (token) auth.revoke(token); await rm(sessionDir, { recursive: true, force: true }); throw error; }
   }
 
   // ---- ChatGPT plan ("Continue with ChatGPT"): accounts, sign-in in progress, the provider each account becomes
@@ -305,7 +350,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const name = kind === "copilot" ? `GitHub Copilot · ${account.label}` : `ChatGPT 订阅 · ${account.label}`;
     if (!provider) {
       provider = {
-        id: slugify(name, [...store.providers().map(p => p.id), "pool"]), name,
+        id: slugify(name, [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]), name,
         baseUrl: kind === "codex" ? codexBase() : kind === "copilot" ? copilotBase : apiBase(), models: [],
         // A Copilot account speaks Chat Completions, so it goes through the ordinary translation path with fixed client headers.
         route: kind === "copilot" ? "chat-translate" : "responses-native", routePinned: true,
@@ -338,7 +383,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (!provider) {
       const name = `Antigravity · ${account.email}`;
       provider = {
-        id: slugify(name, [...store.providers().map(p => p.id), "pool"]), name, baseUrl: antigravityEndpoints().api,
+        id: slugify(name, [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]), name, baseUrl: antigravityEndpoints().api,
         models: [], route: "chat-translate", routePinned: true, streamUsage: false, billing: "subscription",
         // Antigravity takes no Chat-style thinking level from us, so none is sent.
         reasoningEffort: false, antigravity: { accountId: account.id, email: account.email, projectId: account.projectId },
@@ -366,7 +411,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (!provider) {
       const name = `Kimi Code · ${account.email ?? account.id}`;
       provider = {
-        id: slugify(name, [...store.providers().map(p => p.id), "pool"]), name, baseUrl: kimiApi(), models: [], route: "chat-translate", routePinned: true,
+        id: slugify(name, [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]), name, baseUrl: kimiApi(), models: [], route: "chat-translate", routePinned: true,
         streamUsage: true, billing: "subscription", kimi: { accountId: account.id, ...(account.email ? { email: account.email } : {}) },
         icon: "kimi-color", createdAt: new Date().toISOString(),
         // A new subscription starts switched off: the user decides when it is used.
@@ -396,7 +441,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (!provider) {
       const name = `Cursor · ${account.email ?? account.id}`;
       provider = {
-        id: slugify(name, [...store.providers().map(p => p.id), "pool"]), name, baseUrl: cursorApi(),
+        id: slugify(name, [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]), name, baseUrl: cursorApi(),
         models: [], route: "chat-translate", routePinned: true, streamUsage: false, billing: "subscription",
         // The thinking level is part of Cursor's model id, not a separate setting.
         reasoningEffort: false, cursor: { accountId: account.id, ...(account.email ? { email: account.email } : {}) },
@@ -440,26 +485,34 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (bound) { allowedHosts.add(`127.0.0.1:${bound}`); allowedHosts.add(`localhost:${bound}`); }
   };
 
+  const probeBudgetBlocked = (p?: Provider): boolean => { const s = budget.settings(); return (s.enabled && s.action === "stop") || p?.budget?.stop === true || Boolean(p && providerBudgets.budgetStatus(p)?.configurationInvalid); };
+  const probeBudgetMessage = "暂停请求的预算已开启：通用探测尚未完整计费，因此暂不允许探测。可改为仅提醒后再试。";
+
   /** Adds a provider, lists models, then probes with the best model available. */
   async function addAndProbe(input: { name: string; baseUrl: string; apiKey: string; anthropicBaseUrl?: string; afterAdd?: () => string[] | void }): Promise<Provider> {
     const { name, baseUrl, apiKey } = input;
     if (!name || !/^https?:\/\//.test(baseUrl)) throw new Error("需要名称和以 http(s):// 开头的地址");
     const provider: Provider = {
-      id: slugify(name, [...store.providers().map(p => p.id), "pool"]),
+      id: slugify(name, [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]),
       name, baseUrl, models: [], route: "chat-translate", routePinned: false, streamUsage: true,
       // The free tier has no key: its JWT is bootstrapped per call (see mimo-free.ts).
       ...(isMimoFree({ baseUrl }) ? { mimoFree: true } : {}),
       ...(input.anthropicBaseUrl ? { anthropicBaseUrl: input.anthropicBaseUrl } : {}),
       createdAt: new Date().toISOString(),
     };
+    if (provider.mimoFree && mimoFreeIssue()) throw new Error(mimoFreeIssue()!);
     if (apiKey) await secrets.set(provider.id, apiKey);
     const { models } = provider.mimoFree ? { models: ["mimo-auto"] } : await listModels(provider, apiKey || undefined).catch(() => ({ models: [] as string[] }));
     provider.models = models;
     store.upsertProvider(provider);
     const model = provider.defaultModel ?? provider.models[0] ?? "";
-    if (model) {
+    if (model && probeBudgetBlocked(provider)) {
+      provider.probe = { at: new Date().toISOString(), model, checks: [{ id: "chat", label: "自动探测", status: "skip", detail: probeBudgetMessage }], recommendedRoute: provider.route };
+      store.upsertProvider(provider);
+    } else if (model) {
       try {
         const apiKeyNow = await secrets.get(provider.id);
+        budget.assertAllowed();
         const { report, models: probed, streamUsage } = await probeProvider(provider, apiKeyNow, model);
         if (probed.length) provider.models = probed;
         provider.defaultModel = model;
@@ -496,9 +549,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const models = provider.models.length;
     const parts = [
       `已添加「${provider.name}」${models ? `，读到 ${models} 个模型` : ""}`,
-      provider.probe?.checks.every(c => c.status !== "fail")
+      provider.probe?.checks.every(c => c.status === "pass")
         ? "一致性测试通过"
-        : provider.probe ? "一致性测试有未通过项，详情在来源页" : "",
+        : provider.probe?.checks.some(c => c.status === "skip") ? "已跳过探测，详情在来源页" : provider.probe ? "一致性测试有未通过项，详情在来源页" : "",
       parsed.apiKey ? undefined : "没有 Key，测试没跑",
       attached.length
         ? `${attached.map(h => h === "codex" ? "ChatGPT" : "Claude Code").join("和")}的增强会话现在用它`
@@ -517,12 +570,34 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     const body = method === "GET" ? {} : ((JSON.parse((await readBody(req)) || "{}")) as Json);
 
+    if (path === "/api/gateway/sessions") {
+      if (method === "GET") { json(res, 200, { sessions: auth.list() }); return; }
+      if (method === "POST") {
+        if (typeof body.agentId !== "string" || !AGENTS.some(a => a.id === body.agentId)) { json(res, 400, { error: "请选择已登记的 agent" }); return; }
+        if (body.allowNativeClaude === true && body.agentId !== "claude") { json(res, 400, { error: "只有 Claude Code 会话可请求保留原生登录" }); return; }
+        try {
+          const made = auth.issue(body.agentId, { allowMcp: body.allowMcp === true, allowNativeClaude: body.allowNativeClaude === true, ...(typeof body.ttlMs === "number" ? { ttlMs: body.ttlMs } : {}) });
+          json(res, 201, made);
+        } catch { json(res, 400, { error: "会话设置无效或已达到数量上限" }); }
+        return;
+      }
+    }
+    const revokeSession = /^\/api\/gateway\/sessions\/([a-f0-9-]+)$/.exec(path);
+    if (revokeSession && method === "DELETE") { json(res, auth.revokeId(revokeSession[1]!) ? 200 : 404, { ok: true }); return; }
+    if (path === "/api/budget") {
+      if (method === "GET") { json(res, 200, budget.status()); return; }
+      if (method === "PUT") {
+        try { budget.setSettings(body); json(res, 200, budget.status()); }
+        catch (error) { json(res, 400, { error: String((error as Error).message) }); }
+        return;
+      }
+    }
     if (method === "GET" && path === "/api/state") {
       const bound = store.allBindings();
       const providers = await Promise.all(store.providers().map(async p =>
-        publicProvider(p, Boolean(await secrets.get(p.id)), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
+        publicProvider(p, await providerHasKey(p), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
       json(res, 200, {
-        version: VERSION, port, providers,
+        version: VERSION, port, providers, budget: budget.status(), gatewaySessions: auth.list(),
         binding: store.binding("codex") ?? null,
         bindings: { codex: null, claude: null, ...Object.fromEntries(store.allBindings().map(b => [b.harness, b])) },
         codexPath: (await findCodex()) ?? null,
@@ -532,6 +607,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })),
         pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
         profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
+        modelEffortNotes: Object.fromEntries(store.catalog().map(m => { const p = store.provider(m.providerId); return [`${m.providerId}/${m.model}`, p ? officialThinkingProfile(p.baseUrl, m.model)?.note ?? "" : ""]; })),
         modelEfforts: Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts])),
         sessions: await augmentedSessions(),
         sessionDetails: await sessionDetails(),
@@ -608,6 +684,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- ChatGPT plan: Continue with ChatGPT --------------------------------
     if (path === "/api/plan" && method === "GET") {
       json(res, 200, {
+        subscriptionSupport: subscriptionSupport(),
         accounts: [
           ...siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...planQuota(a.id) })),
           // Kiro has no account of ours (its login stays in the Kiro CLI), only a source; it shows in the same list so it gets the same switch.
@@ -640,7 +717,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         let provider = store.providers().find(p => p.kiro);
         if (!provider) {
           provider = {
-            id: slugify("Kiro", [...store.providers().map(p => p.id), "pool"]), name: "Kiro", baseUrl: `https://runtime.${region}.kiro.dev`,
+            id: slugify("Kiro", [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]), name: "Kiro", baseUrl: `https://runtime.${region}.kiro.dev`,
             models: [], route: "chat-translate", routePinned: true, streamUsage: false, billing: "subscription",
             // Kiro takes no thinking level, so none is ever sent.
             reasoningEffort: false, kiro: {}, icon: "kiro-color", createdAt: new Date().toISOString(),
@@ -663,27 +740,45 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- Google Antigravity: a Google sign-in in the browser. The refresh token goes to the Keychain; the account becomes a source that starts off.
     // --- Google Vertex AI: project, location and a service account key. The key goes to the secret store; the first token is minted now to prove it works.
     if (path === "/api/vertex" && method === "POST") {
+      let pendingId: string | undefined;
+      let minted = false;
+      let insertedOwnProvider = false;
       try {
         const project = String(body.project ?? "").trim();
         const location = String(body.location ?? "global").trim() || "global";
-        if (!/^[a-z][a-z0-9-]{4,29}$/.test(project)) throw new VertexError("项目 ID 不对：小写字母、数字和短横线，以字母开头（在 Google Cloud 控制台里能看到）。");
-        if (!/^(global|[a-z]+-[a-z]+[0-9]+)$/.test(location)) throw new VertexError("区域不对，比如 global 或 us-central1。");
         const sa = parseServiceAccount(body.serviceAccount as string | object);
+        const vertex: VertexConfig = { mode: "service-account", auth: "service-account", project, location, clientEmail: sa.client_email };
+        const issue = vertexConfigIssue(vertex);
+        if (issue) throw new VertexError(issue);
+        const baseUrl = vertexBaseUrl(project, location);
+        const models = body.models === undefined ? [...DEFAULT_VERTEX_MODELS]
+          : Array.isArray(body.models) && body.models.every(m => typeof m === "string" && m.trim() && !/[\r\n\0]/.test(m)) ? [...new Set(body.models as string[])] : [];
+        if (!models.length) throw new VertexError("请填写至少一个有效的 Vertex 模型 ID。");
         const name = String(body.name ?? "").trim() || `Google Vertex · ${project}`;
-        const id = slugify(name, [...store.providers().map(p => p.id), "pool"]);
-        await mintAccessToken(id, sa);
-        const models = Array.isArray(body.models) && body.models.length ? (body.models as unknown[]).map(String).filter(Boolean) : DEFAULT_VERTEX_MODELS;
+        const id = `vertex-${randomUUID().replace(/-/g, "")}`;
+        // A random identity also prevents collision with an import that chose its
+        // human-readable slug before this request reserved a name.
+        pendingId = id; pendingVertexIds.add(id);
+        // All configuration and destinations are checked before signing or persisting a credential.
+        await mintAccessToken(id, sa); minted = true;
         await storeServiceAccount(secrets, id, sa);
         const provider: Provider = {
-          id, name, baseUrl: vertexBaseUrl(project, location), models, defaultModel: models[0]!, route: "chat-translate", routePinned: true,
-          streamUsage: true, vertex: { project, location, clientEmail: sa.client_email }, icon: "gemini-color", createdAt: new Date().toISOString(),
+          id, name, baseUrl, models, defaultModel: models[0]!, route: "chat-translate", routePinned: true,
+          streamUsage: true, vertex, icon: "gemini-color", createdAt: new Date().toISOString(),
         };
+        if (store.provider(id)) throw new VertexError("来源名称已被并行添加占用，请重新添加。", 409);
+        insertedOwnProvider = true;
         store.upsertProvider(provider);
+        minted = false;
         json(res, 200, { id, models: models.length });
       } catch (error) {
+        if (minted && pendingId) {
+          if (insertedOwnProvider) { try { store.removeProvider(pendingId); } catch { /* Retain fail-closed missing credentials if storage is unavailable. */ } }
+          await forgetServiceAccount(secrets, pendingId).catch(() => {});
+        }
         const e = error as VertexError;
-        json(res, e.status === 401 ? 409 : e.status || 400, { error: e.message });
-      }
+        json(res, e.status === 401 ? 409 : e.status || 400, { error: error instanceof VertexError ? error.message : "无法保存 Vertex 来源，请检查本地存储后重试。" });
+      } finally { if (pendingId) pendingVertexIds.delete(pendingId); }
       return;
     }
     if (path === "/api/antigravity/signin" && method === "POST") {
@@ -795,6 +890,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
     if (path === "/api/plan/signin" && method === "POST") {
+      const issue = subscriptionSignInIssue(body.mode);
+      if (issue) { json(res, issue.status, { error: issue.message, code: issue.code }); return; }
       planSignIn?.cancel();
       if (body.cancelOnly === true) { planSignIn = undefined; json(res, 200, { ok: true }); return; }
       try {
@@ -921,12 +1018,63 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
 
-    // --- ChatGPT desktop app: start it on this gateway, or plainly ------------
-    if (path === "/api/chatgpt" && method === "GET") {
-      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port) });
+    // --- Claude Desktop: a separate, disposable third-party instance --------
+    if (path === "/api/claude-desktop" && method === "GET") {
+      json(res, 200, {
+        installed: Boolean(desktopExecutable()), verified: false,
+        launchBlocked: !deps.claudeDesktop,
+        note: CLAUDE_DESKTOP_ISOLATION_BLOCKER,
+        sessions: [...desktopSessions.values()].map(s => s.status()),
+      });
       return;
     }
-    if ((path === "/api/chatgpt/enhance" || path === "/api/chatgpt/native") && method === "POST") {
+    if (path === "/api/claude-desktop/sessions" && method === "POST") {
+      if (desktopClosing) { json(res, 503, { error: "EasySwitch 正在退出" }); return; }
+      // No HTTP flag, including experimental:true, can bypass this version gate.
+      // The only executable injection is an explicit in-process mock test seam.
+      if (!deps.claudeDesktop) { json(res, 409, { error: CLAUDE_DESKTOP_ISOLATION_BLOCKER, code: "desktop_isolation_unverified" }); return; }
+      if (body.experimental !== true) { json(res, 409, { error: "真实 Claude 桌面端尚未验证。确认以实验性独立窗口启动后再继续", needsExperimentalConsent: true }); return; }
+      // Bound repeated clicks and keep already-running sessions identifiable.
+      for (const [id, session] of desktopSessions) if (session.status().cleaned) desktopSessions.delete(id);
+      if (desktopSessions.size >= 3) { json(res, 409, { error: "最多同时打开三个独立窗口，请先停止一个" }); return; }
+      const executable = desktopExecutable();
+      if (!executable) { json(res, 404, { error: "没有找到 Claude 桌面端" }); return; }
+      const platform = deps.claudeDesktop?.platform ?? process.platform;
+      const parentEnv = deps.claudeDesktop?.parentEnv ?? process.env;
+      if (platform === "linux" && !parentEnv.DISPLAY) { json(res, 409, { error: "独立启动器目前需要 Linux X11 显示会话；尚未验证 Wayland 私有运行目录" }); return; }
+      const catalog = store.catalog();
+      const binding = store.binding("claude-desktop");
+      const selected = typeof body.model === "string" && body.model ? body.model : binding ? `${binding.providerId}/${binding.model}` : catalog[0] ? `${catalog[0].providerId}/${catalog[0].model}` : "";
+      if (!catalog.some(m => `${m.providerId}/${m.model}` === selected)) { json(res, 409, { error: "请先选择一个已添加的模型来源和模型" }); return; }
+      const ordered = [...catalog].sort((a, b) => Number(`${b.providerId}/${b.model}` === selected) - Number(`${a.providerId}/${a.model}` === selected));
+      const boundPort = (server.address() as { port: number } | null)?.port ?? port;
+      const session = prepareClaudeDesktopFixtureSession({
+        ...deps.claudeDesktop, executable, port: boundPort, gatewayAuth: auth,
+        models: ordered.map(m => ({ id: claudeModelId(m.providerId, m.model), label: `${m.providerName} · ${m.model}` })),
+      });
+      desktopSessions.set(session.id, session);
+      try { await session.start(); }
+      catch { json(res, 500, { error: session.status().error, session: session.status() }); return; }
+      json(res, 201, { session: session.status(), model: selected, note: "进程已启动；未确认窗口、配置隔离或模型请求成功" });
+      return;
+    }
+    const desktopStop = /^\/api\/claude-desktop\/sessions\/([a-f0-9-]+)\/stop$/.exec(path);
+    if (desktopStop && method === "POST") {
+      const session = desktopSessions.get(desktopStop[1]!);
+      if (!session) { json(res, 404, { error: "没有这个独立会话" }); return; }
+      try { await session.stop(); }
+      catch { json(res, 409, { error: session.status().error ?? "独立会话未能完全退出，私有目录已保留", session: session.status() }); return; }
+      json(res, 200, { session: session.status() });
+      return;
+    }
+
+    // --- ChatGPT desktop app: start it on this gateway, or plainly ------------
+    if (path === "/api/chatgpt" && method === "GET") {
+      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port), launchBlocked: true, note: "桌面端暂缺已核实的本地会话鉴权传递方式，增强启动已暂停；普通启动不受影响" });
+      return;
+    }
+    if (path === "/api/chatgpt/enhance" && method === "POST") { json(res, 409, { code: "desktop_gateway_auth_unverified", error: "桌面增强启动缺少已核实的本地会话鉴权传递方式，暂不启动" }); return; }
+    if (path === "/api/chatgpt/native" && method === "POST") {
       const status = await chatgptStatus(port);
       if (!status.installed) {
         json(res, 404, { error: "没有找到 ChatGPT 桌面端" });
@@ -937,20 +1085,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 409, { error: "ChatGPT 正在运行，需要重启才能切换", needsRestart: true });
         return;
       }
-      let launcher: string | undefined;
-      if (path === "/api/chatgpt/enhance") {
-        if (!store.providers().length) {
-          json(res, 409, { error: "还没有模型来源，先添加一个再增强" });
-          return;
-        }
-        launcher = (await prepareLauncher(store.dir, port, store.providers()))?.launcher;
-        if (!launcher) {
-          json(res, 500, { error: "生成启动器失败：找不到 ChatGPT 自带的 Codex 程序" });
-          return;
-        }
-      }
-      const result = await restartChatgpt(launcher);
-      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: Boolean(launcher), staticCatalog: status.staticCatalog } : { error: result.error });
+      const result = await restartChatgpt(undefined);
+      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: false, staticCatalog: status.staticCatalog } : { error: result.error });
       return;
     }
 
@@ -1010,13 +1146,16 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     // The manual-setup helper: what to type into an app that has no per-launch override. Nothing is written for the person.
     const guideMatch = /^\/api\/agents\/([a-z0-9-]+)\/setup$/.exec(path);
-    if (guideMatch && method === "GET") {
+    if (guideMatch && method === "GET") { json(res, 405, { error: "请通过控制台 POST 显式生成限时设置令牌" }); return; }
+    if (guideMatch && method === "POST") {
       const binding = store.binding(guideMatch[1]!);
       const first = store.catalog()[0];
       const main = binding ? `${binding.providerId}/${binding.model}` : first ? `${first.providerId}/${first.model}` : "";
-      const guide = setupGuide(guideMatch[1]!, { port, models: modelsFor(main) });
+      if (!(GUIDE_IDS as readonly string[]).includes(guideMatch[1]!)) { json(res, 404, { error: "这个应用没有配置向导" }); return; }
+      const issued = auth.issue(guideMatch[1]!, { allowMcp: false, allowNativeClaude: false });
+      const guide = setupGuide(guideMatch[1]!, { port: (server.address() as { port: number } | null)?.port ?? port, models: modelsFor(main), token: issued.token });
       if (!guide) { json(res, 404, { error: "这个应用没有配置向导" }); return; }
-      json(res, 200, guide);
+      json(res, 200, { ...guide, session: { id: issued.id, expiresAt: issued.expiresAt }, caveat: `${guide.caveat} 此令牌 24 小时后或 EasySwitch 重启后失效，可在会话令牌列表中撤销。` });
       return;
     }
     const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|command)$/.exec(path);
@@ -1034,7 +1173,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const launcher = LAUNCHERS[id]!;
-      await launchInTerminal(commandLine(made.spec), `${made.name} · ${made.model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`);
+      try { await (deps.interactiveRuntime?.launchInTerminal ?? launchInTerminal)(commandLine(made.spec), `${made.name} · ${made.model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`); } catch (error) { await made.cleanup(); throw error; }
       json(res, 200, { ok: true, model: made.model, verified: launcher.verified });
       return;
     }
@@ -1170,9 +1309,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
 
     if (method === "POST" && path === "/api/providers") {
+      const issue = subscriptionSourceIssue(body);
+      if (issue) { json(res, issue.status, { error: issue.message, code: issue.code }); return; }
       const name = String(body.name ?? "").trim();
       const baseUrl = String(body.baseUrl ?? "").trim().replace(/\/+$/, "");
       const apiKey = String(body.apiKey ?? "").trim();
+      const protocols = body.protocols === undefined ? undefined : protocolList(body.protocols);
+      if (body.protocols !== undefined && !protocols) { json(res, 400, { error: "请选择至少一个有效的出站协议" }); return; }
       const anthropicBaseUrl = String(body.anthropicBaseUrl ?? "").trim().replace(/\/+$/, "");
       if (!name || !/^https?:\/\//.test(baseUrl) || (anthropicBaseUrl && !/^https?:\/\//.test(anthropicBaseUrl))) {
         json(res, 400, { error: "需要名称和以 http(s):// 开头的地址" });
@@ -1180,16 +1323,23 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       // Wire differences (auth header, extra headers, paths) come from the preset, never from the page.
       const preset = PRESETS.find(x => x.id === body.presetId);
+      const vertex = body.vertex as VertexConfig | undefined;
+      if (vertex !== undefined) { const issue = vertexConfigIssue(vertex); if (issue) { json(res, 400, { error: issue }); return; } if (vertexMode(vertex) === "service-account") { json(res, 400, { error: "服务账号 Vertex 请使用专用添加入口，不能复用普通 API Key" }); return; } }
+      if (preset?.vertexMode && !vertex) { json(res, 400, { error: "请填写 Vertex 模式所需的项目和区域设置" }); return; }
+      if ((isMimoFree({ baseUrl }) || preset?.id === "mimo-free") && mimoFreeIssue()) { json(res, 501, { error: mimoFreeIssue() }); return; }
+      const vertexModel = vertex ? String(body.defaultModel ?? preset?.defaultModel ?? "").trim() : "";
+      if (vertex && !/^gemini-[a-z0-9][a-z0-9._-]{0,126}$/i.test(vertexModel)) { json(res, 400, { error: "请填写支持的 Vertex Gemini 模型 ID" }); return; }
       const urlParams: Record<string, string> = {};
       for (const { key } of preset?.urlParams ?? []) {
         const value = String((body.urlParams as Record<string, unknown> | undefined)?.[key] ?? "").trim();
         if (value) urlParams[key] = value;
       }
       const provider: Provider = {
-        id: slugify(name, [...store.providers().map(p => p.id), "pool"]),
+        id: slugify(name, [...store.providers().map(p => p.id), ...pendingVertexIds, "pool"]),
         name, baseUrl, models: preset?.models ? [...preset.models] : [], route: "chat-translate", routePinned: false, streamUsage: true,
         // The free tier has no key: its JWT is bootstrapped per call (see mimo-free.ts).
         ...(isMimoFree({ baseUrl }) ? { mimoFree: true } : {}),
+        ...(vertex ? { vertex, protocols: ["gemini"] as ApiProtocol[], baseUrl: "https://aiplatform.googleapis.com/v1", models: [vertexModel], defaultModel: vertexModel } : protocols ? { protocols } : preset?.protocols ? { protocols: [...preset.protocols] } : {}),
         ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
         ...(Object.keys(urlParams).length ? { urlParams } : {}),
         ...(preset?.wire ? { wire: preset.wire } : {}),
@@ -1208,7 +1358,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         throw error;
       }
       if (apiKey) await secrets.set(provider.id, apiKey);
-      const { models } = await listModels(provider, apiKey || undefined);
+      const { models } = provider.vertex ? { models: provider.models } : await listModels(provider, apiKey || undefined);
       provider.models = models;
       store.upsertProvider(provider);
       json(res, 201, publicProvider(provider, Boolean(apiKey)));
@@ -1223,6 +1373,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 404, { error: "没有这个模型来源" });
         return;
       }
+      if (provider.vertex && vertexMode(provider.vertex) === "service-account") { json(res, 409, { error: "服务账号来源不使用普通 API Key 池；更换服务账号请通过专用入口新增来源。" }); return; }
       const keyId = keyMatch[2];
       if (method === "POST" && !keyId) {
         const label = String(body.label ?? "").trim();
@@ -1280,14 +1431,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       // A monthly budget for one source: how much it may cost this month, and whether it stops when that is gone.
       const provider = store.provider(budgetMatch[1] ?? "");
       if (!provider) { json(res, 404, { error: "没有这个模型来源" }); return; }
-      if (body.monthlyUsd === null || body.monthlyUsd === undefined || body.monthlyUsd === "") delete provider.budget;
-      else {
-        const usd = Number(body.monthlyUsd);
-        if (!(usd > 0) || usd > 1_000_000) { json(res, 400, { error: "预算要是一个大于 0 的数（美元）" }); return; }
-        provider.budget = { monthlyUsd: usd, ...(body.stop === true ? { stop: true } : {}) };
-      }
+      if (provider.billing === "subscription") { json(res, 400, { error: "订阅月费不按模型调用计量，不设置此按量来源预算。" }); return; }
+      try {
+        if (Object.keys(body).some(k => !["monthlyUsd", "stop"].includes(k)) || !Object.hasOwn(body, "monthlyUsd") || (body.stop !== undefined && typeof body.stop !== "boolean")) throw new Error("需要明确的来源预算设置。");
+        if (body.monthlyUsd === null) delete provider.budget;
+        else provider.budget = validateProviderBudget(body);
+      } catch { json(res, 400, { error: "请填写有效的来源月预算；清除时明确传 monthlyUsd:null。" }); return; }
       store.upsertProvider(provider);
-      json(res, 200, { budget: provider.budget ?? null, status: budgetStatus(provider) ?? null });
+      json(res, 200, { budget: provider.budget ?? null, status: providerBudgets.budgetStatus(provider) ?? null });
       return;
     }
     const usageMatch = /^\/api\/providers\/([a-z0-9-]+)\/usage$/.exec(path);
@@ -1301,7 +1452,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { quota: { text: describeQuota(quotaOf(provider.id)) ?? "", ...(exhaustedUntil(provider.id) ? { exhaustedUntil: exhaustedUntil(provider.id)! } : {}) } });
       return;
     }
-    const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route))?$/.exec(path);
+    const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route|protocols))?$/.exec(path);
     if (providerMatch) {
       const provider = store.provider(providerMatch[1] ?? "");
       if (!provider) {
@@ -1309,15 +1460,38 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const action = providerMatch[2];
+      const issue = subscriptionSourceIssue(provider);
+      if (action && issue) { json(res, issue.status, { error: issue.message, code: issue.code }); return; }
       if (method === "DELETE" && !action) {
         for (const key of provider.keys ?? []) await secrets.delete(keySecretId(provider.id, key.id));
-        if (provider.vertex) await forgetServiceAccount(secrets, provider.id);
+        if (provider.vertex && vertexMode(provider.vertex) === "service-account") await forgetServiceAccount(secrets, provider.id);
         store.removeProvider(provider.id);
         await secrets.delete(provider.id);
         json(res, 200, { ok: true });
         return;
       }
+      if (method === "PUT" && action === "protocols") {
+        if (provider.plan || provider.mimoFree || provider.vertex) { json(res, 400, { error: "这个来源由专用适配器决定协议" }); return; }
+        const protocols = protocolList(body.protocols);
+        if (body.protocols !== null && !protocols) { json(res, 400, { error: "请选择至少一个有效的出站协议" }); return; }
+        if (body.model !== undefined && (typeof body.model !== "string" || !body.model.trim())) { json(res, 400, { error: "模型名不能为空" }); return; }
+        const model = typeof body.model === "string" ? upstreamModelId(body.model.trim()) : "";
+        if (body.model !== undefined && !model) { json(res, 400, { error: "模型名不能为空" }); return; }
+        if (model) {
+          provider.modelProtocols = { ...provider.modelProtocols };
+          if (protocols) provider.modelProtocols = { ...provider.modelProtocols, [model]: protocols }; else delete provider.modelProtocols[model];
+          if (!Object.keys(provider.modelProtocols).length) delete provider.modelProtocols;
+        } else if (protocols) provider.protocols = protocols; else delete provider.protocols;
+        store.upsertProvider(provider);
+        json(res, 200, publicProvider(provider, Boolean(await secrets.get(provider.id)))); return;
+      }
       if (method === "POST" && action === "probe") {
+        // A multi-request diagnostic has no complete accounting yet. Do not let it
+        // bypass a user-requested stop budget, even while the estimated total is low.
+        if (probeBudgetBlocked(provider)) { json(res, 409, { error: probeBudgetMessage, code: "probe_budget_unmetered" }); return; }
+        if (provider.vertex) { json(res, 409, { error: "Vertex 使用独立 Gemini 出口；通用一致性探测暂不适用，请通过已鉴权会话验证所选模型" }); return; }
+        if (provider.mimoFree && mimoFreeIssue()) { json(res, 501, { error: mimoFreeIssue() }); return; }
+        try { budget.assertAllowed(); } catch (error) { if (error instanceof BudgetExceededError) { json(res, 429, { error: error.message, code: error.code }); return; } throw error; }
         const model = String(body.model ?? provider.defaultModel ?? provider.models[0] ?? "");
         if (!model) {
           json(res, 400, { error: "先选一个模型再测试" });
@@ -1430,7 +1604,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
 
     const launchMatch = /^\/api\/launch\/(codex|claude)$/.exec(path);
-    if (launchMatch && (method === "POST" || method === "GET")) {
+    if (launchMatch && method === "GET") { json(res, 405, { error: "启动和会话签发仅接受带控制台头的 POST" }); return; }
+    if (launchMatch && method === "POST") {
       const harness = launchMatch[1] as Harness;
       const label = harness === "codex" ? "ChatGPT" : "Claude Code";
       const made = await interactiveSpec(harness, {});
@@ -1438,7 +1613,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const command = `${commandLine(made.spec)}; rm -rf ${JSON.stringify(made.sessionDir)}`;
       const shown = made.model || "Claude 原生模型 + 你加的模型";
       if (method === "POST") {
-        await launchInTerminal(command, `EasySwitch 增强会话（${label}）：${shown}（只在这个窗口生效，关掉窗口即回到原生）`);
+        try { await (deps.interactiveRuntime?.launchInTerminal ?? launchInTerminal)(command, `EasySwitch 增强会话（${label}）：${shown}（只在这个窗口生效，关掉窗口即回到原生）`); } catch (error) { await made.cleanup(); throw error; }
       }
       json(res, 200, { command, model: shown });
       return;
@@ -1462,40 +1637,50 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
   }
 
-  // The key that signs the launch tokens is made (or read) before the first request is answered.
-  const gatewayKeyReady = deps.gatewayAuth ? loadGatewayKey(secrets) : Promise.resolve();
-
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://placeholder");
     const path = url.pathname;
+    let session: GatewaySession | undefined;
+    let isDesktop = false;
     try {
       // DNS-rebinding guard: only our own loopback authority may talk to us.
       if (!allowedHosts.has(String(req.headers.host ?? ""))) {
         json(res, 421, { error: "unexpected host" });
         return;
       }
-      await gatewayKeyReady;
       if (path === "/health") {
         json(res, 200, { ok: true, service: "easyswitch", version: VERSION, port });
         return;
+      }
+      const gemini = GEMINI_PATH.exec(path);
+      const isModels = req.method === "GET" && ["/v1/models", "/models", "/v1beta/models", "/v1beta/openai/models"].includes(path);
+      const isMcp = path === "/mcp";
+      const regularPost = req.method === "POST" && (["/v1/responses", "/responses", "/v1/chat/completions", "/chat/completions", "/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"].includes(path) || Boolean(gemini));
+      const protectedRoute = isModels || isMcp || regularPost || isChatgptPath(path);
+      const protocol: ApiProtocol = gemini || path.startsWith("/v1beta/") ? "gemini" : path.includes("messages") ? "messages" : path.includes("responses") ? "responses" : "chat";
+      if (protectedRoute) {
+        if (repeatedGatewayCredential(req)) { gatewayError(res, protocol, 401, "重复的鉴权字段无效", "invalid_gateway_session"); return; }
+        session = auth.authenticate(req.headers, url, isMcp ? "mcp" : isModels ? "models" : "inference");
+        if (!session) { gatewayError(res, protocol, 401, "需要本次启动签发且未过期的 EasySwitch 会话令牌；旧版长期令牌请在控制台重新生成，不会自动续用", "invalid_gateway_session"); return; }
+        isDesktop = session.agentId === "claude-desktop";
+        const inference = req.method === "POST" && !isMcp && !path.endsWith("count_tokens") && gemini?.[3] !== "countTokens";
+        if (inference || (isChatgptPath(path) && req.method !== "GET")) {
+          try { budget.assertAllowed(); }
+          catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
+        }
       }
       if (isChatgptPath(path)) {
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
         await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog });
         return;
       }
-      // The gateway spends the person's keys and subscriptions: only a launch EasySwitch itself made may use it.
-      if (deps.gatewayAuth && isGatewayPath(path) && !requestHasValidToken(req.headers, url.search)) {
-        json(res, 401, { type: "error", error: { type: "authentication_error", message: "EasySwitch 的网关只接受它自己启动的 agent：请用 EasySwitch 启动（es <名字> 或控制台里的「启动」），或照「配置向导」里的令牌填。" } });
-        return;
-      }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx) }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session }));
         return;
       }
       if (path === "/mcp") {
-        await handleMcp(req, res, req.method === "POST" ? await readBody(req) : "", mcpDeps);
+        await handleMcp(req, res, req.method === "POST" ? await readBody(req) : "", { ...mcpDeps, session });
         return;
       }
       if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
@@ -1510,29 +1695,34 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx) });
+          return handleGemini(req, r, m, raw, { store, secrets, log: logFor(ctx), session });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx) }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
-        await handleCountTokens(req, res, await readBody(req), { store, secrets, log: pushLog });
+        const raw = await readBody(req);
+        if (isDesktop && !desktopModelAllowed(raw, res)) return;
+        if (!nativeRequestAllowed(raw, req, res, session)) return;
+        await handleCountTokens(req, res, raw, { store, secrets, log: pushLog, session });
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages" || path === "/messages")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx) }));
+        if (isDesktop && !desktopModelAllowed(raw, res)) return;
+        if (!nativeRequestAllowed(raw, req, res, session)) return;
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: logFor(ctx), session }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
         // Claude Code's gateway model discovery sends Anthropic headers.
-        const forClaude = req.headers["anthropic-version"] !== undefined;
+        const forClaude = isDesktop || req.headers["anthropic-version"] !== undefined;
         const list = listExposedModels(store, forClaude);
-        if (forClaude && store.settings().claudeNative) {
+        if (forClaude && !isDesktop && session?.allowNativeClaude && store.settings().claudeNative) {
           // Claude's own models first, then the ones EasySwitch adds, in one menu.
           const native = await nativeModels(req.headers);
           if (native.length) {
@@ -1558,6 +1748,30 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       else res.end();
     }
   });
+  function nativeRequestAllowed(raw: string, req: IncomingMessage, res: ServerResponse, session?: GatewaySession): boolean {
+    const model = modelOfBody(raw);
+    if (!model || !isNativeClaude(model) || resolveModel(store, model)) return true;
+    const vendorAuth = [req.headers.authorization, req.headers["x-api-key"]].some(v => typeof v === "string" && v.length > 0 && !/^(?:Bearer\s+)?es-session-/i.test(v));
+    if (session?.allowNativeClaude && vendorAuth && store.settings().claudeNative) return true;
+    gatewayError(res, "messages", 403, "这个会话未获准使用 Claude 原生线路，或没有独立的厂商登录凭据", "native_route_not_allowed");
+    return false;
+  }
+  function desktopModelAllowed(raw: string, res: ServerResponse): boolean {
+    try {
+      const value = JSON.parse(raw) as { model?: unknown };
+      const model = typeof value?.model === "string" ? value.model : "";
+      const exposed = fromClaudeModelId(model) ?? model;
+      if (store.catalog().some(m => `${m.providerId}/${m.model}` === exposed)) return true;
+    } catch { /* Invalid requests must not reach a native route either. */ }
+    json(res, 400, { error: { type: "invalid_request_error", message: "独立桌面会话只能使用 EasySwitch 已添加的模型，不会回退到 Claude 原生账号" } });
+    return false;
+  }
+  desktopShutdown.set(server, async () => {
+    desktopClosing = true;
+    const stopped = await Promise.allSettled([...desktopSessions.values()].map(s => s.stop()));
+    if (stopped.some(s => s.status === "rejected")) throw new Error("有独立桌面会话未完全退出，私有目录已保留");
+  });
+  server.once("close", () => { void stopClaudeDesktopSessions(server).catch(() => console.error("Claude 独立会话清理未完成，私有目录已保留")); });
   allowBoundPort((server.address() as { port: number } | null)?.port);
   server.on("listening", () => allowBoundPort((server.address() as { port: number } | null)?.port));
   server.on("upgrade", (req, socket, head) => {
@@ -1567,7 +1781,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       socket.destroy();
       return;
     }
-    handleChatgptUpgrade(req, socket as import("node:net").Socket, head);
+    if (repeatedGatewayCredential(req) || !auth.authenticate(req.headers, new URL(req.url ?? "/", "http://placeholder"))) { socket.destroy(); return; }
+    try { budget.assertAllowed(); } catch { socket.destroy(); return; }
+    // Native frames are opaque: per-message budgets and revoked/expired session teardown
+    // are not verified. Do not open a tunnel merely because the upgrade was authenticated.
+    socket.end("HTTP/1.1 409 Conflict\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   });
   // Coding plans used with a key are asked how much is left now and then, so a used-up one is skipped by the pools and the cards show it.
   const pollUsage = async () => {

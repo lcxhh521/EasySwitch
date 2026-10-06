@@ -66,7 +66,406 @@
       "type": "string",
       "pattern": "^https?://",
       "description": "Where the provider serves the Anthropic Messages API, if not under baseUrl."
+    },
+    "protocols": {
+      "$ref": "#/$defs/protocols",
+      "description": "Supported upstream APIs in preference order; a matching inbound API takes priority."
+    },
+    "modelProtocols": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/protocols"
+      },
+      "description": "Overrides by normalized upstream model id, without client context suffixes."
+    },
+    "reasoningEffort": {
+      "type": "boolean"
+    },
+    "modelEfforts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "mimoFree": {
+      "type": "boolean"
+    },
+    "off": {
+      "type": "boolean",
+      "description": "Disabled sources keep their settings but are excluded from requests, model lists, pools and dispatch. New subscriptions default to off."
+    },
+    "billing": {
+      "enum": [
+        "usage",
+        "subscription"
+      ]
+    },
+    "icon": {
+      "type": "string"
+    },
+    "urlParams": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "chatgpt",
+            "codex",
+            "copilot"
+          ]
+        },
+        "accountId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "accountId"
+      ],
+      "additionalProperties": false
+    },
+    "kiro": {
+      "type": "object",
+      "properties": {
+        "loginPath": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "antigravity": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId",
+        "email",
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "vertex": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "const": "standard"
+            },
+            "auth": {
+              "const": "access-token"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{6,20})$"
+            },
+            "location": {
+              "type": "string",
+              "pattern": "^(?:global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$"
+            }
+          },
+          "required": [
+            "mode",
+            "auth",
+            "project",
+            "location"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "const": "express"
+            },
+            "auth": {
+              "const": "api-key"
+            }
+          },
+          "required": [
+            "mode",
+            "auth"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "pattern": "^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{6,20})$"
+            },
+            "location": {
+              "type": "string",
+              "pattern": "^(?:global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$"
+            },
+            "clientEmail": {
+              "type": "string",
+              "format": "email"
+            },
+            "mode": {
+              "const": "service-account"
+            },
+            "auth": {
+              "const": "service-account"
+            }
+          },
+          "required": [
+            "mode",
+            "auth",
+            "project",
+            "location",
+            "clientEmail"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "pattern": "^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{6,20})$"
+            },
+            "location": {
+              "type": "string",
+              "pattern": "^(?:global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$"
+            },
+            "clientEmail": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          "required": [
+            "project",
+            "location",
+            "clientEmail"
+          ],
+          "additionalProperties": false,
+          "description": "Legacy service-account Chat metadata. Never interpreted as supplied-token Gemini."
+        }
+      ]
+    },
+    "prices": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/rates"
+      }
+    },
+    "wire": {
+      "type": "object",
+      "properties": {
+        "authHeader": {
+          "type": "string"
+        },
+        "authScheme": {
+          "enum": [
+            "bearer",
+            "raw"
+          ]
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "type": "object",
+          "properties": {
+            "chat": {
+              "type": "string"
+            },
+            "responses": {
+              "type": "string"
+            },
+            "messages": {
+              "type": "string"
+            },
+            "gemini": {
+              "type": "string"
+            },
+            "models": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "addedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "restUntil": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "object",
+            "properties": {
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "status": {
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "at",
+              "status",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "enabled",
+          "addedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "monthlyUsd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1000000
+        },
+        "stop": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "monthlyUsd"
+      ],
+      "additionalProperties": false,
+      "description": "Source-local-calendar monthly budget; distinct from the global UTC budget."
+    },
+    "cursor": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
+      "additionalProperties": false
+    },
+    "kimi": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
+      "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "protocols": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "chat",
+          "responses",
+          "messages",
+          "gemini"
+        ]
+      }
+    },
+    "rates": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheRead": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheWrite": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite"
+      ],
+      "additionalProperties": false
+    }
+  }
 }

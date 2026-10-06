@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
 import type { GatewayLogEntry } from "./types.ts";
@@ -10,10 +10,15 @@ import type { GatewayLogEntry } from "./types.ts";
  */
 export class Ledger {
   private readonly file: string;
+  private accountingFailed = false;
 
   constructor(dir: string = dataDir()) {
     mkdirSync(dir, { recursive: true });
     this.file = join(dir, "usage.jsonl");
+    // The strict budget reader can distinguish a new empty ledger from a file
+    // that disappears after startup. Never truncate an existing usage history.
+    try { writeFileSync(this.file, "", { flag: "ax", mode: 0o600 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") this.accountingFailed = true; }
   }
 
   append(entry: GatewayLogEntry): void {
@@ -21,6 +26,7 @@ export class Ledger {
       appendFileSync(this.file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     } catch {
       // Usage accounting must never break a request.
+      this.accountingFailed = true;
     }
   }
 
@@ -36,6 +42,28 @@ export class Ledger {
       } catch {
         // A torn last line from a crash: skip it.
       }
+    }
+    return out;
+  }
+
+  /**
+   * Budget decisions must not quietly omit old entries, malformed/torn lines or
+   * failed writes. The console's forgiving 50k view above remains unchanged.
+   */
+  readForBudget(since?: Date): GatewayLogEntry[] {
+    if (this.accountingFailed) throw new Error("Usage accounting is incomplete");
+    const lines = readFileSync(this.file, "utf8").split("\n").filter(Boolean);
+    const out: GatewayLogEntry[] = [];
+    for (const line of lines) {
+      const entry = JSON.parse(line) as GatewayLogEntry;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.at !== "string" || !Number.isFinite(Date.parse(entry.at))) throw new Error("Usage accounting contains an invalid entry");
+      if (typeof entry.model !== "string" || typeof entry.route !== "string" || !Number.isInteger(entry.status) || !Number.isFinite(entry.ms)) throw new Error("Usage accounting contains an invalid entry");
+      for (const field of ["costUsd", "inputTokens", "outputTokens", "cachedTokens"] as const) {
+        const value = entry[field];
+        if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) throw new Error("Usage accounting contains an invalid amount");
+      }
+      if (entry.costNote !== undefined && entry.costNote !== "unpriced" && entry.costNote !== "subscription") throw new Error("Usage accounting contains an invalid cost note");
+      if (!since || new Date(entry.at) >= since) out.push(entry);
     }
     return out;
   }

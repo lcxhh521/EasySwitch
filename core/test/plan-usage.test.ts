@@ -62,3 +62,27 @@ test("a vendor that answers with something unrecognised, an error, or no key sho
   assert.equal(hasPlanUsage(provider("c", "https://api.kimi.com/coding/v1", { cursor: { accountId: "x" } })), false);
   assert.equal(hasPlanUsage(provider("o", "https://api.openai.com/v1")), false);
 });
+
+
+test("plan usage rejects insecure, ambiguous and cross-account destinations before invoking transport", async () => {
+  const invalid = [
+    "http://api.kimi.com/coding/v1", "https://api.kimi.com:8443/coding/v1", "https://user:pass@api.kimi.com/coding/v1",
+    "https://api.kimi.com/coding/v1?redirect=elsewhere", "https://api.kimi.com/coding/v1#fragment",
+    "https://api.kimi.com.evil.example/coding/v1", "https://api.minimax.com/v1", "https://api.minimaxi.io/v1",
+  ];
+  let calls = 0;
+  const transport: typeof fetch = async (_url, init) => { calls++; assert.equal(init?.redirect, "error"); return Response.json({}); };
+  for (const base of invalid) {
+    const p = provider("invalid", base);
+    assert.equal(hasPlanUsage(p), false, base);
+    assert.equal(await refreshPlanUsage(p, "fixture-key", NOW, transport), undefined);
+  }
+  const cross = provider("cross", "https://api.minimax.io/v1", { kimi: { accountId: "fixture-kimi" } });
+  assert.equal(hasPlanUsage(cross), false);
+  assert.equal(await refreshPlanUsage(cross, "fixture-kimi-token", NOW, transport), undefined);
+  assert.equal(calls, 0, "invalid destinations never receive a key");
+  for (const base of ["https://api.kimi.com/coding/v1", "https://api.kimi.ai/coding/v1", "https://api.minimax.io/v1", "https://api.minimaxi.com/v1"]) {
+    await refreshPlanUsage(provider("valid", base), "fixture-key", NOW, transport);
+  }
+  assert.equal(calls, 4);
+});

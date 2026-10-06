@@ -83,7 +83,7 @@ before(async () => {
   port = await new Promise<number>(resolve => {
     const probe = createServer().listen(0, "127.0.0.1", () => { const p = (probe.address() as { port: number }).port; probe.close(() => resolve(p)); });
   });
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-dispatch-"))), secrets: createSecretStore(), port, gatewayAuth: true });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-dispatch-"))), secrets: createSecretStore(), port });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
   pid = ((await (await api("POST", "/api/providers", { name: "mock-relay", baseUrl: relay.baseUrl, apiKey: "k" })).json()) as { id: string }).id;
 });

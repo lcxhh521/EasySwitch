@@ -5,10 +5,10 @@ import type { AgentLauncher, LaunchInput, LaunchSpec } from "./agent-launch.ts";
 const run = promisify(execFile);
 
 /**
- * A read-only check of a launcher against the real program: ask the program for its `--help` and see whether every
- * flag the launcher uses is in it. It runs nothing else, reads no configuration or login of anyone's, and says so
- * plainly when a flag is not found. It cannot tell whether a private-directory variable (HOME-like) is honoured:
- * that only shows by running the agent, which the person does with `es <agent>`.
+ * Ask an explicitly selected real program for `--help` and compare its flags. No task is sent, but this still
+ * executes third-party code with the inherited environment: a CLI may read configuration or logins during
+ * startup. It is not a no-execution or credential-isolation check. Tests inject a runner and execute no program.
+ * The comparison cannot prove that a private-directory variable is honoured or that an agent actually works.
  */
 
 const PROBE: LaunchInput = {
@@ -50,10 +50,13 @@ export interface Verdict {
   error?: string;
 }
 
+/** Explicit dependency seam for pure fixtures; production still uses execFile with bounded help output. */
+export type HelpRunner = (bin: string, args: string[], options: { timeout: number; maxBuffer: number; env: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
+
 /** What the program prints for `--help` (many print it on stderr or exit non-zero for it, so both are read). */
-async function helpOf(bin: string, args: string[]): Promise<string | undefined> {
+async function helpOf(bin: string, args: string[], runHelp: HelpRunner): Promise<string | undefined> {
   try {
-    const { stdout, stderr } = await run(bin, [...args, "--help"], { timeout: 15_000, maxBuffer: 2_000_000, env: { ...process.env, NO_COLOR: "1" } });
+    const { stdout, stderr } = await runHelp(bin, [...args, "--help"], { timeout: 15_000, maxBuffer: 2_000_000, env: { ...process.env, NO_COLOR: "1" } });
     return `${stdout}\n${stderr}`;
   } catch (error) {
     const e = error as { stdout?: string; stderr?: string };
@@ -66,15 +69,15 @@ async function helpOf(bin: string, args: string[]): Promise<string | undefined> 
  * Asks the program for help, once per form, and compares. A flag counts as found when the sub-command's help or the
  * program's own top-level help mentions it: some flags belong to the program and are written only there.
  */
-export async function verifyLauncher(bin: string, l: AgentLauncher): Promise<Verdict[]> {
+export async function verifyLauncher(bin: string, l: AgentLauncher, runHelp: HelpRunner = run): Promise<Verdict[]> {
   const names = [l.interactive ? "interactive" : undefined, l.headless ? "headless" : undefined].filter(Boolean) as string[];
   const out: Verdict[] = [];
   const forms = launcherFlags(l);
   let top: string | undefined | null = null; // null: not asked yet
   for (let k = 0; k < forms.length; k++) {
     const { subcommand, flags } = forms[k]!;
-    const own = await helpOf(bin, subcommand);
-    if (subcommand.length && top === null) top = await helpOf(bin, []);
+    const own = await helpOf(bin, subcommand, runHelp);
+    if (subcommand.length && top === null) top = await helpOf(bin, [], runHelp);
     const help = [own, subcommand.length ? top : undefined].filter(Boolean).join("\n");
     if (!help) { out.push({ form: names[k]!, helpOk: false, checked: flags, missing: [], error: "没能得到帮助文字" }); continue; }
     out.push({ form: names[k]!, helpOk: true, checked: flags, missing: missingFlags(help, flags) });

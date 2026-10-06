@@ -24,6 +24,11 @@ let openProvider = null;
 let addForm = null; // { preset } while the add panel is open
 let chatgptInfo = null; // /api/chatgpt: installed, running, enhanced
 let chatgptConfirm = null; // "enhance" | "native" while the restart notice is open
+let claudeDesktopInfo = null;
+let claudeDesktopConfirm = false;
+let claudeDesktopBusy = false;
+let claudeDesktopModel = "";
+let claudeDesktopError = "";
 /** Which collapsible panels the user opened; the page redraws every few seconds and must not close them. */
 const openDetails = new Set();
 const keepOpen = id => (openDetails.has(id) ? "open" : "");
@@ -228,7 +233,7 @@ function agentControls(id) {
   const modelHas = modelKey ? state.modelEfforts?.[modelKey] ?? [] : null;
   // With a model of ours the levels are the model's that the agent can say (or all of the model's, for an agent with none of its own); on a native model, the agent's own.
   const own = can0.efforts ?? [];
-  const levels = modelKey ? (can0.anyEffort ? modelHas : own.filter(l => modelHas.includes(l))) : own;
+  const levels = modelKey ? (can0.anyEffort ? modelHas : own.filter(l => (modelHas.includes(l) || ((l === "off" || l === "none") && modelHas.some(v => v === "off" || v === "none"))))) : own;
   const tierCtl = t => {
     const name = prefs.tiers?.[t.id];
     const slash = name ? name.indexOf("/") : -1;
@@ -245,7 +250,7 @@ function agentControls(id) {
       // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
       ? `<div class="ctl"><small>想得多深</small><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="${esc(binding.model)} 没有已知的思考档位；告诉 EasySwitch 它有哪些">档位未知，设置</button></div>`
       : "";
-  return effort + (can0.tiers ?? []).map(tierCtl).join("");
+  return effort + (modelKey && state.modelEffortNotes?.[modelKey] ? `<small class="hint">${esc(state.modelEffortNotes[modelKey])}</small>` : "") + (can0.tiers ?? []).map(tierCtl).join("");
 }
 
 /** The levels editor for the bound model, shown under the row it was opened from. */
@@ -313,13 +318,49 @@ function chatgptCard() {
         <div class="grow"><div class="title">ChatGPT 桌面端</div><div class="sub">每次启动单独指向 EasySwitch，不改 ~/.codex；退回只要普通地重新打开</div></div>
       </div>
       <div class="acts">${chip}
-      ${c.enhanced ? `<button class="btn secondary" data-chatgpt-ask="native">退回普通启动</button>` : `<button class="btn" data-chatgpt-ask="enhance">用 EasySwitch 启动</button>`}</div>
-    </div>${notice}`;
+      ${c.enhanced ? `<button class="btn secondary" data-chatgpt-ask="native">退回普通启动</button>` : `<button class="btn" data-chatgpt-ask="enhance" ${c.launchBlocked ? "disabled" : ""}>${c.launchBlocked ? "等待安全鉴权接入" : "用 EasySwitch 启动"}</button>`}</div>
+    </div>${c.launchBlocked ? `<p class="hint">${esc(c.note)}</p>` : ""}${notice}`;
+}
+
+/** Desktop launches have their own lifecycle and must never use the CLI Terminal button. */
+function claudeDesktopCard() {
+  const c = claudeDesktopInfo;
+  const models = [
+    ...(state?.providers ?? []).flatMap(p => modelsOf(p).map(m => ({ id: `${p.id}/${m}`, name: `${p.name} · ${m}` }))),
+    ...(state?.pools ?? []).filter(p => p.live?.length).map(p => ({ id: `pool/${p.id}`, name: `模型池 · ${p.name}` })),
+  ];
+  if (!models.some(m => m.id === claudeDesktopModel)) {
+    const b = state?.bindings?.["claude-desktop"];
+    const saved = b ? `${b.providerId}/${b.model}` : "";
+    claudeDesktopModel = models.find(m => m.id === saved)?.id ?? models[0]?.id ?? "";
+    claudeDesktopConfirm = false;
+  }
+  const sessions = c?.sessions ?? [];
+  const live = sessions.filter(s => !s.cleaned);
+  const labels = { prepared: "等待启动", starting: "正在启动", running: "进程运行中", exited: "已退出", failed: "启动或运行失败", stopped: "已停止", "cleanup-blocked": "退出或清理待处理" };
+  const disabled = c?.launchBlocked !== false || !c?.installed || !models.length || claudeDesktopBusy || live.length >= 3;
+  const agent = agentList?.find(a => a.id === "claude-desktop");
+  return `<div class="section-head"><h2>Claude 桌面端独立窗口</h2><span class="chip warn">${c?.launchBlocked !== false ? "真实启动已暂停" : "实验性 · 仅模拟测试"}</span></div>
+    <div class="card" data-claude-desktop-card>
+      <div class="row agent"><div class="id">${icon("claude-color", "lg")}<div class="grow">
+        <div class="title">官方第三方网关模式</div>
+        <div class="sub">隔离启动与停止清理已通过模拟测试；官方签名版 2.19675.1 忽略数据目录覆盖变量，真实目录隔离、模型菜单和消息链路尚未实测</div>${agent ? capStrip(agent) : ""}
+      </div></div><span class="chip">${c ? c.installed ? "已检测到应用" : "未检测到应用" : "状态读取中"}</span></div>
+      <div class="controls"><label>默认模型 <select data-claude-desktop-model aria-label="Claude 桌面端默认模型" ${claudeDesktopBusy ? "disabled" : ""}>
+        ${models.length ? models.map(m => `<option value="${esc(m.id)}" ${m.id === claudeDesktopModel ? "selected" : ""}>${esc(m.name)}</option>`).join("") : `<option value="">先添加模型来源</option>`}
+      </select></label><button class="btn" data-claude-desktop-ask ${disabled ? "disabled" : ""}>${claudeDesktopBusy ? "正在处理…" : "打开独立窗口"}</button></div>
+      <p class="hint" style="padding:0 18px">${live.length >= 3 ? "已有三个独立会话，请先停止一个。" : "这里只管理 EasySwitch 创建的独立进程；正常 Claude 窗口不需要退出。启动不等于已验证配置生效。"}</p>
+      ${c?.launchBlocked !== false ? `<p class="hint" role="status" style="padding:0 18px">${esc(c?.note ?? "读取安全状态前不能启动")}</p>` : ""}
+      ${claudeDesktopConfirm ? `<div class="detail" style="display:block"><p class="hint">确认以实验性方式启动？启动器不改原生配置，但真实应用是否完全遵守独立目录仍待验证。应用可能下载并运行自带的 agent helper；发消息会使用你选择的来源及其额度。这个独立窗口只配置外接模型，不借用 Claude 登录。</p><div class="controls"><button class="btn" data-claude-desktop-start ${disabled ? "disabled" : ""}>确认，启动独立窗口</button><button class="btn secondary" data-claude-desktop-cancel>取消</button></div></div>` : ""}
+      ${claudeDesktopError ? `<p class="hint" role="alert" style="padding:0 18px;color:var(--bad)">${esc(claudeDesktopError)}</p>` : ""}
+      ${sessions.map(s => `<div class="row"><div class="grow"><div class="title">${esc(labels[s.state] ?? s.state)}${s.pid ? ` · PID ${esc(s.pid)}` : ""}</div><div class="sub">${s.cleaned ? "私有目录已清理" : "私有目录保留中"}${s.error ? ` · ${esc(s.error)}` : ""}</div></div>${s.cleaned ? "" : `<button class="btn secondary" data-claude-desktop-stop="${esc(s.id)}" ${claudeDesktopBusy ? "disabled" : ""}>停止并清理</button>`}</div>`).join("")}
+    </div>`;
 }
 
 /** The wider catalog under the two ready rows: what is installed here, then the rest. */
 let guideOpen = null; // agent id whose setup guide is shown
 let guideData = null; // what /api/agents/:id/setup returned
+let guideBusy = false;
 let guideReveal = false; // the token is shown masked until asked for
 
 let vertexForm = null; // { message?, busy? } while the Vertex form is open
@@ -327,8 +368,8 @@ let vertexForm = null; // { message?, busy? } while the Vertex form is open
 /** Adding a Google Vertex AI project: its id, a location, and the service account's key file pasted in. */
 function renderVertexForm() {
   return `<form id="vertex-form" class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <div class="title">添加 Google Vertex AI</div>
-    <div class="sub">在 Google Cloud 里给项目建一个服务账号（角色「Vertex AI 用户」），下载它的 JSON 密钥，把内容整段粘到下面。密钥只存在钥匙串里，我们用它换短期令牌。</div>
+    <div class="title">添加 Google Vertex AI · 服务账号 / Chat</div>
+    <div class="sub">在 Google Cloud 里给项目建一个服务账号（角色「Vertex AI 用户」），下载它的 JSON 密钥，把内容整段粘到下面。密钥只存在钥匙串里，我们用它换短期令牌。此模式使用 OpenAI 兼容 Chat API；如只提供短期令牌或 Express Key，请从普通来源预设选择对应 Gemini 模式。</div>
     <input type="text" name="project" placeholder="项目 ID，比如 my-project-123456" required>
     <input type="text" name="location" placeholder="区域，默认 global（也可以是 us-central1）">
     <textarea name="serviceAccount" rows="6" placeholder='{ "type": "service_account", "client_email": "…", "private_key": "-----BEGIN PRIVATE KEY-----…" }' required></textarea>
@@ -349,7 +390,7 @@ function guidePanel(a) {
     ${g.fields.map(f => field(f.label, f.value, f.secret)).join("")}
     <div class="gfield"><div class="glabel">模型 ID（要用哪个就加哪个，第一个是你选的默认）</div><div class="gmodels">${g.models.map(m => `<button class="chip" data-copy="${esc(m)}" title="点一下复制">${esc(m)}</button>`).join("") || "<span class=\"hint\">还没有可用的模型：先去「模型来源」里添加并打开一个</span>"}</div></div>
     ${g.file ? `<div class="gfield"><div class="glabel">文件：${esc(g.file.path)}</div><pre class="gfile">${esc(g.file.content)}</pre><button class="btn secondary" data-copy="${esc(g.file.content)}">复制文件内容</button><div class="sub">${esc(g.file.warning)}</div></div>` : ""}
-    <div class="sub gcaveat">${esc(g.caveat)}</div>
+    <div class="sub gcaveat">${esc(g.caveat)}${g.sources?.length ? " · " + g.sources.filter(url => /^https:\/\//.test(url)).map(url => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">官方设置说明</a>`).join(" · ") : ""}</div>
   </div><button class="btn secondary" data-guide-close>收起</button></div>`;
 }
 
@@ -377,7 +418,7 @@ function genericAgentRow(a) {
 
 /** Every agent except the two with their own rows, split into installed and not. */
 function otherAgents() {
-  const rest = (agentList ?? []).filter(a => a.id !== "codex" && a.id !== "claude");
+  const rest = (agentList ?? []).filter(a => a.id !== "codex" && a.id !== "claude" && a.id !== "claude-desktop");
   // Those EasySwitch can start come first.
   const rank = a => (a.can?.interactive ? 0 : a.can ? 1 : 2);
   const by = (x, y) => rank(x) - rank(y);
@@ -388,8 +429,8 @@ function otherAgents() {
 /** A model that can only think or not (DeepSeek, Kimi and the like) gets "off / on", not a scale it does not have. */
 function levelLabel(level, levels) {
   if (!level) return "默认";
-  const switchOnly = levels.length === 2 && levels.includes("none") && levels.some(l => l !== "none");
-  if (switchOnly) return level === "none" ? "关闭思考" : "开启思考";
+  const switchOnly = levels.length === 2 && levels.some(l => l === "none" || l === "off") && levels.some(l => l !== "none" && l !== "off");
+  if (switchOnly) return level === "none" || level === "off" ? "关闭思考" : "开启思考";
   return `${EFFORT_LABEL[level] ?? level}（${esc(level)}）`;
 }
 const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
@@ -569,6 +610,7 @@ function renderAgents() {
     <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
     <p class="hint">在每个 agent 那一行里选主模型、想得多深、后台小任务和子 agent 用的模型，再点「启动」。会话里输入 <code>/model</code> 可以随时换。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT 和 Claude Code 永远不受影响。「接入中」的 agent 正在逐个接入；「只能打开」的是闭源或绑定登录的，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>
     ${state.providers.length ? "" : onboarding()}
+    ${claudeDesktopCard()}
     ${coverageCard()}
     ${missing.length ? `<div class="section-head"><h2>未安装</h2><span class="aside">${missing.length} 个</span></div><div class="card">${missing.join("")}</div>` : ""}`;
 }
@@ -775,6 +817,7 @@ function billingBlock(p) {
 
 /** The key pool of one provider: each row is a key (an account); the first enabled one answers next. */
 function keyList(p) {
+  if (p.vertex && (p.vertex.mode === "service-account" || !p.vertex.mode)) return `<p class="hint">服务账号保存在专用钥匙串项中，使用 Chat 协议并自动换取短期令牌；不复用普通 API Key 池。更换身份请从服务账号入口新增来源。</p>`;
   const keys = p.keys ?? [];
   const rows = keys.map(k => {
     const resting = k.restUntil && new Date(k.restUntil).getTime() > Date.now();
@@ -795,6 +838,7 @@ function keyList(p) {
 
 /** "本月约 $1.20 / $5（24%）", and what it means when it is gone. */
 function budgetText(b) {
+  if (b.configurationInvalid || b.accountingUnavailable) return b.warning || "来源预算账本不可用，已暂停";
   const money = n => `$${n < 10 ? n.toFixed(2) : n.toFixed(0)}`;
   const base = `本月约 ${money(b.spent)} / ${money(b.limit)}（${Math.round(b.ratio * 100)}%）`;
   return b.level === "over" ? `${base}，预算用完了${b.stop ? "，已停用到下个月" : "（只提醒，没有停用）"}` : b.level === "near" ? `${base}，快用完了` : base;
@@ -804,13 +848,20 @@ function budgetText(b) {
 function budgetBlock(p) {
   if (p.billing === "subscription") return "";
   const b = p.budget;
-  return `<form class="controls" data-budget-form="${esc(p.id)}">
-    <label class="hint">每月预算（美元，估算）</label>
+  return `<form class="controls" data-provider-budget-form="${esc(p.id)}">
+    <label class="hint">来源预算（本地日历月，美元估算）</label>
     <input type="number" name="monthlyUsd" min="0" step="0.5" placeholder="不设" value="${b ? esc(String(b.monthlyUsd)) : ""}" style="width:110px">
     <label class="hint" style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="stop" ${b?.stop ? "checked" : ""}> 用完就停用到下个月</label>
     <button class="btn secondary" type="submit">保存</button>
     <span class="hint">${p.budgetStatus ? esc(budgetText(p.budgetStatus)) : "按各家公开的按量价格估算；没设就不限"}</span>
   </form>`;
+}
+
+const PROTOCOL = { chat: "Chat", responses: "Responses", messages: "Messages", gemini: "Gemini" };
+function protocolOptions(p, model = "") {
+  const selected = p.modelProtocols?.[model] ?? p.protocols ?? p.supportedProtocols ?? ["chat"];
+  const order = [...selected, ...Object.keys(PROTOCOL).filter(v => !selected.includes(v))];
+  return order.map(v => `<label><input type="checkbox" name="protocols" value="${esc(v)}" ${selected.includes(v) ? "checked" : ""}> ${PROTOCOL[v] ?? esc(v)}</label>`).join(" ");
 }
 
 function providerRow(p) {
@@ -820,19 +871,22 @@ function providerRow(p) {
   const checks = (p.probe?.checks ?? []).map(c => `
     <div class="check ${c.status}"><b>${esc(c.label)}</b>${esc(c.detail)}${c.latencyMs != null ? ` · ${c.latencyMs}ms` : ""}</div>`).join("");
   const options = models.map(m => `<option ${m === p.defaultModel ? "selected" : ""}>${esc(m)}</option>`).join("");
-  const nextRoute = p.route === "chat-translate" ? "responses-native" : "chat-translate";
+  const fixed = p.plan || p.mimoFree || p.vertex || p.kiro || p.antigravity || p.cursor || p.kimi;
   const detail = open ? `
     <div class="detail" data-provider="${esc(p.id)}">
       <div class="controls">
-        <span class="chip">ChatGPT：${ROUTE[p.route]}${p.routePinned ? "（手动）" : p.probe ? "（自动）" : ""}</span>
-        <span class="chip">Claude Code：${ROUTE[p.messagesRoute ?? "chat-translate"]}</span>
-        <button class="btn secondary" data-route="${nextRoute}">ChatGPT改为${ROUTE[nextRoute]}</button>
-        ${p.routePinned ? `<button class="btn secondary" data-route="auto">恢复自动</button>` : ""}
+        <span class="chip">来源协议：${(p.supportedProtocols ?? ["chat"]).map(v => PROTOCOL[v] ?? esc(v)).join(" / ") || "尚不支持"}</span>
       </div>
+      ${fixed ? "" : `<form class="form" data-protocol-form>
+        <div class="field"><label>设置范围</label><select name="model" data-protocol-model><option value="">整个来源</option>${models.map(m => `<option value="${esc(m)}">${esc(m)}${p.modelProtocols?.[m] ? "（单独设置）" : ""}</option>`).join("")}</select></div>
+        <div class="controls" data-protocol-options>${protocolOptions(p)}</div>
+        <div class="hint">按来源文档勾选它支持的协议。与客户端相同的协议优先；需要转换时，按这里的显示顺序选择。单个模型可独立设置。</div>
+        <div class="controls"><button class="btn secondary" type="submit">保存协议</button><button class="btn secondary" type="button" data-protocol-auto>恢复默认</button></div>
+      </form>`}
       <div class="controls">
         <label class="hint">测试用模型</label>
         <select class="probe-model">${options || "<option value=''>（没有可选模型）</option>"}</select>
-        <button class="btn" data-probe>一致性测试</button>
+        <button class="btn" data-probe ${((state.budget?.settings.enabled && state.budget.settings.action === "stop") || p.budget?.stop || p.budgetStatus?.configurationInvalid) ? "disabled title=\"暂停预算开启时不允许未完整计费的探测\"" : ""}>一致性测试</button>
         <span class="hint">${p.probe ? `上次测试：${ago(p.probe.at)}` : "还没测过"}</span>
       </div>
       ${checks ? `<div class="checks">${checks}</div>` : ""}
@@ -880,7 +934,8 @@ function renderAddForm() {
       <div class="field"><label>名称</label><input type="text" name="name" required value="${esc(preset && preset.id !== "relay" ? preset.name : "")}" placeholder="例如：我的中转站"></div>
       ${(preset?.urlParams ?? []).map(x => `
       <div class="field"><label>${esc(x.label)}（填进地址里的 {${esc(x.key)}}）</label><input type="text" name="param:${esc(x.key)}" required autocomplete="off" placeholder="${esc(x.example ?? "")}"></div>`).join("")}
-      <div class="field"><label>OpenAI 兼容地址</label><input type="text" name="baseUrl" required value="${esc(preset?.baseUrl ?? "")}" placeholder="https://relay.example.com/v1"></div>
+      ${preset?.vertexMode ? `<p class="hint">Vertex ${preset.vertexMode === "standard" ? "标准模式：使用你提供的短期访问令牌，不读取或刷新原生登录" : "Express：使用 Google Cloud API Key"}；这里只校验配置，不自动推理探测。</p>${preset.vertexMode === "standard" ? `<div class="field"><label>Google Cloud 项目 ID</label><input name="vertexProject" required></div><div class="field"><label>区域</label><input name="vertexLocation" value="global" required></div>` : ""}<div class="field"><label>Gemini 模型 ID</label><input name="defaultModel" value="${esc(preset.defaultModel ?? "")}" required></div>` : ""}
+      <div class="field"><label>${preset?.vertexMode ? "固定 Google API 地址" : "OpenAI 兼容地址"}</label><input type="text" name="baseUrl" required ${preset?.vertexMode ? "readonly" : ""} value="${esc(preset?.baseUrl ?? "")}" placeholder="https://relay.example.com/v1"></div>
       <div class="field"><label>Anthropic 地址（可选，给 Claude Code 原样转发用）</label><input type="text" name="anthropicBaseUrl" value="${esc(preset?.anthropicBaseUrl ?? "")}" placeholder="不填就用上面的地址"></div>
       <div class="field"><label>API Key（存进 macOS 钥匙串）${preset?.keyUrl ? ` · <a href="${esc(preset.keyUrl)}" target="_blank" rel="noopener">去哪里拿 Key</a>` : ""}</label><input type="password" name="apiKey" autocomplete="off"></div>
       <div class="controls"><button class="btn" type="submit">添加并测试</button><button class="btn secondary" type="button" data-cancel-add>取消</button></div>
@@ -985,6 +1040,7 @@ function poolsCard() {
 function renderProviders() {
   return `
     ${planCard()}
+    ${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}
     <div class="section-head"><h2>模型来源</h2><span class="aside">中转站、官方 API、本地模型都可以；加进来先自动测一遍</span></div>
     <div class="card">
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
@@ -1001,6 +1057,10 @@ async function submitAdd(form) {
   data.urlParams = Object.fromEntries(Object.entries(data).filter(([k]) => k.startsWith("param:")).map(([k, v]) => [k.slice(6), v]));
   for (const k of Object.keys(data)) if (k.startsWith("param:")) delete data[k];
   if (addForm.preset) data.presetId = addForm.preset.id;
+  if (addForm.preset?.vertexMode) {
+    data.vertex = addForm.preset.vertexMode === "standard" ? { mode: "standard", auth: "access-token", project: data.vertexProject, location: data.vertexLocation } : { mode: "express", auth: "api-key" };
+    delete data.vertexProject; delete data.vertexLocation;
+  }
   const msg = $("#add-msg");
   msg.className = "msg";
   msg.textContent = "正在添加并读取模型列表…";
@@ -1010,7 +1070,7 @@ async function submitAdd(form) {
     const model = want && p.models.includes(want) ? want : p.models.length === 1 ? p.models[0] : null;
     addForm = null;
     openProvider = p.id;
-    if (model) {
+    if (model && !p.vertex) {
       toast(`已添加「${p.name}」，正在用 ${model} 做一致性测试…`);
       await call("POST", `/api/providers/${p.id}/probe`, { model });
     } else {
@@ -1033,9 +1093,12 @@ function explain(e) {
   const pname = provider?.name ?? e.providerId ?? "未知来源";
   const parts = [];
   if (e.pool) parts.push(`走的是模型池 ${e.pool}，第 ${e.attempt}/${e.attempts} 个来源${e.status >= 400 && e.attempt < e.attempts ? "，它没答上，已经换下一个" : ""}`);
-  if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
+  if (e.inboundProtocol && e.outboundProtocol) parts.push(e.inboundProtocol === e.outboundProtocol
+    ? `来源支持 ${PROTOCOL[e.inboundProtocol]}，保留原生请求与回复`
+    : `${PROTOCOL[e.inboundProtocol]} → ${PROTOCOL[e.outboundProtocol]}，按来源转换请求与回复`);
+  else if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
   else parts.push(`这个来源原生支持 ${harness.protocol} 协议，请求原样转发`);
-  if (e.dropped?.length) parts.push(`去掉了${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（Chat 协议里没有对应的工具）`);
+  if (e.dropped?.length) parts.push(`去掉了${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（目标协议不支持这些内容或参数）`);
   if (e.note) parts.push(e.note);
   if (e.inputTokens != null || e.outputTokens != null) {
     parts.push(`输入 ${thousands(e.inputTokens)} / 输出 ${thousands(e.outputTokens)} tokens${e.cachedTokens ? `，其中 ${thousands(e.cachedTokens)} 命中缓存` : ""}`);
@@ -1242,13 +1305,15 @@ function render() {
   }
   const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage };
   main.innerHTML = (views[page] ?? renderAgents)();
+  if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
+  if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
   if (page === "sessions") requestAnimationFrame(drawFlowLines);
   if (page === "usage") requestAnimationFrame(drawChart);
 }
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1260,6 +1325,8 @@ function syncTaskForm() {
 }
 document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
 document.addEventListener("change", async e => {
+  const desktopModel = e.target.closest?.("[data-claude-desktop-model]");
+  if (desktopModel) { claudeDesktopModel = desktopModel.value; claudeDesktopConfirm = false; claudeDesktopError = ""; render(); return; }
   const sel = e.target.closest?.("[data-effort-select]");
   if (!sel) return;
   try {
@@ -1278,7 +1345,10 @@ async function refresh(force = false) {
     state = null;
   }
   if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
-  if (page === "agents" && !PANEL) chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
+  if (page === "agents" && !PANEL) {
+    chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
+    claudeDesktopInfo = await call("GET", "/api/claude-desktop").catch(() => null);
+  }
   if (page === "tasks") {
     taskList = await call("GET", "/api/tasks").catch(() => taskList);
     if (!agentList) agentList = await loadAgents();
@@ -1300,6 +1370,7 @@ document.addEventListener("click", async e => {
 
   const nav = t.closest("#nav button, [data-go]");
   if (nav) {
+    claudeDesktopConfirm = false;
     page = nav.dataset.page ?? nav.dataset.go;
     if (!PANEL) history.replaceState(null, "", `#${page}`);
     closePopover();
@@ -1390,6 +1461,29 @@ document.addEventListener("click", async e => {
     return;
   }
 
+  if (t.closest("[data-claude-desktop-ask]")) {
+    if (claudeDesktopBusy || claudeDesktopInfo?.launchBlocked !== false || !claudeDesktopInfo?.installed || !claudeDesktopModel) return;
+    claudeDesktopConfirm = true; claudeDesktopError = ""; render(); return;
+  }
+  if (t.closest("[data-claude-desktop-cancel]")) { claudeDesktopConfirm = false; render(); return; }
+  const desktopStart = t.closest("[data-claude-desktop-start]");
+  const desktopStop = t.closest("[data-claude-desktop-stop]");
+  if (desktopStart || desktopStop) {
+    if (claudeDesktopBusy || (desktopStart && (!claudeDesktopConfirm || claudeDesktopInfo?.launchBlocked !== false))) return;
+    claudeDesktopBusy = true; claudeDesktopConfirm = false; claudeDesktopError = ""; render();
+    try {
+      if (desktopStop) {
+        await call("POST", `/api/claude-desktop/sessions/${desktopStop.dataset.claudeDesktopStop}/stop`, {});
+        toast("这个独立会话已停止，私有目录已清理");
+      } else {
+        await call("POST", "/api/claude-desktop/sessions", { experimental: true, model: claudeDesktopModel });
+        toast("独立进程已启动，真实窗口和模型连接仍需确认");
+      }
+    } catch (error) { claudeDesktopError = error.message; }
+    finally { claudeDesktopBusy = false; }
+    await refresh(true); return;
+  }
+
   const agentLaunch = t.closest("[data-agent-launch]");
   if (agentLaunch) {
     try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { toast(error.message); }
@@ -1447,16 +1541,18 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.closest("[data-vertex-open]")) { vertexForm = {}; render(); return; }
-  if (t.closest("[data-vertex-close]")) { vertexForm = null; render(); return; }
+  if (t.closest("[data-vertex-close]")) { if (vertexForm?.busy) return; vertexForm = null; render(); return; }
   const guideBtn = t.closest("[data-guide]");
   if (guideBtn) {
     const id = guideBtn.dataset.guide;
-    if (guideOpen === id) { guideOpen = null; render(); return; }
-    try { guideData = await call("GET", `/api/agents/${id}/setup`); guideOpen = id; guideReveal = false; } catch (error) { toast(error.message); }
+    if (guideBusy) return;
+    if (guideOpen === id) { guideOpen = null; guideData = null; render(); return; }
+    guideBusy = true;
+    try { guideData = await call("POST", `/api/agents/${id}/setup`, {}); guideOpen = id; guideReveal = false; } catch (error) { toast(error.message); } finally { guideBusy = false; }
     render();
     return;
   }
-  if (t.closest("[data-guide-close]")) { guideOpen = null; render(); return; }
+  if (t.closest("[data-guide-close]")) { guideOpen = null; guideData = null; render(); return; }
   if (t.closest("[data-guide-reveal]")) { guideReveal = !guideReveal; render(); return; }
   const copyBtn = t.closest("[data-copy]");
   if (copyBtn) {
@@ -1685,13 +1781,16 @@ document.addEventListener("click", async e => {
     }
     const button = t.closest("button");
     if (!button) return;
+    if (button.type === "submit" && button.closest("form")) return;
     button.disabled = true;
     try {
       if (button.hasAttribute("data-probe")) {
         button.textContent = "测试中…";
         await call("POST", `/api/providers/${id}/probe`, { model: detail.querySelector(".probe-model").value });
-      } else if (button.dataset.route) {
-        await call("POST", `/api/providers/${id}/route`, { route: button.dataset.route === "auto" ? null : button.dataset.route });
+      } else if (button.hasAttribute("data-protocol-auto")) {
+        const model = detail.querySelector("[data-protocol-model]").value;
+        await call("PUT", `/api/providers/${id}/protocols`, { protocols: null, ...(model ? { model } : {}) });
+        toast(model ? "模型已恢复来源设置" : "来源已恢复自动识别");
       } else if (button.hasAttribute("data-remove")) {
         if (!window.confirm("删除这个模型来源？钥匙串里的 Key 也会一起删除。")) { button.disabled = false; return; }
         await call("DELETE", `/api/providers/${id}`);
@@ -1707,6 +1806,11 @@ document.addEventListener("click", async e => {
 });
 
 document.addEventListener("change", async e => {
+  if (e.target.matches("[data-protocol-model]")) {
+    const detail = e.target.closest(".detail");
+    detail.querySelector("[data-protocol-options]").innerHTML = protocolOptions(providerById(detail.dataset.provider), e.target.value);
+    return;
+  }
   if (!e.target.matches(".billing-select")) return;
   const id = e.target.closest(".detail")?.dataset.provider;
   try { await call("PUT", `/api/providers/${id}/billing`, { billing: e.target.value }); toast(e.target.value === "subscription" ? "已改为包月套餐" : "已改为按量计费"); } catch (error) { toast(error.message); }
@@ -1722,6 +1826,24 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("submit", async e => {
+  if (e.target.matches("[data-protocol-form]")) {
+    e.preventDefault();
+    const form = e.target;
+    if (form.dataset.saving) return;
+    const f = new FormData(form); const model = f.get("model");
+    const protocols = f.getAll("protocols");
+    if (!protocols.length) { toast("请至少选择一个来源支持的协议"); return; }
+    const id = form.closest(".detail").dataset.provider;
+    form.dataset.saving = "1";
+    form.querySelectorAll("button, input, select").forEach(el => { el.disabled = true; });
+    try {
+      await call("PUT", `/api/providers/${id}/protocols`, { protocols, ...(model ? { model } : {}) });
+      toast(model ? "模型协议已保存" : "来源协议已保存");
+      await refresh(true);
+    } catch (error) { toast(error.message); }
+    finally { delete form.dataset.saving; form.querySelectorAll("button, input, select").forEach(el => { el.disabled = false; }); }
+    return;
+  }
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
   if (e.target.matches?.("[data-quick-task]")) {
     e.preventDefault();
@@ -1736,12 +1858,12 @@ document.addEventListener("submit", async e => {
     await refresh(true);
     return;
   }
-  if (e.target.dataset?.budgetForm) {
+  if (e.target.dataset?.providerBudgetForm) {
     e.preventDefault();
     const f = new FormData(e.target);
     const usd = String(f.get("monthlyUsd") ?? "").trim();
     try {
-      await call("PUT", `/api/providers/${e.target.dataset.budgetForm}/budget`, { monthlyUsd: usd === "" ? null : Number(usd), stop: f.get("stop") === "on" });
+      await call("PUT", `/api/providers/${e.target.dataset.providerBudgetForm}/budget`, { monthlyUsd: usd === "" ? null : Number(usd), stop: f.get("stop") === "on" });
       toast(usd === "" ? "已取消预算" : "预算已保存");
     } catch (error) { toast(error.message); }
     await refresh(true);
@@ -1749,6 +1871,7 @@ document.addEventListener("submit", async e => {
   }
   if (e.target.id === "vertex-form") {
     e.preventDefault();
+    if (!vertexForm || vertexForm.busy) return;
     const f = new FormData(e.target);
     const models = String(f.get("models") ?? "").split(",").map(x => x.trim()).filter(Boolean);
     vertexForm = { busy: true };
@@ -1871,7 +1994,7 @@ document.addEventListener("submit", async e => {
   } catch (error) { toast(error.message); }
   await refresh(true);
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closePopover(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closePopover(); if (claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); } } });
 // "toggle" does not bubble, so listen in the capture phase.
 document.addEventListener("toggle", e => {
   const id = e.target?.dataset?.keep;

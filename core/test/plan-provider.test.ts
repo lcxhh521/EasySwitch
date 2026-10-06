@@ -1,3 +1,4 @@
+import { fixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync } from "node:fs";
@@ -69,7 +70,7 @@ test("Continue with ChatGPT turns a signed-in plan into a model source with the 
   assert.equal(state.accounts[0].on, false);
   assert.ok(!store.catalog().some(m => m.providerId === pid), "a switched-off subscription is not in the model catalog");
   const refused = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
   });
   assert.equal(refused.status, 404);
@@ -91,7 +92,7 @@ test("switching a subscription off keeps the login but takes it out of menus, po
   assert.ok(!store.catalog().some(m => m.providerId === pid));
   const before = fake.responsesRequests.length;
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
   });
   assert.equal(res.status, 404);
@@ -99,7 +100,7 @@ test("switching a subscription off keeps the login but takes it out of menus, po
   assert.equal((await api("PUT", `/api/plan/${accountId}/switch`, { on: true })).status, 200);
   assert.equal(store.providers().find(p => p.id === pid)!.off, undefined);
   assert.equal((await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
   })).status, 200, "back in use");
 });
@@ -107,7 +108,7 @@ test("switching a subscription off keeps the login but takes it out of menus, po
 test("a Chat Completions agent uses the plan: converted to Responses, bearer is the account's token, refused fields never leave", async () => {
   fake.responsesRequests.length = 0;
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-opencode-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("opencode")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, max_tokens: 50, temperature: 0.2, messages: [{ role: "system", content: "be brief" }, { role: "user", content: "hi" }] }),
   });
   assert.equal(res.status, 200);
@@ -125,7 +126,7 @@ test("a Chat Completions agent uses the plan: converted to Responses, bearer is 
 
 test("streaming works through the same route", async () => {
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-opencode-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("opencode")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, stream: true, messages: [{ role: "user", content: "hi" }] }),
   });
   const text = await res.text();
@@ -145,7 +146,7 @@ test("a Claude Code style Messages request is answered by the plan too (Claude's
 test("a Responses agent (Codex) is forwarded with the refused fields and tools removed, and system turned into developer", async () => {
   fake.responsesRequests.length = 0;
   const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-codex-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("codex")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, stream: true, store: true, temperature: 0.1, metadata: { a: 1 }, input: [{ type: "message", role: "system", content: "s" }, { type: "message", role: "user", content: "hi" }], tools: [{ type: "image_generation" }] }),
   });
   assert.equal(res.status, 200);
@@ -162,7 +163,7 @@ test("a thinking level saved for any agent reaches the plan in the model's own w
   assert.equal((await api("PUT", "/api/bindings/opencode/effort", { effort: "ultra" })).status, 200, "the model has ultra, and the agent can say it");
   fake.responsesRequests.length = 0;
   await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-opencode-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("opencode")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
   }).then(r => r.text());
   assert.deepEqual(fake.responsesRequests[0]!.body.reasoning, { effort: "ultra" });
@@ -174,7 +175,7 @@ test("the access token is renewed when it is about to end, and the request goes 
   store.siwcStorage().save({ ...acc, expiresAt: Date.now() + 20_000 });
   fake.responsesRequests.length = 0;
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
   });
   assert.equal(res.status, 200);
@@ -185,7 +186,7 @@ test("the access token is renewed when it is about to end, and the request goes 
 test("when the plan's usage limit is reached the agent gets a plain 429, and nothing is retried elsewhere", async () => {
   fake.responsesStatus = { status: 429, body: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit reached" } } };
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
     body: JSON.stringify({ model: `${pid}/gpt-fake`, messages: [{ role: "user", content: "hi" }] }),
   });
   assert.equal(res.status, 429);
@@ -195,7 +196,7 @@ test("when the plan's usage limit is reached the agent gets a plain 429, and not
 // ---- quota awareness
 
 const planChat = (model: string, extra: Json = {}) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-  method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+  method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
   body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly the word: pong" }], ...extra }),
 });
 const planInfo = async () => ((await (await api("GET", "/api/plan")).json()) as Json).accounts[0] as Json;

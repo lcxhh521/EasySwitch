@@ -1,10 +1,12 @@
+import { fixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { agentFromAuth, sessionToken } from "../src/gateway-chat.ts";
+import { agentFromAuth, agentOfHeaders, sessionToken } from "../src/gateway-chat.ts";
+import { AGENTS } from "../src/agents.ts";
 import { Ledger } from "../src/ledger.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
@@ -43,7 +45,7 @@ after(() => {
   relay.server.close();
 });
 
-const post = (body: Json, token = "Bearer es-session-qwencode-abc") =>
+const post = (body: Json, token = `Bearer ${fixtureToken("qwen-code")}`) =>
   fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: token }, body: JSON.stringify(body) });
 
 test("a non-streaming chat request is answered by the provider the model names", async () => {
@@ -66,7 +68,7 @@ test("a streaming request is passed through chunk for chunk, with usage switched
   await new Promise(r => setTimeout(r, 100));
   const entries = new Ledger(ledgerDir).read();
   const last = entries.at(-1)!;
-  assert.equal(last.harness, "qwencode", "the agent comes from the per-launch token");
+  assert.equal(last.harness, "qwen-code", "the agent comes from the per-launch token");
   assert.equal(last.inputTokens, 42);
   assert.equal(last.outputTokens, 7);
 });
@@ -97,8 +99,31 @@ test("unknown models and upstream errors are reported in OpenAI's error shape", 
 });
 
 test("the agent id travels in the per-launch token", () => {
-  assert.equal(agentFromAuth(sessionToken("qwen-code")), "qwencode");
+  assert.equal(agentFromAuth(sessionToken("qwen-code")), "qwen-code");
   assert.equal(agentFromAuth(`Bearer ${sessionToken("opencode")}`), "opencode");
   assert.equal(agentFromAuth("Bearer es-session-4af52f1a-3eb8-4672-86bd-c9d0a69551d9"), "chat", "a bare UUID token has no agent");
   assert.equal(agentFromAuth(undefined), "chat");
+});
+
+test("every catalog agent keeps its canonical identity in new and legacy tokens", () => {
+  for (const { id } of AGENTS) {
+    const token = sessionToken(id);
+    assert.ok(token.startsWith(`es-session-${id}-`), id);
+    assert.equal(agentFromAuth(token), id);
+    assert.equal(agentFromAuth(`Bearer ${token}`), id);
+    assert.equal(agentFromAuth(`es-session-${id}-short-suffix`), id);
+    const legacy = id.replace(/[^a-z0-9]/g, "");
+    assert.equal(agentFromAuth(`es-session-${legacy}-abc`), id);
+    assert.equal(agentFromAuth(`es-session-${legacy}-12345678-abcd-4321-abcd-123456789abc`), id);
+  }
+  assert.equal(agentFromAuth(sessionToken("custom-agent")), "custom-agent");
+  assert.equal(agentFromAuth("es-session-claude-desktop-"), "chat", "a missing suffix cannot borrow another agent identity");
+  assert.equal(agentFromAuth("es-session-12345678-abcd-4321-abcd-123456789abc"), "chat");
+});
+
+test("client headers select the per-launch identity without borrowing unrelated vendor auth", () => {
+  assert.equal(agentOfHeaders({ authorization: "Bearer native-login", "x-api-key": sessionToken("claude-desktop") }, "claude"), "claude-desktop");
+  assert.equal(agentOfHeaders({ authorization: "Bearer unrelated", "x-goog-api-key": "es-session-geminicli-abc" }, "gemini-cli"), "gemini-cli");
+  assert.equal(agentOfHeaders({ authorization: "Bearer native-login", "x-easyswitch-session": "es-session-minimaxcode-abc" }, "claude"), "minimax-code");
+  assert.equal(agentOfHeaders({}, "codex"), "codex");
 });

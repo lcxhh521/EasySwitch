@@ -1,3 +1,4 @@
+import { fixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync } from "node:fs";
@@ -37,7 +38,7 @@ before(async () => {
 after(() => { server.closeAllConnections(); server.close(); relay.server.closeAllConnections(); relay.server.close(); });
 
 const call = (model: string, method: string, body: Json, query = "") =>
-  fetch(`http://127.0.0.1:${port}/v1beta/models/${model}:${method}${query}`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": "es-session-geminicli-abc" }, body: JSON.stringify(body) });
+  fetch(`http://127.0.0.1:${port}/v1beta/models/${model}:${method}${query}`, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": fixtureToken("gemini-cli") }, body: JSON.stringify(body) });
 
 test("schemas lose Gemini's capitals and extras", () => {
   assert.deepEqual(lowerSchema({ type: "OBJECT", properties: { a: { type: "STRING", nullable: true } }, required: ["a"] }), { type: "object", properties: { a: { type: "string" } }, required: ["a"] });

@@ -1,14 +1,15 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { sessionToken } from "./gateway-chat.ts";
-import { stableToken } from "./gateway-auth.ts";
+import { gatewayTokens, type GatewayTokenAuthority } from "./gateway-auth.ts";
 import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
 import { mcpEndpoint } from "./mcp.ts";
 import { knownEfforts } from "./efforts.ts";
 import { allModels, EXTRA_LAUNCHERS } from "./launchers-extra.ts";
+import { DSH_EFFORTS, dshLaunch, prepareDshMcpPlugin } from "./dsh-launch.ts";
+export { findDshMcpPlugin as dshMcpPlugin } from "./dsh-launch.ts";
 
 const run = promisify(execFile);
 
@@ -51,6 +52,8 @@ export interface LaunchInput {
   catalog?: string;
   /** Reasoning level for this launch, one of the launcher's `efforts`. */
   effort?: string;
+  /** Model-owned capabilities for every exposed model, keyed by <provider>/<model>. */
+  modelEfforts?: Record<string, string[]>;
   /** The EasySwitch MCP server to attach for this launch, so this agent can call the others. */
   mcp?: McpAttach;
 }
@@ -63,8 +66,8 @@ export interface LaunchSpec {
   unset?: string[];
   /** Files to write under sessionDir before starting (relative path → content). */
   files?: Record<string, string>;
-  /** Symbolic links to make before starting (absolute link path → what it points to). */
-  links?: Record<string, string>;
+  /** Resolve an already-installed official plugin, then link it only into the private dsh home. */
+  dshMcpPlugin?: { bin: string; packageDir?: string };
 }
 
 export interface AgentLauncher {
@@ -89,74 +92,14 @@ const openaiEnv = (i: LaunchInput): Record<string, string> => ({ OPENAI_BASE_URL
 /** A YAML-safe quoted string (JSON strings are valid YAML). */
 const q = (s: string) => JSON.stringify(s);
 
-/** The levels dsh's configuration knows (it has no "ultra"); a saved level outside them is still applied by the gateway. */
-const DSH_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"];
-
-/**
- * dsh's MCP client is a plugin that is not part of the app: it lives where the user's own dsh keeps its plugins.
- * It is found there and linked into this launch's private home (nothing is installed, nothing of the user's changes).
- */
-export function dshMcpPlugin(): string | undefined {
-  // A test (or a person with the plugin somewhere else) can point at it directly.
-  const given = process.env.EASYSWITCH_DSH_MCP_PLUGIN;
-  if (given) return given;
-  const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
-  try { return realpathSync(join(home, "profiles", "node_modules", "@deepseek-ai", "dsh-mcp-client")); } catch { return undefined; }
-}
-const dshHome = (i: LaunchInput) => join(i.sessionDir, "dsh-home");
-const dshPluginLink = (i: LaunchInput) => join(dshHome(i), "profiles", "node_modules", "@deepseek-ai", "dsh-mcp-client");
-
-/** dsh: a patch overlay adds the gateway as a provider and makes it the default for this launch. */
-function dshPatch(i: LaunchInput, mcpPlugin?: string): string {
-  const levels = DSH_LEVELS.filter(l => l !== "minimal");
-  const effort = i.effort && DSH_LEVELS.includes(i.effort) ? i.effort : undefined;
-  return [
-    // The sub-agent and the small jobs (the session title, compaction) can run on models of their own.
-    ...(i.tiers?.subagent ? ["- id: tool-subagent", "  config:", "    provider: spawn", "    toolName: subagent", "    backgroundMode: continuable", "    agentOptions:", "      provider: easyswitch", `      model: ${q(i.tiers.subagent)}`] : []),
-    ...(i.tiers?.small ? [
-      "- id: session-title-llm", "  config:", "    targetWords: 5", "    targetCjkCharacters: 10", "    maxInputBytes: 4096", "    maxOutputTokens: 64", "    timeoutMs: 60000",
-      "    provider: easyswitch", `    model: ${q(i.tiers.small)}`,
-      "- id: compaction-basic", "  config:", "    summarizationProvider: easyswitch", `    summarizationModel: ${q(i.tiers.small)}`,
-    ] : []),
-    "- id: llm-pi-ai",
-    "  config:",
-    "    providers:",
-    "      easyswitch:",
-    "        displayName: EasySwitch",
-    "        api: openai-responses",
-    `        baseURL: ${q(`${gateway(i)}/v1`)}`,
-    "        headers:",
-    `          Authorization: ${q(`Bearer ${i.token}`)}`,
-    "        models:",
-    ...allModels(i).flatMap(m => [`          - id: ${q(m)}`, `            name: ${q(m.slice(m.indexOf("/") + 1))}`, "            input: [text]", "            reasoningEfforts:", ...levels.map(l => `              ${l}: ${l}`)]),
-    "- id: agent-default-model",
-    "  config:",
-    "    provider: easyswitch",
-    `    model: ${q(i.model)}`,
-    ...(effort ? [`    reasoningEffort: ${effort}`] : []),
-    ...(i.mcp && mcpPlugin ? [
-      "- insert:",
-      "    - id: mcp-easyswitch",
-      "      name: '@deepseek-ai/dsh-mcp-client'",
-      "      config:",
-      "        serverName: easyswitch",
-      "        transport: streamable-http",
-      `        url: ${q(i.mcp.url)}`,
-      "        headers:",
-      ...Object.entries(i.mcp.headers).map(([k, v]) => `          ${q(k)}: ${q(v)}`),
-    ] : []),
-    "",
-  ].join("\n");
-}
-
 export const LAUNCHERS: Record<string, AgentLauncher> = {
   // The two built-in agents. Headless forms run with the harness' own read-only defaults.
   codex: {
     verified: true,
     efforts: ["minimal", "low", "medium", "high", "xhigh"],
     tiers: [{ id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" }],
-    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp, i.token), ...codexExtras(i)], env: {} }),
-    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, i.catalog, i.mcp, i.token), ...codexExtras(i), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
+    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp), ...codexExtras(i)], env: { EASYSWITCH_GATEWAY_TOKEN: i.token } }),
+    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, i.catalog, i.mcp), ...codexExtras(i), i.task ?? ""], env: { OPENAI_API_KEY: "", EASYSWITCH_GATEWAY_TOKEN: i.token } }),
   },
   claude: {
     verified: true,
@@ -178,18 +121,16 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   // Run here against the real programs.
   dsh: {
     verified: true,
+    efforts: DSH_EFFORTS,
     tiers: [
-      { id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" },
-      { id: "small", label: "后台小任务", hint: "起会话标题、压缩对话这类轻量工作用这个模型" },
+      { id: "subagent", label: "子 agent", hint: "spawn 子 agent 用这个模型；不改变主模型" },
+      { id: "small", label: "后台小任务", hint: "标题和对话压缩共用这个模型" },
+      { id: "title", label: "起标题", hint: "覆盖后台小任务模型，只用于会话标题" },
+      { id: "compaction", label: "压缩对话", hint: "覆盖后台小任务模型，只用于对话压缩" },
     ],
-    mcpCaveat: "MCP 插件不在 dsh 的安装包里：从你自己的 dsh 放插件的位置找到它再链接进这次启动的私有目录；你的 dsh 里没装它就挂不上",
-    headless: i => {
-      const plugin = i.mcp ? dshMcpPlugin() : undefined;
-      return {
-        command: i.bin, args: ["headless", "--patch", join(i.sessionDir, "patch.yml"), i.task ?? ""], env: { DSH_HOME: dshHome(i) },
-        files: { "patch.yml": dshPatch(i, plugin) }, ...(plugin ? { links: { [dshPluginLink(i)]: plugin } } : {}),
-      };
-    },
+    caveat: "基础启动及此前小模型标题调用有实测记录；子 agent 仅验证过配置。当前逐模型档位、独立标题/压缩设置和隔离组合尚未在真实客户端验收",
+    mcpCaveat: "此前真实 dsh 已看见 MCP 工具；当前组合尚未实测。插件不在 dsh 的安装包里，须预先安装；只在私有 DSH_HOME 建经过校验的链接，缺失即拒绝，不运行 plugin add",
+    headless: dshLaunch,
   },
 
   // Hermes: a private HERMES_HOME holds a one-provider config, so ~/.hermes is never read or written.
@@ -282,8 +223,7 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       "custom_providers:",
       "  - name: easyswitch",
       `    base_url: ${q(`${gateway(i)}/v1`)}`,
-      // The gateway reads only the agent id from this, so one fixed value keeps the file stable between runs.
-      `    api_key: ${q(stableToken("hermes"))}`,
+      `    api_key: ${q("${EASYSWITCH_GATEWAY_TOKEN}")}`,
       "    api_mode: chat_completions",
       "    discover_models: false",
       "    models:",
@@ -291,7 +231,7 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       // Hermes runs these side jobs on models of their own; each is pointed at the same private provider.
       ...(aux.length ? ["auxiliary:"] : []),
       ...aux.flatMap(([k, m]) => [`  ${k}:`, "    provider: custom:easyswitch", `    model: ${q(m)}`]),
-      ...(i.tiers?.subagent ? ["delegation:", `  model: ${q(i.tiers.subagent)}`, `  base_url: ${q(`${gateway(i)}/v1`)}`, `  api_key: ${q(stableToken("hermes"))}`] : []),
+      ...(i.tiers?.subagent ? ["delegation:", `  model: ${q(i.tiers.subagent)}`, `  base_url: ${q(`${gateway(i)}/v1`)}`, `  api_key: ${q("${EASYSWITCH_GATEWAY_TOKEN}")}`] : []),
       ...(i.mcp ? ["mcp_servers:", "  easyswitch:", `    url: ${q(i.mcp.url)}`, "    enabled: true", "    headers:", ...Object.entries(i.mcp.headers).map(([k, v]) => `      ${q(k)}: ${k.toLowerCase() === "authorization" ? q("Bearer ${EASYSWITCH_MCP_TOKEN}") : q(v)}`)] : []),
       "",
     ].join("\n"),
@@ -326,7 +266,7 @@ function opencodeConfig(i: LaunchInput): string {
 /** Hermes expands ${VAR} in its config, so the MCP token travels in the environment and not in the file. */
 function hermesMcpEnv(i: LaunchInput): Record<string, string> {
   const auth = i.mcp?.headers.Authorization ?? i.mcp?.headers.authorization;
-  return auth ? { EASYSWITCH_MCP_TOKEN: auth.replace(/^Bearer /i, "") } : {};
+  return { EASYSWITCH_GATEWAY_TOKEN: i.token, ...(auth ? { EASYSWITCH_MCP_TOKEN: auth.replace(/^Bearer /i, "") } : {}) };
 }
 
 function aiderBase(i: LaunchInput): string[] {
@@ -387,15 +327,11 @@ export function newSessionDir(): string {
 
 /** Writes the spec's files under the session dir. */
 export function materialize(spec: LaunchSpec, sessionDir: string): void {
+  if (spec.dshMcpPlugin) prepareDshMcpPlugin(spec.dshMcpPlugin.bin, sessionDir, spec.dshMcpPlugin.packageDir);
   for (const [rel, content] of Object.entries(spec.files ?? {})) {
     const path = isAbsolute(rel) ? rel : join(sessionDir, rel);
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, content, { mode: 0o600 });
-  }
-  for (const [link, target] of Object.entries(spec.links ?? {})) {
-    const path = isAbsolute(link) ? link : join(sessionDir, link);
-    mkdirSync(join(path, ".."), { recursive: true });
-    symlinkSync(target, path);
   }
 }
 
@@ -423,37 +359,44 @@ export interface RunResult {
  */
 export async function runHeadless(
   agentId: string, input: Omit<LaunchInput, "token" | "sessionDir" | "mcp">,
-  opts: { cwd?: string; timeoutMs?: number; maxBytes?: number; depth?: number; attachMcp?: boolean; signal?: AbortSignal } = {},
+  opts: { cwd?: string; timeoutMs?: number; maxBytes?: number; depth?: number; attachMcp?: boolean; signal?: AbortSignal;
+    gatewayAuth?: Pick<GatewayTokenAuthority, "issue" | "revoke"> } = {},
 ): Promise<RunResult> {
   const launcher = LAUNCHERS[agentId];
   if (!launcher?.headless) throw new Error("这个 agent 还没有无界面的调用方式");
+  const authority = opts.gatewayAuth ?? gatewayTokens;
   const sessionDir = newSessionDir();
-  const token = sessionToken(agentId);
-  // The called agent can call one level further down (the depth rides in the MCP headers).
-  const mcp = opts.attachMcp === false ? undefined : mcpEndpoint(input.port, token, opts.depth ?? 1);
-  const spec = launcher.headless({ ...input, token, sessionDir, ...(mcp ? { mcp } : {}) });
-  materialize(spec, sessionDir);
-  const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
-  for (const name of spec.unset ?? []) delete env[name];
-  const max = opts.maxBytes ?? 2_000_000;
+  let token: string | undefined;
   try {
+    token = authority.issue(agentId, { depth: opts.depth ?? 1, allowMcp: opts.attachMcp !== false, allowNativeClaude: false }).token;
+    const mcp = opts.attachMcp === false ? undefined : mcpEndpoint(input.port, token, opts.depth ?? 1);
+    const spec = launcher.headless({ ...input, token, sessionDir, ...(mcp ? { mcp } : {}) });
+    materialize(spec, sessionDir);
+    const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
+    for (const name of spec.unset ?? []) delete env[name];
+    const max = opts.maxBytes ?? 2_000_000;
+    if (opts.signal?.aborted) return { exitCode: null, output: "任务已取消", timedOut: false };
     return await new Promise<RunResult>(resolve => {
       const child = spawn(spec.command, spec.args, { cwd: opts.cwd ?? sessionDir, env, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       let timedOut = false;
-      const add = (d: Buffer) => { if (output.length < max) output += d.toString("utf8"); };
+      let bytes = 0;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      const add = (d: Buffer) => { const take = Math.min(d.length, Math.max(0, max - bytes)); output += d.subarray(0, take).toString("utf8"); bytes += take; };
       child.stdout.on("data", add);
       child.stderr.on("data", add);
-      const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, opts.timeoutMs ?? 300_000);
-      // A stop request ends the run: politely first, then for good.
-      opts.signal?.addEventListener("abort", () => {
+      const stop = () => {
         child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 3000).unref();
-      }, { once: true });
-      child.on("close", code => { clearTimeout(timer); resolve({ exitCode: code, output: output.trim(), timedOut }); });
-      child.on("error", error => { clearTimeout(timer); resolve({ exitCode: null, output: String(error.message), timedOut }); });
+        killTimer ??= setTimeout(() => child.kill("SIGKILL"), 3000).unref();
+      };
+      const timer = setTimeout(() => { timedOut = true; stop(); }, opts.timeoutMs ?? 300_000);
+      opts.signal?.addEventListener("abort", stop, { once: true });
+      const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); opts.signal?.removeEventListener("abort", stop); };
+      child.on("close", code => { cleanup(); resolve({ exitCode: code, output: output.trim(), timedOut }); });
+      child.on("error", error => { cleanup(); resolve({ exitCode: null, output: String(error.message), timedOut }); });
     });
   } finally {
+    if (token) authority.revoke(token);
     rmSync(sessionDir, { recursive: true, force: true });
   }
 }

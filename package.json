@@ -14,7 +14,8 @@
     "test": "node --test --test-force-exit core/test/*.test.ts",
     "typecheck": "tsc -p .",
     "backlog": "node bin/backlog.ts",
-    "verify-launchers": "node tools/verify-launchers.ts"
+    "verify-launchers": "node tools/verify-launchers.ts",
+    "test:local": "node bin/test-local.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

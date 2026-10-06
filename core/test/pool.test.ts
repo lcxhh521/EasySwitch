@@ -1,3 +1,4 @@
+import { fixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync } from "node:fs";
@@ -44,7 +45,7 @@ after(() => { server.closeAllConnections(); server.close(); for (const r of [goo
 
 const members = () => [`${ids.bad}/mock-coder`, `${ids.good}/mock-coder`];
 const chat = (model: string, extra: Json = {}) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-  method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+  method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
   body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly the word: pong" }], ...extra }),
 });
 

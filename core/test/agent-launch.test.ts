@@ -28,7 +28,7 @@ before(async () => {
       probe.close(() => resolve(p));
     });
   });
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-agent-store-"))), secrets: createSecretStore(), port, gatewayAuth: true });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-agent-store-"))), secrets: createSecretStore(), port });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
   const created = (await fetch(`http://127.0.0.1:${port}/api/providers`, {
     method: "POST", headers: { "content-type": "application/json", "x-easyswitch": "1" },
@@ -43,7 +43,8 @@ after(() => {
 });
 
 test("each launcher says what it can do, and which forms were run against the real program", () => {
-  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true, efforts: [], anyEffort: true, tiers: [{ id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" }, { id: "small", label: "后台小任务", hint: "起会话标题、压缩对话这类轻量工作用这个模型" }] });
+  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true,
+    efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], anyEffort: false, tiers: LAUNCHERS.dsh!.tiers });
   assert.deepEqual(hasLauncher("claude")?.efforts, ["low", "medium", "high", "xhigh", "max"], "agents with their own setting use their own words");
   assert.equal(hasLauncher("qwen-code")?.verified, false, "documented but not yet run here");
   assert.equal(hasLauncher("doubao"), undefined);
@@ -73,12 +74,13 @@ test("the real DeepSeek Harness, handed a task headlessly, answers through the g
   if (!existsSync(DSH)) { t.skip("DeepSeek Harness not installed"); return; }
   const before = relay.requests.length;
   const mini = `${providerId}/mock-mini`;
-  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, models: [`${providerId}/mock-coder`, mini], effort: "high", tiers: { subagent: mini, small: mini }, task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000 });
+  const plugin = dshMcpPlugin(DSH);
+  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, models: [`${providerId}/mock-coder`, mini], effort: "high", tiers: { subagent: mini, small: mini }, task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000, attachMcp: Boolean(plugin) });
   assert.equal(result.timedOut, false);
   assert.match(result.output, /Hello from the mock relay|pong/i, `a patch with levels and small-job models is accepted: ${result.output.slice(0, 300)}`);
   assert.ok(relay.requests.length > before, "the request went through the gateway to the provider");
   // dsh's MCP client is a plugin of the person's own dsh: when it is there, our tools reach the model.
-  if (dshMcpPlugin()) {
+  if (plugin) {
     // The last request may be a small job (the session title) with no tools: look at every request of this run.
     const asked = relay.requests.slice(before) as Array<{ tools?: Array<{ function?: { name?: string } }>; model?: string }>;
     const names = asked.flatMap(r => (r.tools ?? []).map(x => x.function?.name ?? "?"));

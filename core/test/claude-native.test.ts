@@ -1,4 +1,4 @@
-import { sessionToken } from "../src/gateway-chat.ts";
+import { nativeFixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -16,6 +16,7 @@ import { startMockRelay } from "./mock-relay.ts";
 
 process.env.EASYSWITCH_SECRETS = "memory";
 const run = promisify(execFile);
+const sessionToken = (agentId: string) => fixtureToken(agentId, { allowNativeClaude: true });
 type Json = Record<string, any>;
 
 interface Seen { method: string; url: string; headers: IncomingMessage["headers"]; body: string }
@@ -57,7 +58,7 @@ before(async () => {
 
   relay = await startMockRelay(0, { apiKey: "relay-key" });
   port = await freePort();
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-native-"))), secrets: createSecretStore(), port, gatewayAuth: true });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-native-"))), secrets: createSecretStore(), port });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
   pid = ((await fetch(`http://127.0.0.1:${port}/api/providers`, {
     method: "POST", headers: { "content-type": "application/json", "x-easyswitch": "1" },
@@ -68,7 +69,7 @@ before(async () => {
 after(() => { server.closeAllConnections(); server.close(); anthropic.closeAllConnections(); anthropic.close(); relay.server.closeAllConnections(); relay.server.close(); });
 
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
-  fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: LOGIN, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20", "x-easyswitch-session": sessionToken("claude"), ...headers }, body: JSON.stringify(body) });
+  fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: LOGIN, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20", "x-easyswitch-session": fixtureToken("claude", { allowNativeClaude: true }), ...headers }, body: JSON.stringify(body) });
 
 test("a request for a Claude model goes to Anthropic unchanged, with the caller's own headers", async () => {
   seen.length = 0;
@@ -118,7 +119,7 @@ test("with the setting off, or without a login, the menu is only EasySwitch's", 
 
 test("a session on EasySwitch's own placeholder token never asks Anthropic anything", async () => {
   seen.length = 0;
-  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: `Bearer ${sessionToken("claude")}`, "anthropic-version": "2023-06-01" } });
+  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: `Bearer ${fixtureToken("claude")}`, "anthropic-version": "2023-06-01" } });
   const ids = ((await res.json()) as { data: Array<{ id: string }> }).data.map(m => m.id);
   assert.ok(ids.every(id => id.startsWith("es-claude-")));
   assert.equal(seen.length, 0, "no request reached Anthropic's side");

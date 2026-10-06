@@ -38,6 +38,11 @@ const DEFAULT_ACCOUNT_SETTINGS: AccountSettings = { autoPick: false, defaultRest
 
 /** Providers and bindings, without secrets, in one atomically replaced JSON file. */
 export class Store {
+  private budgetChecker?: (provider: Provider) => boolean;
+  /** The owning server supplies its durable per-source accounting policy. */
+  setProviderBudgetChecker(checker: (provider: Provider) => boolean): void { this.budgetChecker = checker; }
+  providerBudgetStopped(provider: Provider): boolean { return this.budgetChecker?.(provider) ?? false; }
+
   private state: StateFile;
   private readonly file: string;
   /** Where this store lives; files EasySwitch generates (the Codex catalog) go next to it. */
@@ -241,7 +246,7 @@ export class Store {
 
   /** Every model an agent can be given: each provider's, then the pools. */
   catalog(): CatalogModel[] {
-    const own = catalogModels(this.state.providers);
+    const own = catalogModels(this.state.providers.filter(p => !this.providerBudgetStopped(p)));
     const have = new Set(own.map(m => `${m.providerId}/${m.model}`));
     const pools: CatalogModel[] = (this.state.pools ?? []).map(pool => {
       const lists = pool.members.filter(m => have.has(m)).map(member => own.find(m => `${m.providerId}/${m.model}` === member)!.efforts);

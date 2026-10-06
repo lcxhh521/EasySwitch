@@ -1,3 +1,5 @@
+import type { VertexConfig } from "./vertex-config.ts";
+
 // Shared data shapes. The JSON Schemas in contracts/ are the language-neutral
 // source of truth; these types mirror them for the TypeScript core.
 
@@ -7,7 +9,12 @@ export type ProviderRoute = "responses-native" | "chat-translate";
 /** How the gateway reaches a provider for Anthropic Messages traffic (Claude Code). */
 export type MessagesRoute = "anthropic-native" | "chat-translate";
 
+/** Agent-facing APIs; the source and model select the independent outbound protocol. */
+export type ApiProtocol = "chat" | "responses" | "messages" | "gemini";
+
 export interface Provider {
+  /** Explicit Vertex auth/protocol mode, or the legacy service-account shape; never contains a credential. */
+  vertex?: VertexConfig;
   /** URL-safe slug; exposed model ids are `<id>/<upstream model>`. */
   id: string;
   name: string;
@@ -17,6 +24,10 @@ export interface Provider {
   defaultModel?: string;
   /** Model ids the provider listed the last time we asked. */
   models: string[];
+  /** Supported upstream APIs in preference order; the incoming protocol wins when available. */
+  protocols?: ApiProtocol[];
+  /** Per-model capability override, keyed by the upstream model id (without context suffixes). */
+  modelProtocols?: Record<string, ApiProtocol[]>;
   /** Chosen by the last probe unless the user pinned it. */
   route: ProviderRoute;
   routePinned: boolean;
@@ -33,8 +44,6 @@ export interface Provider {
   reasoningEffort?: boolean;
   /** Thinking levels the user says a model on this provider has, by model id. Overrides what EasySwitch knows. */
   modelEfforts?: Record<string, string[]>;
-  /** This provider is Google Vertex AI: the project and location, and the service account whose key (in the secret store) is turned into access tokens (see vertex.ts). */
-  vertex?: { project: string; location: string; clientEmail: string };
   /** This provider is Google Antigravity (Cloud Code Assist): the Google account that signed in and the project found for it (see antigravity.ts). */
   antigravity?: { accountId: string; email: string; projectId: string };
   /** This provider is a Kimi Code account signed in with a device code (see kimi.ts). */
@@ -116,7 +125,7 @@ export interface WireConfig {
   /** Extra query parameters on every call (Azure's api-version on older APIs). */
   query?: Record<string, string>;
   /** Path overrides per call kind, relative to the base address. */
-  paths?: Partial<Record<"chat" | "responses" | "messages" | "models", string>>;
+  paths?: Partial<Record<"chat" | "responses" | "messages" | "gemini" | "models", string>>;
 }
 
 /** One key (one account, one subscription) of a provider. The secret itself lives in the Keychain. */
@@ -206,6 +215,9 @@ export interface GatewayLogEntry {
   model: string;
   providerId?: string;
   route: ProviderRoute | MessagesRoute;
+  inboundProtocol?: ApiProtocol;
+  outboundProtocol?: ApiProtocol;
+  adapter?: string;
   /** The agent that made the call: "codex", "claude", or another agent's id; "chat" when unknown. */
   harness?: string;
   status: number;
@@ -240,6 +252,8 @@ export interface SessionInfo {
 
 /** A provider the user can add with one click. */
 export interface ProviderPreset {
+  vertexMode?: "standard" | "express";
+  protocols?: ApiProtocol[];
   id: string;
   name: string;
   icon: string;

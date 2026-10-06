@@ -1,4 +1,3 @@
-import { stableToken } from "./gateway-auth.ts";
 
 /**
  * The manual-setup helper: for an app that has no per-launch override but does have a place to type a custom model
@@ -32,16 +31,18 @@ export interface SetupGuide {
   file?: GuideFile;
   /** What was not checked against the real app. */
   caveat: string;
+  sources?: string[];
 }
 
 export interface GuideInput {
   port: number;
+  /** Issued by the local authority for this explicit setup request, never inferred from the app ID. */
+  token: string;
   /** Everything the agent may be offered, the default first. */
   models: string[];
 }
 
-/** A token that stays valid between runs, and still says which app is asking. */
-export const manualToken = (id: string): string => stableToken(id);
+
 
 const base = (i: GuideInput) => `http://127.0.0.1:${i.port}`;
 
@@ -49,14 +50,14 @@ const base = (i: GuideInput) => `http://127.0.0.1:${i.port}`;
 export const GUIDE_IDS = ["trae", "zcode", "workbuddy"] as const;
 
 export function setupGuide(id: string, i: GuideInput): SetupGuide | undefined {
-  const token = manualToken(id);
+  const token = i.token;
   const models = i.models.slice(0, 80);
   const common = (name: string, steps: string[], fields: GuideField[], caveat: string, file?: GuideFile): SetupGuide => ({ id, name, steps, fields, models, ...(file ? { file } : {}), caveat });
 
   if (id === "trae") {
     return common("Trae", [
       "打开 Trae 的设置，找到「模型」一栏，选「添加模型」。",
-      "服务商选「OpenAI 兼容」（或「自定义」）；名称随便填，比如 EasySwitch。",
+      "选择「自定义模型」，API 格式选 OpenAI Chat Completions，关闭完整 URL 开关以使用下面的基础地址。",
       "把下面的「接口地址」和「令牌」填进去；「模型 ID」填你要用的一个，要换别的就再添加一次。",
       "回到对话框的模型选择里，选刚加的模型。",
     ], [
@@ -70,7 +71,7 @@ export function setupGuide(id: string, i: GuideInput): SetupGuide | undefined {
       "打开 Z Code 的设置，找到模型 / 供应商，选「添加自定义供应商」。",
       "类型选「Anthropic 兼容」；名称随便填，比如 EasySwitch。",
       "把下面的「接口地址」和「令牌」填进去，再把要用的模型 ID 逐个加进它的模型列表。",
-      "Z Code 只在启动时读供应商，加完要重启一次 Z Code。",
+      "保存、启用来源，再在对话的模型选择器里选择它；保留原生来源以便随时切回。",
     ], [
       { label: "接口地址（Anthropic 兼容，不带 /v1）", value: base(i) },
       { label: "令牌（API Key）", value: token, secret: true },
@@ -78,23 +79,18 @@ export function setupGuide(id: string, i: GuideInput): SetupGuide | undefined {
   }
 
   if (id === "workbuddy") {
-    const entries = models.map(m => ({
-      id: m, name: m.slice(m.indexOf("/") + 1), vendor: "easyswitch", apiKey: token, url: `${base(i)}/v1/chat/completions`,
-      maxInputTokens: 200000, maxOutputTokens: 32000, supportsToolCall: true, supportsImages: false, supportsReasoning: true,
-      reasoning: { supportedEfforts: ["low", "medium", "high"], canDisableThinking: false, defaultEffort: "medium" },
-    }));
-    return common("WorkBuddy", [
-      "WorkBuddy 的自定义模型放在下面「文件」写的那个位置，内容是一个列表。",
-      "如果那里已经有文件，把下面的条目并进它的列表里；没有就新建一个。",
-      "WorkBuddy 会自己发现文件的变化，不用重启。在它的窗口里按任务选模型，选名字带「custom-local」的那些。",
+    const guide = common("WorkBuddy", [
+      "打开 Settings → Model，添加 Custom 模型；这是桌面应用，和 CodeBuddy Code 命令行分开。",
+      "在高级设置里开启 Custom Protocol，填写下面的完整请求地址。",
+      "API Key 填下面的临时令牌，模型 ID 从下面列表选择；保存后在对话菜单里选中。",
+      "只把临时令牌交给本地 EasySwitch 网关，不要贴到服务商网站。到期或重启网关后重新生成；用完可撤销。",
     ], [
-      { label: "接口地址（OpenAI 兼容）", value: `${base(i)}/v1/chat/completions` },
-      { label: "令牌（API Key）", value: token, secret: true },
-    ], "格式来自公开的资料，没有在真实的 WorkBuddy 上核对；用哪个模型要在它的窗口里按任务手动选，没法替你选好。我们不会改 ~/.workbuddy。", {
-      path: "~/.workbuddy/models.json（如果你设了 WORKBUDDY_CONFIG_DIR，就在那个目录里）",
-      content: JSON.stringify(entries, null, 2),
-      warning: "放进去之后，这些模型会一直出现在 WorkBuddy 里；EasySwitch 没在运行时它们就连不上，要撤销就把这些条目删掉。",
-    });
+      { label: "完整请求地址（Custom Protocol）", value: `${base(i)}/v1/chat/completions` },
+      { label: "临时令牌（API Key）", value: token, secret: true },
+    ], "按当前官方设置页写成，没有在真实的 WorkBuddy 上验收；工具、图片、上下文和思考能力由实际模型决定，不编造能力。我们不会改 WorkBuddy 的任何文件。");
+    guide.sources = ["https://www.codebuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/Model"];
+    return guide;
   }
+
   return undefined;
 }

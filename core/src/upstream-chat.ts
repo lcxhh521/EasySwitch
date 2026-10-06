@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { chatToResponses, responsesToChatResponse, shapePlanRequest } from "./responses-upstream.ts";
 import { planTarget } from "./siwc.ts";
-import { mimoChatUrl, mimoHeaders, mimoJwt, withMimoMarker } from "./mimo-free.ts";
+import { mimoChatUrl, mimoFreeIssue, mimoHeaders, mimoJwt, withMimoMarker } from "./mimo-free.ts";
 import { dataDir } from "./paths.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
@@ -25,7 +25,9 @@ export async function sendChat(provider: Provider, apiKey: string | undefined, p
   if (provider.antigravity) return sendAntigravity(provider, apiKey, chat, signal);
   if (provider.cursor) return sendCursor(provider, apiKey, chat, signal);
   if (provider.mimoFree) {
-    // The free tier wants its own marker and a bootstrapped JWT instead of a stored key.
+    const blocked = mimoFreeIssue();
+    if (blocked) return new Response(JSON.stringify({ error: { message: blocked, type: "api_error", code: "mimo_free_disabled" } }), { status: 501, headers: { "content-type": "application/json" } });
+    // Historical protocol fixtures only; production access is disabled before bootstrap.
     let jwt: string;
     try {
       jwt = await mimoJwt(mimoStateDir());
@@ -33,7 +35,7 @@ export async function sendChat(provider: Provider, apiKey: string | undefined, p
       return new Response(JSON.stringify({ error: { message: `MiMo Free bootstrap failed: ${(error as Error).message}`, type: "api_error" } }), { status: 502, headers: { "content-type": "application/json" } });
     }
     return fetch(mimoChatUrl(), {
-      method: "POST",
+      method: "POST", redirect: "error",
       headers: { "content-type": "application/json", accept: chat.stream ? "text/event-stream" : "application/json", ...mimoHeaders(jwt) },
       body: JSON.stringify(withMimoMarker(payload)),
       signal,

@@ -52,6 +52,6 @@ test("the one-line summary reads like a person would say it", () => {
   recordQuotaHeaders("p", headers({ "x-codex-primary-used-percent": "62", "x-codex-primary-window-minutes": "300", "x-codex-secondary-used-percent": "10" }), NOW);
   assert.match(describeQuota(quotaOf("p"), NOW)!, /^已用 62%（5 小时窗口）$/);
   recordQuotaHeaders("q", headers({ "x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": String(Math.floor(NOW / 1000) + 3600) }), NOW);
-  assert.match(describeQuota(quotaOf("q"), NOW)!, /^已用完，\d\d:\d\d 恢复$/);
+  assert.match(describeQuota(quotaOf("q"), NOW)!, /^已用完，(?:\d{1,2}\/\d{1,2} )?\d\d:\d\d 恢复$/);
   assert.equal(describeQuota(undefined), undefined);
 });

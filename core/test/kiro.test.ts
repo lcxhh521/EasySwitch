@@ -1,3 +1,4 @@
+import { fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -138,7 +139,7 @@ let kiroId: string;
 const H = { "content-type": "application/json", "x-easyswitch": "1" };
 const api = (m: string, p: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${p}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
 const ask = (extra: Json = {}, path = "/v1/chat/completions", body?: Json) => fetch(`http://127.0.0.1:${port}${path}`, {
-  method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+  method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("aider")}` },
   body: JSON.stringify(body ?? { model: `${kiroId}/claude-sonnet-fake`, messages: [{ role: "user", content: "hi" }], ...extra }),
 });
 

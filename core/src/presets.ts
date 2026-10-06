@@ -1,12 +1,12 @@
-import type { ProviderPreset, WireConfig } from "./types.ts";
+import type { ApiProtocol, ProviderPreset, WireConfig } from "./types.ts";
 
 /**
  * One-click starting points, grouped for the picker. Addresses, labels, key
  * pages and default models come from the provider registry of opencodex (MIT,
  * src/providers/registry/entries-*.ts, read 2026-10-05), checked and trimmed
- * by hand; entries whose address needs the user's own account id (Azure,
- * Cloudflare, Vertex) or a proprietary protocol (Qoder, CodeBuddy, GitLab
- * Duo) are left out. The addresses only prefill the form: the probe that
+ * by hand. Account-scoped URLs use explicit user inputs; Vertex has a dedicated
+ * Gemini adapter. Proprietary agent-only protocols (Qoder, CodeBuddy, GitLab
+ * Duo) are not ordinary model-source presets. The addresses only prefill the form: the probe that
  * runs after adding is what establishes whether a provider works and which
  * route each harness takes, so a stale address shows up there.
  */
@@ -16,6 +16,8 @@ type Extra = {
   anthropic?: string; model?: string; key?: string; note?: string; icon?: string;
   params?: Array<{ key: string; label: string; example?: string }>;
   wire?: WireConfig;
+  protocols?: ApiProtocol[];
+  vertexMode?: "standard" | "express";
 };
 
 /**
@@ -58,6 +60,8 @@ function p(category: typeof PRESET_CATEGORIES[number], id: string, name: string,
     ...(x.note ? { note: x.note } : {}),
     ...(x.params ? { urlParams: x.params } : {}),
     ...(x.wire ? { wire: x.wire } : {}),
+    ...(x.protocols ? { protocols: x.protocols } : {}),
+    ...(x.vertexMode ? { vertexMode: x.vertexMode } : {}),
   };
 }
 
@@ -65,13 +69,13 @@ export const PRESETS: ProviderPreset[] = [
   // 编程套餐：按月订阅、给编程工具用的 Key
   p("编程套餐", "zhipu-coding", "智谱 GLM 编程套餐", "https://open.bigmodel.cn/api/coding/paas/v4", { anthropic: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.3", key: "https://bigmodel.cn/console/usercenter/apikeys", note: "GLM Coding Plan（国内站）" }),
   p("编程套餐", "zai", "Z.AI GLM 编程套餐", "https://api.z.ai/api/coding/paas/v4", { anthropic: "https://api.z.ai/api/anthropic", model: "glm-5.3", key: "https://z.ai/manage-apikey/apikey-list", note: "GLM Coding Plan（国际站）" }),
-  p("编程套餐", "kimi-coding", "Kimi For Coding", "https://api.kimi.com/coding/v1", { anthropic: "https://api.kimi.com/coding", model: "kimi-for-coding", key: "https://www.kimi.com/coding", note: "Kimi 编程套餐，Key 在会员页拿" }),
-  p("编程套餐", "minimax-coding-cn", "MiniMax 编程套餐（国内）", "https://api.minimaxi.com/v1", { anthropic: "https://api.minimaxi.com/anthropic", model: "MiniMax-M3", key: "https://platform.minimaxi.com" }),
-  p("编程套餐", "minimax-coding", "MiniMax 编程套餐（国际）", "https://api.minimax.io/v1", { anthropic: "https://api.minimax.io/anthropic", model: "MiniMax-M3", key: "https://platform.minimax.io" }),
-  p("编程套餐", "volcengine-coding", "火山方舟 编程套餐", "https://ark.cn-beijing.volces.com/api/coding/v3", { anthropic: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", key: "https://console.volcengine.com/ark/", note: "Ark Coding Plan" }),
+  p("编程套餐", "kimi-coding", "Kimi For Coding", "https://api.kimi.com/coding/v1", { anthropic: "https://api.kimi.com/coding", model: "kimi-for-coding", key: "https://www.kimi.com/coding", note: "Kimi Code 专用 Key 与国内 coding 端点；权益以账号/区域为准，不是 Moonshot 按量余额" }),
+  p("编程套餐", "minimax-coding-cn", "MiniMax 编程套餐（国内）", "https://api.minimaxi.com/v1", { anthropic: "https://api.minimaxi.com/anthropic", model: "MiniMax-M3", key: "https://platform.minimaxi.com", note: "使用国内专用 Subscription Key；普通 API Key 扣按量余额；适用套餐范围和限额" }),
+  p("编程套餐", "minimax-coding", "MiniMax 编程套餐（国际）", "https://api.minimax.io/v1", { anthropic: "https://api.minimax.io/anthropic", model: "MiniMax-M3", key: "https://platform.minimax.io", note: "官方 M Plan（旧 Token/Coding Plan）专用 Subscription Key；普通 API Key 扣按量余额；个人交互开发用途" }),
+  p("编程套餐", "volcengine-coding", "火山方舟 编程套餐", "https://ark.cn-beijing.volces.com/api/coding/v3", { anthropic: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", key: "https://console.volcengine.com/ark/", note: "Ark Coding Plan 仅限 AI 编程工具，不得用于通用 API 服务或其他非编程场景" }),
   p("编程套餐", "tencent-coding", "腾讯云 编程套餐", "https://api.lkeap.cloud.tencent.com/coding/v3", { model: "tc-code-latest" }),
   p("编程套餐", "alibaba-token-plan", "阿里云 Token Plan（北京）", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", { model: "qwen3.8-max" }),
-  p("编程套餐", "mimo-token-plan", "小米 MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", { model: "mimo-v2.6-pro" }),
+  p("编程套餐", "mimo-token-plan", "小米 MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", { anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic", model: "mimo-v2.6-pro", key: "https://platform.xiaomimimo.com/#/console/plan-manage", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方订阅，使用专用 tp-/ttp- Key 和套餐端点；扣套餐额度，不与按量 API Key 或 MiMo Free 混用" }),
   p("编程套餐", "opencode-go", "opencode Go", "https://opencode.ai/zen/go/v1", { model: "kimi-k2.7-code" }),
 
   // 国内官方：按量计费的开放平台
@@ -83,7 +87,7 @@ export const PRESETS: ProviderPreset[] = [
   p("国内官方", "qianfan", "百度千帆", "https://qianfan.baidubce.com/v2", { key: "https://console.bce.baidu.com/iam/#/iam/apikey/list" }),
   p("国内官方", "stepfun", "阶跃星辰", "https://api.stepfun.com/v1", { model: "step-5-preview", key: "https://platform.stepfun.com/" }),
   p("国内官方", "siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", { key: "https://cloud.siliconflow.cn/account/ak", note: "聚合平台：DeepSeek、Qwen、GLM 都有" }),
-  p("国内官方", "xiaomi", "小米 MiMo", "https://api.xiaomimimo.com/v1", { anthropic: "https://api.xiaomimimo.com/anthropic", model: "mimo-v2.6-flash" }),
+  p("国内官方", "xiaomi", "小米 MiMo 官方 API", "https://api.xiaomimimo.com/v1", { anthropic: "https://api.xiaomimimo.com/anthropic", model: "mimo-v2.6-flash", key: "https://platform.xiaomimimo.com/#/console/api-keys", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方按量 API，使用 sk- API Key；已有预设，真实账号调用尚未验收，与 Token Plan / MiMo Free 分开" }),
 
   // 国际官方
   p("国际官方", "openai", "OpenAI", "https://api.openai.com/v1", { model: "gpt-5.5", key: "https://platform.openai.com/api-keys", note: "官方 API；原样转发 Responses 协议" }),
@@ -107,6 +111,17 @@ export const PRESETS: ProviderPreset[] = [
   p("中转与聚合", "opencode-zen", "opencode Zen", "https://opencode.ai/zen/v1"),
   p("中转与聚合", "cline", "Cline", "https://api.cline.bot/api/v1", { model: "anthropic/claude-sonnet-5" }),
   p("中转与聚合", "kilo", "Kilo", "https://api.kilo.ai/api/gateway"),
+
+  p("国际官方", "vertex", "Google Vertex AI（标准）", "https://aiplatform.googleapis.com/v1", {
+    model: "gemini-3.5-flash", icon: "gemini-color", protocols: ["gemini"], vertexMode: "standard",
+    key: "https://cloud.google.com/vertex-ai/generative-ai/docs/start/gcp-auth",
+    note: "Google Gemini 原生协议；填写项目和区域，使用用户提供的短期访问令牌。不会读取 gcloud/ADC 或自动刷新；按 Google Cloud 计费。",
+  }),
+  p("国际官方", "vertex-express", "Google Vertex AI Express", "https://aiplatform.googleapis.com/v1", {
+    model: "gemini-3.5-flash", icon: "gemini-color", protocols: ["gemini"], vertexMode: "express",
+    key: "https://cloud.google.com/vertex-ai/generative-ai/docs/start/api-keys",
+    note: "Google Cloud Express API Key；Gemini 原生协议，不是 AI Studio 或 Gemini CLI 订阅。使用账号的试用/付费配额。",
+  }),
 
   // 地址里有你自己的名字或 ID 的
   p("国际官方", "azure-openai", "Azure OpenAI", "https://{resource}.openai.azure.com/openai/v1", {
@@ -152,7 +167,7 @@ export const PRESETS: ProviderPreset[] = [
 
   // 自定义
   { id: "relay", name: "自定义中转站", category: "自定义", icon: "newapi-color", baseUrl: "", note: "任何 OpenAI 兼容地址；也可以回到首页把使用说明整段粘贴" },
-  { id: "mimo-free", name: "小米 MiMo Free", category: "国内官方", icon: "xiaomi-color", baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat", models: ["mimo-auto"], wire: { paths: { chat: "", models: "" } }, note: "小米的免费公开档位，不需要 key；提示词会由小米处理，别发敏感内容。非公开接口，随时可能变化或受限" },
+  { id: "mimo-free", name: "小米 MiMo Free（已停用）", category: "国内官方", icon: "xiaomi-color", baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat", models: ["mimo-auto"], wire: { paths: { chat: "", models: "" } }, note: "历史实验性免 key 入口，非官方开放 API，现已停用；仅保留本地假服务测试，不保证可用、免费或免限额。请使用官方 API 或 Token Plan" },
 ];
 
 /** The icon for a provider, from its address: a preset on the same host first, then the vendor table, else a letter avatar. */

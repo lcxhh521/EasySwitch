@@ -1,3 +1,4 @@
+import type { ApiProtocol } from "./types.ts";
 import type { ChatMessage, ChatRequest } from "./translate.ts";
 
 /**
@@ -31,11 +32,30 @@ export interface Quirks {
 
 /**
  * "effort": Chat's `reasoning_effort` (OpenAI and the gateways that copy it).
- * "thinking": a `thinking: {type: enabled|disabled}` switch (DeepSeek, GLM).
+ * "thinking": a `thinking: {type: enabled|disabled}` switch (Kimi K2.6, GLM).
+ * "thinking-effort": a switch plus low/high/max effort (current DeepSeek).
+ * "always-thinking": no adjustable switch or effort (Kimi K2.7 Code).
  * "enable_thinking": a boolean (Qwen on DashScope).
  * "none": nothing is sent; the model thinks as it normally does.
  */
-export type ReasoningStyle = "effort" | "thinking" | "enable_thinking" | "none";
+export type ReasoningStyle = "effort" | "thinking" | "thinking-effort" | "always-thinking" | "enable_thinking" | "none";
+
+/** Official API model-specific defaults, reviewed 2026-10-06; see docs/provider-thinking.md.
+ * Model names alone never impose an official vendor's wire format on a relay.
+ */
+export function officialThinkingProfile(baseUrl: string, model: string): { style: ReasoningStyle; levels: string[]; note: string } | undefined {
+  const host = hostOf(baseUrl);
+  const m = upstreamModelId(model).toLowerCase();
+  if (/(^|\.)deepseek\.com$/.test(host) && /^(deepseek-flash|deepseek-v4-flash(?:-vision-exp)?|deepseek-v4-pro)$/.test(m)) {
+    return { style: "thinking-effort", levels: ["none", "low", "high", "max"], note: "可关闭思考；开启后支持 low / high / max。minimal 映射 low，medium / xhigh 映射 high，ultra 映射 max。" };
+  }
+  if (/(^|\.)moonshot\.(cn|ai)$/.test(host)) {
+    if (m === "kimi-k3") return { style: "effort", levels: ["low", "high", "max"], note: "始终思考，仅支持 low / high / max；不支持关闭思考。" };
+    if (m === "kimi-k2.6") return { style: "thinking", levels: ["none", "high"], note: "思考开关：关闭 / 开启；没有 low、medium、high 三档强度。" };
+    if (/^kimi-k2\.7-code(?:-highspeed)?$/.test(m)) return { style: "always-thinking", levels: [], note: "始终思考，不能关闭；没有可调思考强度。" };
+  }
+  return undefined;
+}
 
 function hostOf(baseUrl: string): string {
   try { return new URL(baseUrl).hostname.toLowerCase(); } catch { return ""; }
@@ -57,10 +77,10 @@ export function quirksFor(baseUrl: string, model: string): Quirks {
     replayReasoning: deepseek || kimi || glm || minimax,
     promptCacheKey: host === "api.kimi.com",
     flattenSchemaRefs: kimiHost,
-    reasoning: /(^|\.)openai\.com$|(^|\.)openrouter\.ai$|(^|\.)x\.ai$|(^|\.)groq\.com$|(^|\.)together\.xyz$|(^|\.)fireworks\.ai$/.test(host) ? "effort"
+    reasoning: officialThinkingProfile(baseUrl, model)?.style ?? (/(^|\.)openai\.com$|(^|\.)openrouter\.ai$|(^|\.)x\.ai$|(^|\.)groq\.com$|(^|\.)together\.xyz$|(^|\.)fireworks\.ai$/.test(host) ? "effort"
       : /(^|\.)deepseek\.com$|bigmodel\.cn$|(^|\.)z\.ai$/.test(host) ? "thinking"
       : /dashscope(-intl)?\.aliyuncs\.com$/.test(host) ? "enable_thinking"
-      : "none",
+      : "none"),
   };
 }
 
@@ -78,10 +98,43 @@ export function applyEffort(chat: ChatRequest, effort: unknown, style: Reasoning
   const raw = chat as unknown as Json;
   // Agents have levels of their own above "high" (xhigh, max, ultra…); Chat's scale ends at high, so they all mean "as much as it goes".
   // A level the model is known to have goes through as it is; one it does not have becomes the closest the scale holds.
-  if (how === "effort") raw.reasoning_effort = has.includes(level) ? level : off ? "minimal" : ["low", "medium", "high"].includes(level) ? level : "high";
-  // These upstreams only have on and off.
-  else if (how === "thinking") raw.thinking = { type: off ? "disabled" : "enabled" };
-  else if (how === "enable_thinking") raw.enable_thinking = !off;
+  if (how === "thinking-effort") {
+    raw.thinking = { type: level === "none" ? "disabled" : "enabled" };
+    if (level === "none") delete raw.reasoning_effort;
+    else raw.reasoning_effort = level === "minimal" || level === "low" ? "low" : level === "max" || level === "ultra" ? "max" : "high";
+  } else if (how === "effort") {
+    // A model with no off/minimal level (e.g. Kimi K3) must never receive an invented one.
+    const mapped = off ? "minimal" : level === "ultra" && has.includes("max") ? "max" : ["low", "medium", "high"].includes(level) ? level : "high";
+    raw.reasoning_effort = has.includes(level) ? level : !has.length || has.includes(mapped) ? mapped : off ? has[0] : has.includes("high") ? "high" : has[has.length - 1];
+  }
+  // These upstreams only have on and off. Preserve vendor options such as Kimi thinking.keep.
+  else if (how === "thinking") {
+    delete raw.reasoning_effort;
+    raw.thinking = { ...(raw.thinking && typeof raw.thinking === "object" && !Array.isArray(raw.thinking) ? raw.thinking as Json : {}), type: off ? "disabled" : "enabled" };
+  } else if (how === "always-thinking") {
+    // Ignore stale preferences after a model switch; neither a disabled thinking field nor a
+    // reasoning_effort field is accepted by this model. Its native default is always enabled.
+    delete raw.reasoning_effort; delete raw.thinking;
+  } else if (how === "enable_thinking") raw.enable_thinking = !off;
+}
+
+/** Known non-Chat effort schemas. Return true only when this vendor mapping handled the field.
+ * DeepSeek's off switch is not an output_config.effort value; its Messages and Responses APIs
+ * express it differently. Other vendors retain the caller's ordinary protocol handling.
+ */
+export function applyOfficialProtocolEffort(body: Json, protocol: ApiProtocol, baseUrl: string, model: string, effort: unknown): boolean {
+  const profile = officialThinkingProfile(baseUrl, model);
+  if (profile?.style !== "thinking-effort" || !["messages", "responses"].includes(protocol) || typeof effort !== "string" || !/^[a-z][a-z0-9-]*$/i.test(effort)) return false;
+  const level = effort.toLowerCase();
+  const actual = level === "none" ? "none" : level === "minimal" || level === "low" ? "low" : level === "max" || level === "ultra" ? "max" : "high";
+  if (protocol === "responses") body.reasoning = { ...(body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning) ? body.reasoning as Json : {}), effort: actual };
+  else {
+    body.thinking = { type: actual === "none" ? "disabled" : "enabled" };
+    const output = { ...(body.output_config && typeof body.output_config === "object" && !Array.isArray(body.output_config) ? body.output_config as Json : {}) };
+    if (actual === "none") delete output.effort; else output.effort = actual;
+    if (Object.keys(output).length) body.output_config = output; else delete body.output_config;
+  }
+  return true;
 }
 
 /** Claude Code appends context markers such as `glm-5.3[1m]`; Chat upstreams reject them. */

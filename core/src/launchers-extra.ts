@@ -1,5 +1,5 @@
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentLauncher, LaunchInput, LaunchSpec } from "./agent-launch.ts";
 
 /**
@@ -46,10 +46,16 @@ function kimiToml(i: LaunchInput): string {
     `base_url = ${q(`${gateway(i)}/v1`)}`,
     `api_key = ${q(i.token)}`,
     "",
-    ...allModels(i).flatMap(m => [
-      `[models.${q(`es/${m}`)}]`, 'provider = "es"', `model = ${q(m)}`, "max_context_size = 128000",
-      'capabilities = ["thinking", "tool_use"]', 'support_efforts = ["low", "medium", "high"]', `default_effort = ${q(i.effort ?? "high")}`, "",
-    ]),
+    ...allModels(i).flatMap(model => {
+      const efforts = (i.modelEfforts?.[model] ?? (model === i.model && i.effort ? [i.effort] : []))
+        .filter(effort => ["low", "medium", "high"].includes(effort));
+      return [`[models.${q(`es/${model}`)}]`, 'provider = "es"', `model = ${q(model)}`, "max_context_size = 128000",
+        `capabilities = ${JSON.stringify(efforts.length ? ["thinking", "tool_use"] : ["tool_use"])}`,
+        ...(efforts.length ? [`support_efforts = ${JSON.stringify(efforts)}`] : []),
+        ...(model === i.model && i.effort && efforts.includes(i.effort) ? [`default_effort = ${q(i.effort)}`] : []), ""];
+    }),
+    ...(i.tiers?.subagent ? ["[secondary_model]", `default_model = ${q(`es/${i.tiers.subagent}`)}`] : []),
+    "",
   ].join("\n");
 }
 
@@ -75,10 +81,18 @@ function ompFiles(i: LaunchInput): Record<string, string> {
       "    api: openai-completions",
       `    apiKey: ${q(i.token)}`,
       "    models:",
-      ...models.flatMap(m => [`      - id: ${q(m)}`, `        name: ${q(bare(m))}`, "        reasoning: true", "        contextWindow: 200000", "        maxTokens: 32000", "        input: [text, image]", "        thinking: { mode: effort, efforts: [low, medium, high] }"]),
+      ...models.flatMap(m => {
+        const efforts = (i.modelEfforts?.[m] ?? (m === i.model && i.effort ? [i.effort] : []))
+          .filter(level => ["minimal", "low", "medium", "high", "xhigh", "max"].includes(level));
+        return [`      - id: ${q(m)}`, `        name: ${q(bare(m))}`, `        reasoning: ${efforts.length > 0}`,
+          "        contextWindow: 200000", "        maxTokens: 32000", "        input: [text]",
+          ...(efforts.length ? [`        thinking: ${JSON.stringify({ mode: "effort", efforts })}`] : [])];
+      }),
       "",
     ].join("\n"),
-    [join(dir(i, "omp-agent"), "config.yml")]: ["modelRoles:", ...roles, ...(i.effort ? [`defaultThinkingLevel: ${q(i.effort)}`] : []), ""].join("\n"),
+    [join(dir(i, "omp-agent"), "config.yml")]: ["modelRoles:", ...roles, ...(i.effort ? [`defaultThinkingLevel: ${q(i.effort)}`] : []),
+      "enabledProviders: []", "mcp:", "  enableProjectConfig: false", ""].join("\n"),
+    ...(i.mcp ? { [join(dir(i, "omp-agent"), "mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers } } }) } : {}),
   };
 }
 
@@ -224,36 +238,87 @@ function atomcodeToml(i: LaunchInput): string {
     `base_url = ${q(`${gateway(i)}/v1`)}`,
     `api_key = ${q(i.token)}`,
     "",
-    ...allModels(i).flatMap(m => [
-      `[models.${q(`es/${m}`)}]`, 'account = "es"', `model = ${q(m)}`, "context_window = 128000", "max_tokens = 8192", "supports_vision = false",
-      'reasoning_effort_levels = ["low", "medium", "high"]', ...(i.effort ? [`reasoning_effort = ${q(i.effort)}`] : []), "",
-    ]),
+    ...allModels(i).flatMap(model => {
+      const efforts = (i.modelEfforts?.[model] ?? (model === i.model && i.effort ? [i.effort] : []))
+        .filter(level => ["low", "medium", "high", "xhigh", "max"].includes(level));
+      return [`[models.${q(`es/${model}`)}]`, 'account = "es"', `model = ${q(model)}`,
+        "context_window = 128000", "max_tokens = 8192", "supports_vision = false",
+        `reasoning_effort_levels = ${JSON.stringify(efforts)}`,
+        ...(model === i.model && i.effort && efforts.includes(i.effort) ? [`reasoning_effort = ${q(i.effort)}`] : []), ""];
+    }),
   ].join("\n");
 }
 
-/** The bridge for agents that can only start an MCP server as a child process on stdio (see bin/es-mcp-stdio.ts). */
-const MCP_STDIO_BRIDGE = fileURLToPath(new URL("../../bin/es-mcp-stdio.ts", import.meta.url));
+// ---------------------------------------------------------------- trae-agent
+const MCP_BRIDGE = fileURLToPath(new URL("../../bin/es-mcp-stdio.ts", import.meta.url));
 
-function traeYaml(i: LaunchInput): string {
-  return [
-    "agents:", "  trae_agent:", "    model: es_model", "    max_steps: 100", "    tools: [bash, str_replace_based_edit_tool, sequentialthinking, task_done]",
-    "model_providers:", "  gw:", "    provider: openai", `    api_key: ${q(i.token)}`, `    base_url: ${q(`${gateway(i)}/v1`)}`,
-    "models:", "  es_model:", "    model_provider: gw", `    model: ${q(i.model)}`, "    max_tokens: 8192", "    temperature: 0.5", "    top_p: 1", "    top_k: 0", "    max_retries: 3", "    parallel_tool_calls: true",
-    ...(i.mcp ? [
-      "mcp_servers:", "  easyswitch:", `    command: ${q(process.execPath)}`,
-      `    args: [${[MCP_STDIO_BRIDGE, i.mcp.url, ...Object.entries(i.mcp.headers).flatMap(([k, v]) => ["--header", `${k}: ${v}`])].map(q).join(", ")}]`,
-      "allow_mcp_servers: [easyswitch]",
-    ] : []),
-    "",
-  ].join("\n");
+/** Trae reads JSON-compatible YAML; its HTTP config fields currently throw at runtime. */
+function traeFiles(i: LaunchInput): Record<string, string> {
+  const model = (id: string) => ({ model_provider: "easyswitch", model: id, max_tokens: 8192,
+    temperature: 0.5, top_p: 1, top_k: 0, max_retries: 2, parallel_tool_calls: true });
+  return { "trae-config.yaml": JSON.stringify({
+    agents: { trae_agent: { model: "main", max_steps: 20, enable_lakeview: Boolean(i.tiers?.small),
+      tools: ["bash", "str_replace_based_edit_tool", "sequentialthinking", "task_done"] } },
+    model_providers: { easyswitch: { provider: "openai", api_key: i.token, base_url: `${gateway(i)}/v1` } },
+    models: { main: model(i.model), ...(i.tiers?.small ? { small: model(i.tiers.small) } : {}) },
+    ...(i.tiers?.small ? { lakeview: { model: "small" } } : {}),
+    ...(i.mcp ? { allow_mcp_servers: ["easyswitch"], mcp_servers: { easyswitch: {
+      command: process.execPath, args: [MCP_BRIDGE],
+      env: { EASYSWITCH_MCP_URL: i.mcp.url, EASYSWITCH_MCP_HEADERS: JSON.stringify(i.mcp.headers) },
+    } } } : {}),
+  }) };
+}
+
+// ---------------------------------------------------------------- codebuddy
+// Current official docs support a third-party Anthropic-compatible endpoint and a private root.
+// https://www.codebuddy.ai/docs/cli/env-vars
+// https://www.codebuddy.ai/docs/cli/cli-reference
+function codebuddyLaunch(i: LaunchInput, headless: boolean): LaunchSpec {
+  const home = dir(i, "codebuddy");
+  const settings = join(home, "settings.json");
+  const mcpFile = join(home, "easyswitch-mcp.json");
+  const env = {
+    CODEBUDDY_CONFIG_DIR: home, CODEBUDDY_CODE_DEBUG_LOGS_DIR: join(home, "logs"),
+    CODEBUDDY_BASE_URL: gateway(i), CODEBUDDY_API_KEY: i.token, CODEBUDDY_MODEL: i.model,
+    CODEBUDDY_SMALL_FAST_MODEL: i.tiers?.small ?? i.model,
+    CODEBUDDY_BIG_SLOW_MODEL: i.tiers?.reasoning ?? i.model,
+    CODEBUDDY_CODE_SUBAGENT_MODEL: i.tiers?.subagent ?? i.model,
+    DISABLE_AUTOUPDATER: "1",
+  };
+  return { command: i.bin, env,
+    args: ["--model", i.model, "--setting-sources", "user", "--settings", settings,
+      "--strict-mcp-config", "--mcp-config", mcpFile, ...(i.effort ? ["--effort", i.effort] : []),
+      ...(headless ? ["-p", i.task ?? "", "--output-format", "text"] : [])],
+    unset: ["CODEBUDDY_AUTH_TOKEN", "CODEBUDDY_CUSTOM_HEADERS", "CODEBUDDY_ENV_FILE", "CODEBUDDY_IS_SANDBOX",
+      "CODEBUDDY_RECORD_DIR", "CODEBUDDY_REPLAY_DIR", "CODEBUDDY_INTERNET_ENVIRONMENT"],
+    files: { [settings]: JSON.stringify({ env }), [mcpFile]: JSON.stringify({ mcpServers: i.mcp ? { easyswitch: { type: "http", ...i.mcp } } : {} }) },
+  };
 }
 
 export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
+  codebuddy: {
+    verified: false,
+    efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    tiers: [
+      { id: "small", label: "后台小任务", hint: "lite 场景用这个模型" },
+      { id: "reasoning", label: "复杂推理", hint: "reasoning 场景用这个模型" },
+      { id: "subagent", label: "子 agent", hint: "覆盖所有子 agent 的模型" },
+    ],
+    caveat: "当前官方文档支持 CODEBUDDY_BASE_URL 的 Anthropic 兼容端点；使用私有 CODEBUDDY_CONFIG_DIR 和一次性参数，未实测；没有开启自动审批",
+    mcpCaveat: "官方 HTTP MCP 格式配合 --strict-mcp-config，排除原有用户/项目/插件 MCP；尚未实测",
+    ...forms(codebuddyLaunch),
+  },
   "kimi-cli": {
     verified: false,
     efforts: levels(["low", "medium", "high"]),
-    caveat: "私有目录里的配置格式来自 Kimi 自己的文件格式；命令行参数是推测的，且配置里 provider 的 type 有两种写法（openai / kimi），要核实",
-    ...forms((i, h) => ({ command: i.bin, args: task(i, h, "--print", "-p"), env: { KIMI_CODE_HOME: dir(i, "kimi-home") }, files: { [join(dir(i, "kimi-home"), "config.toml")]: kimiToml(i) } })),
+    tiers: [{ id: "subagent", label: "子 agent", hint: "secondary_model 用这个模型" }],
+    caveat: "面向当前 TypeScript 版 @moonshot-ai/kimi-code；配置和 -p 来自官方文档，尚未实测。旧 Python 版 Kimi CLI 使用不同配置，不能混用",
+    mcpCaveat: "当前 TypeScript 版支持私有 KIMI_CODE_HOME/mcp.json 的 HTTP+headers；尚未实测，项目同名 MCP 可覆盖此项",
+    ...forms((i, h) => ({ command: i.bin, args: ["--model", `es/${i.model}`, ...task(i, h, "-p")],
+      env: { KIMI_CODE_HOME: dir(i, "kimi-home") }, unset: ["KIMI_MODEL_NAME", "KIMI_CODE_CUSTOM_HEADERS"],
+      files: { [join(dir(i, "kimi-home"), "config.toml")]: kimiToml(i),
+        ...(i.mcp ? { [join(dir(i, "kimi-home"), "mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { url: i.mcp.url, headers: i.mcp.headers } } }) } : {}),
+      } })),
   },
   pi: {
     verified: false,
@@ -268,8 +333,10 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
       { id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" },
       { id: "small", label: "后台小任务", hint: "侦察、小任务用这个模型" },
     ],
-    caveat: "配置文件格式来自它自己的文档；`-p` 参数是推测的；`max` 档要 omp 16.4 以上，否则整个文件会被拒",
-    ...forms((i, h) => ({ command: i.bin, args: task(i, h, "-p"), env: { PI_CODING_AGENT_DIR: dir(i, "omp-agent") }, unset: ["OMP_PROFILE", "PI_PROFILE"], files: ompFiles(i) })),
+    caveat: "配置文件、-p 和 --config 覆盖层来自官方文档，尚未实测；max 档要 omp 16.4 以上。关闭外部用户配置与项目 MCP 发现",
+    mcpCaveat: "私有 PI_CODING_AGENT_DIR/mcp.json 支持 type:http、url 和 headers；尚未实测",
+    ...forms((i, h) => ({ command: i.bin, args: ["--config", join(dir(i, "omp-agent"), "config.yml"), ...task(i, h, "-p")], env: { PI_CODING_AGENT_DIR: dir(i, "omp-agent") },
+      unset: ["OMP_PROFILE", "PI_PROFILE", "CLAUDE_CONFIG_DIR", "PI_CONFIG_FILES", "PI_SMOL_MODEL", "PI_SLOW_MODEL", "PI_PLAN_MODEL"], files: ompFiles(i) })),
   },
   droid: {
     verified: false,
@@ -334,19 +401,25 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
   },
   "trae-agent": {
     verified: false,
-    caveat: "命令行参数和配置文件的写法都是凭记忆的（没有官方文档可对）；它的 openai 通道可能走 Responses 而不是 Chat，要实测",
-    mcpCaveat: "它只认 stdio 形式的 MCP：用 bin/es-mcp-stdio.ts 这个小桥把它转到 EasySwitch 的 HTTP MCP（桥本身测过）；配置文件里 mcp_servers 的写法是凭记忆的",
+    tiers: [{ id: "small", label: "后台摘要", hint: "Lakeview 的摘要请求用这个模型" }],
+    caveat: "按官方 CLI 和 YAML 模式实现；OpenAI 通道实际使用 Responses。基础工具允许文件和 shell 操作，未声明只读；尚未实测",
+    mcpCaveat: "官方 MCP 客户端只实现 stdio；通过 EasySwitch 自带的本地 HTTP 桥连接，桥已用假服务测试，真实客户端未实测",
     ...forms((i, h) => ({
       command: i.bin,
-      args: [...(h ? ["run", i.task ?? ""] : ["interactive"]), "--config-file", join(i.sessionDir, "trae_config.yaml"), "--provider", "openai", "--model", i.model, "--model-base-url", `${gateway(i)}/v1`, "--api-key", i.token],
-      env: {},
-      files: { "trae_config.yaml": traeYaml(i) },
+      args: [...(h ? ["run", i.task ?? ""] : ["interactive"]), "--config-file", join(i.sessionDir, "trae-config.yaml"),
+        "--trajectory-file", join(i.sessionDir, "trae-trajectory.json"), "--provider", "easyswitch", "--model", i.model,
+        "--model-base-url", `${gateway(i)}/v1`, "--api-key", i.token],
+      env: {}, unset: ["OPENAI_API_KEY", "OPENAI_BASE_URL"], files: traeFiles(i),
     })),
   },
   atomcode: {
     verified: false,
     efforts: levels(["low", "medium", "high", "xhigh", "max"]),
-    caveat: "配置文件格式有来源；无界面参数 `-p` 是推测的，私有目录下是否还需要别的文件没有核实",
-    ...forms((i, h) => ({ command: i.bin, args: task(i, h, "-p"), env: { ATOMCODE_HOME: dir(i, "atomcode") }, files: { [join(dir(i, "atomcode"), "config.toml")]: atomcodeToml(i) } })),
+    caveat: "私有 ATOMCODE_HOME、config.toml 和 -p 来自官方文档/源码；尚未实测",
+    mcpCaveat: "4.20.4 起内置 MCP；私有 ATOMCODE_HOME/mcp.json 支持 URL+headers，项目 .mcp.json 可覆盖同名项；尚未实测",
+    ...forms((i, h) => ({ command: i.bin, args: task(i, h, "-p"), env: { ATOMCODE_HOME: dir(i, "atomcode") },
+      files: { [join(dir(i, "atomcode"), "config.toml")]: atomcodeToml(i),
+        ...(i.mcp ? { [join(dir(i, "atomcode"), "mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { url: i.mcp.url, headers: i.mcp.headers } } }) } : {}),
+      } })),
   },
 };

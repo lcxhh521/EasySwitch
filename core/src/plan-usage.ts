@@ -56,7 +56,7 @@ const READERS: Reader[] = [
   },
   {
     // MiniMax Token Plan: the remaining share of the five-hour window and, when there is one, of the weekly window.
-    host: /^api\.minimaxi?\.(io|com)$/,
+    host: /^api\.(?:minimax\.io|minimaxi\.com)$/,
     url: p => `${new URL(p.baseUrl).origin}/v1/api/openplatform/coding_plan/remains`,
     parse: body => {
       if (number(body.base_resp?.status_code) !== 0) return [];
@@ -74,7 +74,12 @@ const READERS: Reader[] = [
 
 function readerFor(provider: Provider): Reader | undefined {
   if (provider.plan || provider.kiro || provider.cursor || provider.antigravity || provider.vertex || provider.mimoFree) return undefined;
-  try { const host = new URL(provider.baseUrl).hostname; return READERS.find(r => r.host.test(host)); } catch { return undefined; }
+  try {
+    const url = new URL(provider.baseUrl);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return undefined;
+    if (provider.kimi && !/^api\.kimi\.(com|ai)$/.test(url.hostname)) return undefined;
+    return READERS.find(r => r.host.test(url.hostname));
+  } catch { return undefined; }
 }
 
 export const hasPlanUsage = (provider: Provider): boolean => readerFor(provider) !== undefined;
@@ -84,7 +89,7 @@ export async function refreshPlanUsage(provider: Provider, apiKey: string | unde
   const reader = readerFor(provider);
   if (!reader || !apiKey) return undefined;
   try {
-    const response = await fetchFn(reader.url(provider), { headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+    const response = await fetchFn(reader.url(provider), { redirect: "error", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
     if (!response.ok) { await response.body?.cancel(); return undefined; }
     const windows = reader.parse((await response.json()) as Json, now);
     if (!windows.length) return undefined;

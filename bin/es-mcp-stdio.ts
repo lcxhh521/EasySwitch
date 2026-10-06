@@ -1,48 +1,40 @@
 #!/usr/bin/env node
-// A bridge for agents that can only start an MCP server as a child process speaking JSON-RPC over stdio:
-// each line on stdin is sent to EasySwitch's HTTP MCP endpoint, and the answer is written back as a line.
-//
-//   node bin/es-mcp-stdio.ts <url> [--header "Name: value"]...
-//
-// Notifications (messages without an id) are forwarded and need no answer. Nothing is kept or logged.
-import { createInterface } from "node:readline";
+/** Compatibility entry point; all transport/security behavior lives in the shared bridge. */
+import { resolve } from "node:path";
+import type { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { runMcpStdioBridge, validateBridgeOptions, type McpBridgeOptions } from "../core/src/mcp-stdio-bridge.ts";
 
-const [url, ...rest] = process.argv.slice(2);
-if (!url || !/^https?:\/\/127\.0\.0\.1[:/]/.test(url)) {
-  process.stderr.write("usage: es-mcp-stdio <http://127.0.0.1:PORT/mcp> [--header \"Name: value\"]...\nonly this machine's own address is accepted\n");
-  process.exit(2);
-}
-const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream" };
-for (let i = 0; i < rest.length; i++) {
-  if (rest[i] !== "--header" || !rest[i + 1]) continue;
-  const text = rest[++i]!;
-  const at = text.indexOf(":");
-  if (at > 0) headers[text.slice(0, at).trim().toLowerCase()] = text.slice(at + 1).trim();
-}
-
-const send = (line: string) => process.stdout.write(`${line}\n`);
-
-async function handle(line: string): Promise<void> {
-  let message: { id?: unknown };
-  try { message = JSON.parse(line) as { id?: unknown }; } catch { return send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })); }
-  const wantsAnswer = message.id !== undefined && message.id !== null;
-  try {
-    const response = await fetch(url!, { method: "POST", headers, body: line, signal: AbortSignal.timeout(300_000) });
-    const text = await response.text();
-    if (!wantsAnswer) return;
-    // An answer may come as plain JSON or as a one-event stream: take the JSON either way.
-    const body = text.trimStart().startsWith("{") || text.trimStart().startsWith("[") ? text.trim() : (/^data:\s*(.+)$/m.exec(text)?.[1] ?? "");
-    if (body) send(body.replace(/\r?\n/g, " ")); else send(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: `EasySwitch answered HTTP ${response.status} with nothing to read` } }));
-  } catch (error) {
-    if (wantsAnswer) send(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: `EasySwitch is not reachable: ${(error as Error).message}` } }));
+/** Prefer environment credentials; the historical URL/--header arguments remain accepted. */
+export function parseMcpStdioArgs(args: string[], env: NodeJS.ProcessEnv = process.env): McpBridgeOptions {
+  const url = args[0] ?? env.EASYSWITCH_MCP_URL ?? "";
+  const fromEnv: unknown = JSON.parse(env.EASYSWITCH_MCP_HEADERS ?? "{}");
+  if (!fromEnv || typeof fromEnv !== "object" || Array.isArray(fromEnv) || Object.values(fromEnv).some(value => typeof value !== "string")) throw new Error("Invalid MCP headers");
+  const headers = new Headers(fromEnv as Record<string, string>);
+  for (let index = 1; index < args.length; index += 2) {
+    const value = args[index + 1];
+    if (args[index] !== "--header" || !value) throw new Error("Invalid MCP bridge arguments");
+    const colon = value.indexOf(":");
+    if (colon < 1) throw new Error("Invalid MCP header");
+    headers.set(value.slice(0, colon).trim(), value.slice(colon + 1).trim());
   }
+  const options = { url, headers: Object.fromEntries(headers) };
+  validateBridgeOptions(options);
+  return options;
 }
 
-const pending = new Set<Promise<void>>();
-const lines = createInterface({ input: process.stdin });
-lines.on("line", line => {
-  if (!line.trim()) return;
-  const job = handle(line).finally(() => pending.delete(job));
-  pending.add(job);
-});
-lines.on("close", () => { void Promise.all(pending).then(() => process.exit(0)); });
+/** Injectable streams make the actual entry contract testable without a child process. */
+export async function runMcpStdioCli(args: string[], input: Readable, output: Writable, diagnostic: Writable, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  let options: McpBridgeOptions;
+  try { options = parseMcpStdioArgs(args, env); }
+  catch {
+    diagnostic.write("usage: es-mcp-stdio <http://127.0.0.1:PORT/mcp> [--header \"Name: value\"]...\nOnly the local EasySwitch MCP endpoint and valid headers are accepted\n");
+    return 2;
+  }
+  try { await runMcpStdioBridge(input, output, options); return 0; }
+  catch { diagnostic.write("EasySwitch MCP bridge stream closed or failed\n"); return 1; }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exitCode = await runMcpStdioCli(process.argv.slice(2), process.stdin, process.stdout, process.stderr);
+}

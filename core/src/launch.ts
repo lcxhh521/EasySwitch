@@ -40,11 +40,10 @@ function codexMcpValue(mcp: McpAttach): string {
   return `{url=${JSON.stringify(mcp.url)},http_headers={${headers}},default_tools_approval_mode="approve"}`;
 }
 
-export function codexArgs(port: number, exposedModel: string, catalogPath?: string, mcp?: McpAttach, token?: string): string[] {
+export function codexArgs(port: number, exposedModel: string, catalogPath?: string, mcp?: McpAttach): string[] {
   return [
     "-c", 'model_provider="easyswitch"',
-    // The launch's token rides in a header of its own, so the gateway knows the request is from this launch.
-    "-c", `${SESSION_MARKER}={name="EasySwitch",base_url="http://127.0.0.1:${port}/v1",wire_api="responses"${token ? `,http_headers={"x-easyswitch-session"=${JSON.stringify(token)}}` : ""}}`,
+    "-c", `${SESSION_MARKER}={name="EasySwitch",base_url="http://127.0.0.1:${port}/v1",wire_api="responses",env_key="EASYSWITCH_GATEWAY_TOKEN"}`,
     // Codex's own /model menu then lists every EasySwitch model (a JSON string is a valid TOML string).
     ...(catalogPath ? ["-c", `model_catalog_json=${JSON.stringify(catalogPath)}`] : []),
     // The other agents, reachable as MCP tools — for this launch only.

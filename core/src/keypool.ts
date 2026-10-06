@@ -1,3 +1,5 @@
+import { existingSubscriptionKind } from "./subscription-compat.ts";
+import { vertexKind, VertexConfigError } from "./vertex-config.ts";
 import type { Provider, ProviderKey } from "./types.ts";
 import type { SecretStore } from "./secrets.ts";
 import type { Store } from "./store.ts";
@@ -94,11 +96,26 @@ export function setVertexToken(fn: ((provider: Provider) => Promise<string>) | u
 }
 
 export async function pickKey(secrets: SecretStore, provider: Provider): Promise<{ keyId?: string; apiKey: string | undefined }> {
+  const exclusiveAuth = [provider.plan, provider.antigravity, provider.kiro, provider.kimi, provider.cursor, provider.vertex].filter(value => value !== undefined).length + (provider.mimoFree ? 1 : 0);
+  if (exclusiveAuth > 1) throw new VertexConfigError("一个来源不能同时声明多种专用鉴权。");
+  if (provider.cursor !== undefined || provider.kimi !== undefined) existingSubscriptionKind(provider);
   if (provider.plan && planToken) return { apiKey: await planToken(provider) };
   if (provider.antigravity && antigravityToken) return { apiKey: await antigravityToken(provider) };
-  if (provider.kimi && kimiToken) return { apiKey: await kimiToken(provider) };
-  if (provider.cursor && cursorToken) return { apiKey: await cursorToken(provider) };
-  if (provider.vertex && vertexToken) return { apiKey: await vertexToken(provider) };
+  if (provider.kimi !== undefined) {
+    if (!kimiToken) throw new VertexConfigError("Kimi 账号鉴权尚未初始化；不会改用普通 API Key。");
+    return { apiKey: await kimiToken(provider) };
+  }
+  if (provider.cursor !== undefined) {
+    if (!cursorToken) throw new VertexConfigError("Cursor 账号鉴权尚未初始化；不会改用普通 API Key。");
+    return { apiKey: await cursorToken(provider) };
+  }
+  if (provider.vertex !== undefined) {
+    const kind = vertexKind(provider.vertex);
+    if (kind === "service-account") {
+      if (!vertexToken) throw new VertexConfigError("Vertex 服务账号鉴权尚未初始化；不会改用普通 API Key。");
+      return { apiKey: await vertexToken(provider) };
+    }
+  }
   const key = pick(provider);
   if (!key) return { apiKey: await secrets.get(provider.id) };
   return { keyId: key.id, apiKey: await secrets.get(keySecretId(provider.id, key.id)) };

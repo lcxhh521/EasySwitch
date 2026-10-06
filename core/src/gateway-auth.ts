@@ -1,72 +1,132 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
-import type { SecretStore } from "./secrets.ts";
+import { canonicalAgentId } from "./agent-identity.ts";
+
+/** Authentication is issuance-based, never inferred from a token's readable agent label. */
+export interface GatewaySession {
+  id: string;
+  agentId: string;
+  depth: number;
+  allowMcp: boolean;
+  allowNativeClaude: boolean;
+  issuedAt: string;
+  expiresAt: string;
+}
+
+export interface GatewayTokenOptions {
+  depth?: number;
+  allowMcp?: boolean;
+  allowNativeClaude?: boolean;
+  ttlMs?: number;
+}
+
+export type GatewayScope = "inference" | "models" | "mcp";
+const DEFAULT_TTL = 24 * 60 * 60_000;
+const MAX_TTL = 30 * DEFAULT_TTL;
+const digest = (token: string): string => createHash("sha256").update(token).digest("hex");
 
 /**
- * Who may use the gateway. Every launch is given a token that EasySwitch signed with a key that exists only on this
- * machine (`es-session-<agent>-<nonce>-<signature>`), and the gateway answers only requests that carry one. A web page
- * open in the browser, or any program that does not hold a token, cannot spend the person's keys and subscriptions
- * just because the gateway listens on this machine's loopback address.
- *
- * The token also still names the agent (for the log and the per-agent settings): that part has not changed.
- * Without a key (unit tests that never start the server) tokens are made unsigned and nothing is enforced.
+ * Process-local session capabilities. Only hashes are retained; neither the console's
+ * state file nor logs receive tokens. Restarting EasySwitch invalidates all sessions.
+ * A token is shown once to its launcher/manual-client setup, then only metadata is listed.
  */
+export class GatewayTokenAuthority {
+  #sessions = new Map<string, GatewaySession>();
+  #now: () => number;
+  #maxSessions: number;
 
-const KEY_NAME = "gateway-secret";
-let key: Buffer | undefined;
-
-export function setGatewayKey(hex: string | undefined): void {
-  key = hex ? Buffer.from(hex, "hex") : undefined;
-}
-
-/** The key of this install: read from the secret store, or made and kept there the first time. */
-export async function loadGatewayKey(secrets: SecretStore): Promise<void> {
-  let hex = await secrets.get(KEY_NAME);
-  if (!hex || !/^[0-9a-f]{64}$/.test(hex)) {
-    hex = randomBytes(32).toString("hex");
-    await secrets.set(KEY_NAME, hex);
+  constructor(options: { now?: () => number; maxSessions?: number } = {}) {
+    this.#now = options.now ?? Date.now;
+    this.#maxSessions = options.maxSessions ?? 2048;
+    if (!Number.isInteger(this.#maxSessions) || this.#maxSessions < 1) throw new TypeError("Invalid session capacity");
   }
-  setGatewayKey(hex);
+
+  issue(agentId: string, options: GatewayTokenOptions = {}): GatewaySession & { token: string } {
+    const agent = canonicalAgentId(agentId);
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(agent)) throw new TypeError("Invalid agent id");
+    const depth = options.depth ?? 0;
+    if (!Number.isInteger(depth) || depth < 0 || depth > 2) throw new TypeError("Invalid session depth");
+    const ttlMs = options.ttlMs ?? DEFAULT_TTL;
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_TTL) throw new TypeError("Session lifetime must be between 1 millisecond and 30 days");
+    if (options.allowMcp !== undefined && typeof options.allowMcp !== "boolean") throw new TypeError("Invalid MCP permission");
+    if (options.allowNativeClaude !== undefined && typeof options.allowNativeClaude !== "boolean") throw new TypeError("Invalid native Claude permission");
+    this.prune();
+    if (this.#sessions.size >= this.#maxSessions) throw new Error("Too many active gateway sessions; revoke an unused token first");
+    const now = this.#now();
+    const session: GatewaySession = {
+      id: randomUUID(), agentId: agent, depth, allowMcp: options.allowMcp ?? false,
+      allowNativeClaude: options.allowNativeClaude ?? false,
+      issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMs).toISOString(),
+    };
+    const token = `es-session-${agent}-${randomBytes(32).toString("hex")}`;
+    this.#sessions.set(digest(token), session);
+    return { ...session, token };
+  }
+
+  authenticate(headers: IncomingHttpHeaders, url?: URL, scope: GatewayScope = "inference"): GatewaySession | undefined {
+    const token = requestToken(headers, url);
+    if (!token) return undefined;
+    const key = digest(token);
+    const session = this.#sessions.get(key);
+    if (!session) return undefined;
+    if (Date.parse(session.expiresAt) <= this.#now()) { this.#sessions.delete(key); return undefined; }
+    if (scope === "mcp" && !session.allowMcp) return undefined;
+    return { ...session };
+  }
+
+  revoke(token: string): boolean { return this.#sessions.delete(digest(token)); }
+  revokeId(id: string): boolean {
+    for (const [hash, session] of this.#sessions) if (session.id === id) return this.#sessions.delete(hash);
+    return false;
+  }
+  clear(): void { this.#sessions.clear(); }
+  list(): GatewaySession[] { this.prune(); return [...this.#sessions.values()].map(session => ({ ...session })); }
+
+  private prune(): void {
+    const now = this.#now();
+    for (const [hash, session] of this.#sessions) if (Date.parse(session.expiresAt) <= now) this.#sessions.delete(hash);
+  }
 }
 
-const signature = (payload: string): string => createHmac("sha256", key!).update(payload).digest("hex").slice(0, 20);
-
-/** A token for one launch; `nonce` is random unless a stable one is wanted (a token written into a configuration that lasts). */
-export function signToken(agentId: string, nonce: string = randomUUID()): string {
-  const agent = agentId.replace(/[^a-z0-9]/g, "");
-  const body = `es-session-${agent}-${nonce}`;
-  return key ? `${body}-${signature(`${agent}-${nonce}`)}` : body;
+/**
+ * Claude's local session header coexists with its genuine vendor Authorization.
+ * An explicit invalid local header never falls back to a different credential.
+ * Ordinary clients may use Bearer, x-api-key or x-goog-api-key; Gemini also uses ?key=.
+ * Conflicting/duplicated fields are rejected rather than selecting a lucky valid one.
+ */
+export function requestToken(headers: IncomingHttpHeaders, url?: URL): string | undefined {
+  if (headers["x-easyswitch-session"] !== undefined) {
+    const custom = headers["x-easyswitch-session"];
+    return typeof custom === "string" && validTokenShape(custom) ? custom : undefined;
+  }
+  const tokens: string[] = [];
+  if (headers.authorization !== undefined) {
+    if (typeof headers.authorization !== "string") return undefined;
+    const bearer = /^Bearer ([^\s,]+)$/i.exec(headers.authorization)?.[1];
+    if (!bearer) return undefined;
+    tokens.push(bearer);
+  }
+  for (const name of ["x-api-key", "x-goog-api-key"]) {
+    const value = headers[name];
+    if (value === undefined) continue;
+    if (typeof value !== "string") return undefined;
+    tokens.push(value);
+  }
+  if (url && (/^\/v1beta\/(?:models(?:\/|$)|openai\/models(?:\/|$))/.test(url.pathname) || /^\/v1\/models\/.+:(?:generateContent|streamGenerateContent|countTokens)$/.test(url.pathname))) {
+    const keys = url.searchParams.getAll("key");
+    if (keys.length > 1) return undefined;
+    if (keys.length) tokens.push(keys[0]!);
+  }
+  if (!tokens.length || new Set(tokens).size !== 1 || !validTokenShape(tokens[0]!)) return undefined;
+  return tokens[0];
 }
 
-/** The same token every time, for the apps whose settings the person fills in once. */
-export const stableToken = (agentId: string): string => signToken(agentId, "stable");
-
-/** Is this a token this installation signed? */
-export function isValidToken(token: string): boolean {
-  if (!key) return false;
-  const m = /^es-session-([a-z0-9]+)-(.+)-([0-9a-f]{20})$/.exec(token);
-  if (!m) return false;
-  const expected = Buffer.from(signature(`${m[1]}-${m[2]}`));
-  const given = Buffer.from(m[3]!);
-  return expected.length === given.length && timingSafeEqual(expected, given);
+function validTokenShape(token: string): boolean {
+  return /^es-session-[a-z][a-z0-9-]{0,63}-[a-f0-9]{64}$/.test(token);
 }
 
-/** The tokens a request carries, wherever the client puts one: Bearer, x-api-key, our own header, Gemini's key. */
-export function tokensOf(headers: IncomingHttpHeaders, search = ""): string[] {
-  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
-  const found = [
-    one(headers.authorization).replace(/^Bearer\s+/i, ""),
-    one(headers["x-api-key"]), one(headers["x-easyswitch-session"]), one(headers["x-goog-api-key"]),
-    new URLSearchParams(search).get("key") ?? "",
-  ];
-  return found.filter(t => t.startsWith("es-session-"));
-}
-
-export function requestHasValidToken(headers: IncomingHttpHeaders, search = ""): boolean {
-  return tokensOf(headers, search).some(isValidToken);
-}
-
-/** The gateway's own routes: the ones that spend something. The console API has its own guard, and /health is open. */
-export function isGatewayPath(path: string): boolean {
-  return /^\/(v1|v1beta)(\/|$)/.test(path) || path === "/responses" || path === "/chat/completions" || path === "/mcp";
+/** Shared by in-process launchers and the production server; tests may inject their own authority. */
+export const gatewayTokens = new GatewayTokenAuthority();
+export function sessionToken(agentId: string, options: GatewayTokenOptions = {}): string {
+  return gatewayTokens.issue(agentId, options).token;
 }

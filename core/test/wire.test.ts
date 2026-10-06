@@ -1,3 +1,4 @@
+import { fixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { mkdtempSync } from "node:fs";

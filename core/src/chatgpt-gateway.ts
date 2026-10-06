@@ -37,13 +37,14 @@ export function isChatgptPath(path: string): boolean {
 }
 
 /** Request headers that describe the hop, not the request, and must not be copied. */
-const HOP = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "proxy-connection"]);
+const HOP = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te", "proxy-connection", "x-easyswitch-session"]);
 
 function forwardHeaders(req: IncomingMessage, dropConditional = false): Record<string, string> {
   const out: Record<string, string> = { "accept-encoding": "identity" };
   for (const [name, value] of Object.entries(req.headers)) {
     if (HOP.has(name) || value === undefined) continue;
     if (dropConditional && (name === "if-none-match" || name === "if-modified-since")) continue;
+    if (["authorization", "x-api-key", "x-goog-api-key"].includes(name) && /^(?:Bearer\s+)?es-session-/i.test(String(value))) continue;
     out[name] = Array.isArray(value) ? value.join(", ") : value;
   }
   return out;
@@ -83,7 +84,7 @@ function relay(upstream: Response, res: ServerResponse, onDone?: () => void): vo
 /** The merged model list: ChatGPT's own entries first, then ours, under an ETag that covers both. */
 export async function handleChatgptModels(req: IncomingMessage, res: ServerResponse, search: string, deps: GatewayDeps): Promise<void> {
   // Conditional headers are answered here against the merged list, not by ChatGPT against its own.
-  const upstream = await fetch(upstreamUrl(`${CHATGPT_PREFIX}/models`, search), { headers: forwardHeaders(req, true) }).catch((e: Error) => e);
+  const upstream = await fetch(upstreamUrl(`${CHATGPT_PREFIX}/models`, search), { redirect: "error", headers: forwardHeaders(req, true) }).catch((e: Error) => e);
   if (upstream instanceof Error) {
     sendJson(res, 502, { error: { message: `ChatGPT unreachable: ${upstream.message}` } });
     return;
@@ -134,7 +135,7 @@ async function forward(req: IncomingMessage, res: ServerResponse, path: string, 
   const abort = new AbortController();
   res.on("close", () => abort.abort());
   const upstream = await fetch(upstreamUrl(path, search), {
-    method,
+    method, redirect: "error",
     headers: forwardHeaders(req),
     ...(body && method !== "GET" && method !== "HEAD" ? { body: new Uint8Array(body) } : {}),
     signal: abort.signal,
@@ -169,8 +170,11 @@ export function handleChatgptUpgrade(req: IncomingMessage, socket: net.Socket, h
     const lines = [`${req.method} ${target.pathname}${target.search} HTTP/1.1`, `Host: ${target.host}`];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       const name = req.rawHeaders[i] ?? "";
-      if (name.toLowerCase() === "host") continue;
-      lines.push(`${name}: ${req.rawHeaders[i + 1] ?? ""}`);
+      const lower = name.toLowerCase();
+      const value = req.rawHeaders[i + 1] ?? "";
+      if (["host", "x-easyswitch", "x-easyswitch-session", "x-easyswitch-depth"].includes(lower)) continue;
+      if (["authorization", "x-api-key", "x-goog-api-key"].includes(lower) && /^(?:Bearer\s+)?es-session-/i.test(value)) continue;
+      lines.push(`${name}: ${value}`);
     }
     upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
     if (head.length) upstream.write(head);

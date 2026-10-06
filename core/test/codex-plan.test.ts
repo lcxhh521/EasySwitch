@@ -1,3 +1,4 @@
+import { fixtureFetch as fetch, fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync } from "node:fs";
@@ -120,7 +121,7 @@ test("end to end: the console signs in as Codex, the models are the account's, a
     assert.equal((await api("PUT", `/api/plan/${state.accounts[0].id}/switch`, { on: true })).status, 200);
     fake.codexRequests.length = 0;
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-opencode-x" },
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${fixtureToken("opencode")}` },
       body: JSON.stringify({ model: `${provider.id}/gpt-codex-fake`, max_tokens: 40, temperature: 0.1, messages: [{ role: "user", content: "hi" }] }),
     });
     assert.equal(res.status, 200, await res.clone().text());

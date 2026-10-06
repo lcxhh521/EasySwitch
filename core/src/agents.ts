@@ -48,7 +48,7 @@ export const AGENTS: AgentInfo[] = [
   // Ready
   A("codex", "ChatGPT", "OpenAI", "desktop", "ready", ["responses"], "openai", "命令行和桌面端；每次启动单独指向 EasySwitch，不改 ~/.codex", { bins: ["codex"], apps: ["ChatGPT"] }),
   A("claude", "Claude Code", "Anthropic", "cli", "ready", ["anthropic"], "claudecode-color", "环境变量 + --settings，只对这一次启动生效；Claude 订阅流量不经过 EasySwitch", { bins: ["claude"], paths: [join(homedir(), ".local/bin/claude")] }),
-  A("claude-desktop", "Claude 桌面端", "Anthropic", "desktop", "open", [], "claude-color", "模型菜单由 claude.ai 账号决定，没有官方扩展口；我们不拦截、不注入，只检测并打开", { apps: ["Claude"] }),
+  A("claude-desktop", "Claude 桌面端", "Anthropic", "desktop", "planned", ["anthropic"], "claude-color", "官方第三方网关模式；隔离后端和界面已做模拟测试，但签名版 2.19675.1 忽略目录覆盖变量，真实启动已暂停；不拦截、不改平时的 Claude", { bins: ["claude-desktop"], apps: ["Claude"] }),
 
   // Planned: open protocol, per-launch override exists
   A("qwen-code", "Qwen Code", "阿里", "cli", "planned", ["chat"], "qwen-color", "OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL", { bins: ["qwen"] }),
@@ -68,7 +68,7 @@ export const AGENTS: AgentInfo[] = [
   A("grok-build", "Grok Build", "xAI", "cli", "planned", ["chat"], "grok", "GROK_HOME 临时目录 + config.toml", { bins: ["grok"] }),
   A("minimax-code", "MiniMax Code", "MiniMax", "cli", "planned", ["anthropic"], "minimax-color", "MINIMAX_DATA_DIR + config.yaml", { bins: ["mcode"] }),
   A("qoder-cli", "Qoder CLI", "阿里", "cli", "planned", ["chat"], "letter:Q", "QODER_CONFIG_DIR + settings.json（国区 QODERCN_CONFIG_DIR）", { bins: ["qodercli"] }),
-  A("codebuddy", "CodeBuddy Code", "腾讯", "cli", "open", [], "letter:C", "命令行版只连腾讯自己的服务，没有改地址的办法；只能检测并打开（桌面应用 WorkBuddy 是另一个产品，单独一行）", { bins: ["codebuddy"] }),
+  A("codebuddy", "CodeBuddy Code", "腾讯", "cli", "planned", ["anthropic"], "letter:C", "官方环境变量支持 Anthropic 兼容来源；使用私有配置目录与每次启动参数，已做配置测试，真实 CLI 未实测", { bins: ["codebuddy"] }),
   A("workbuddy", "WorkBuddy", "腾讯", "desktop", "planned", ["chat"], "letter:W", "桌面应用，读 WORKBUDDY_CONFIG_DIR 下的 models.json 里的自定义模型；具体用哪个模型要在它的窗口里选；使用条款待核实", { apps: ["WorkBuddy"] }),
   A("openclaw", "OpenClaw", "社区", "cli", "planned", ["chat", "anthropic"], "openclaw", "OPENCLAW_CONFIG_PATH / OPENCLAW_STATE_DIR", { bins: ["openclaw"] }),
   A("trae-agent", "Trae Agent", "字节跳动", "cli", "planned", ["chat", "anthropic"], "letter:T", "开源命令行：--config-file / --model-base-url / --api-key（豆包和火山方舟的模型可用）", { bins: ["trae-cli"] }),

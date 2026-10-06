@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Checks, on this machine, the launchers EasySwitch has for the agents that are installed (npm run verify-launchers).
-// Read-only: it runs each program's --help and looks for the flags EasySwitch uses. It starts no task and reads no
-// login, configuration or key of anyone's. Paste the output back to whoever is working on the launchers.
+// It runs each program's --help and looks for the flags EasySwitch uses. It sends no task, but each program
+// can still read configuration or credentials during startup. Run only when actual CLI execution is authorized.
 import { LAUNCHERS } from "../core/src/agent-launch.ts";
 import { AGENTS, detectAgents } from "../core/src/agents.ts";
 import { verifyLauncher } from "../core/src/verify-launchers.ts";

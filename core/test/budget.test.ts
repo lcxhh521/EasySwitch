@@ -1,112 +1,183 @@
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, beforeEach, test } from "node:test";
-import { addSpend, budgetStatus, clearSpend, isBudgetStopped, loadMonth, monthStart, spentThisMonth } from "../src/budget.ts";
-import { catalogModels } from "../src/catalog.ts";
-import { createSecretStore } from "../src/secrets.ts";
-import { createEasySwitchServer } from "../src/server.ts";
-import { Store } from "../src/store.ts";
+import { test } from "node:test";
+import { ProviderBudgetController, monthStart, monthWindow, validateProviderBudget } from "../src/budget.ts";
+import { Ledger } from "../src/ledger.ts";
 import type { GatewayLogEntry, Provider } from "../src/types.ts";
-import { startMockRelay } from "./mock-relay.ts";
 
-process.env.EASYSWITCH_SECRETS = "memory";
-type Json = Record<string, any>;
-beforeEach(() => clearSpend());
+const NOW = new Date(2026, 9, 6, 12);
+const provider = (budget?: Provider["budget"], id = "x"): Pick<Provider, "id" | "budget"> => ({ id, ...(budget ? { budget } : {}) });
+const entry = (over: Partial<GatewayLogEntry> = {}): GatewayLogEntry => ({ at: NOW.toISOString(), providerId: "x", model: "x/m", route: "chat-translate", status: 200, ms: 1, inputTokens: 10, outputTokens: 10, costUsd: 1, ...over });
+function fixture(t: { after(fn: () => void): void }, now: () => Date = () => NOW) {
+  const dir = mkdtempSync(join(tmpdir(), "es-source-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ledger = new Ledger(dir);
+  const budget = new ProviderBudgetController({ readEntries: since => ledger.readForBudget(since), now });
+  return { dir, ledger, budget };
+}
 
-const NOW = new Date();
-const p = (budget?: Provider["budget"]): Pick<Provider, "id" | "budget"> => ({ id: "x", ...(budget ? { budget } : {}) });
-
-test("the month's cost is added up per source, reaches 'near' at 80% and 'over' at 100%, and a source with no budget has no status", () => {
-  assert.equal(budgetStatus(p()), undefined);
-  assert.equal(budgetStatus(p({ monthlyUsd: 0 })), undefined);
-  addSpend("x", 3.9); addSpend("x", 0.2); addSpend("other", 99);
-  assert.equal(spentThisMonth("x"), 4.1);
-  assert.equal(budgetStatus(p({ monthlyUsd: 10 }))!.level, "ok");
-  addSpend("x", 4);
-  assert.equal(budgetStatus(p({ monthlyUsd: 10 }))!.level, "near");
-  addSpend("x", 2);
-  const over = budgetStatus(p({ monthlyUsd: 10 }))!;
-  assert.equal(over.level, "over");
-  assert.ok(Math.abs(over.spent - 10.1) < 1e-9 && over.ratio > 1);
-  addSpend("x", -5); addSpend("x", NaN as number);
-  assert.ok(Math.abs(spentThisMonth("x") - 10.1) < 1e-9, "a negative or missing cost adds nothing");
+test("source budgets accumulate separately, warn from 80%, and stop at 100% only when configured", t => {
+  const { ledger, budget } = fixture(t);
+  assert.equal(budget.budgetStatus(provider()), undefined);
+  assert.equal(budget.isBudgetStopped(provider()), false);
+  ledger.append(entry({ costUsd: 3.9 })); ledger.append(entry({ costUsd: 0.2 }));
+  ledger.append(entry({ providerId: "other", costUsd: 99 }));
+  assert.equal(budget.spentThisMonth("x"), 4.1);
+  assert.equal(budget.budgetStatus(provider({ monthlyUsd: 10 }))!.level, "ok");
+  ledger.append(entry({ costUsd: 3.9 }));
+  assert.equal(budget.budgetStatus(provider({ monthlyUsd: 10 }))!.level, "near");
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), false);
+  ledger.append(entry({ costUsd: 2 }));
+  const over = budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
+  assert.equal(over.level, "over"); assert.equal(over.ratio, 1); assert.equal(over.spent, 10);
+  assert.equal(over.blocked, true);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10 })), false);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: false })), false);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 11, stop: true })), false);
+  assert.equal(budget.isBudgetStopped(provider()), false, "removing the budget restores the source");
 });
 
-test("only a source set to stop is stopped, and only once the month's budget is gone", () => {
-  addSpend("x", 20);
-  assert.equal(isBudgetStopped(p({ monthlyUsd: 10 })), false, "a budget that only warns never stops anything");
-  assert.equal(isBudgetStopped(p({ monthlyUsd: 10, stop: true })), true);
-  assert.equal(isBudgetStopped(p({ monthlyUsd: 30, stop: true })), false, "not yet");
-  assert.equal(isBudgetStopped(p()), false);
+test("source accounting is durable across restart, and controllers never share provider totals", t => {
+  const a = fixture(t), b = fixture(t);
+  a.ledger.append(entry({ costUsd: 12 })); b.ledger.append(entry({ costUsd: 2 }));
+  const p = provider({ monthlyUsd: 10, stop: true });
+  assert.equal(a.budget.isBudgetStopped(p), true);
+  assert.equal(b.budget.isBudgetStopped(p), false);
+  const restart = new ProviderBudgetController({ readEntries: since => new Ledger(a.dir).readForBudget(since), now: () => NOW });
+  assert.equal(restart.spentThisMonth("x"), 12);
+  a.ledger.append(entry({ costUsd: 1 }));
+  assert.equal(restart.spentThisMonth("x"), 13, "decisions read current durable entries instead of a startup snapshot");
+  assert.equal(b.budget.spentThisMonth("x"), 2);
 });
 
-test("a new month starts again from nothing, and costs from last month never count", () => {
-  const lastMonth = new Date(NOW.getFullYear(), NOW.getMonth() - 1, 15);
-  addSpend("x", 50, lastMonth);
-  assert.equal(spentThisMonth("x"), 0, "last month's cost is not this month's");
-  const entries = [
-    { at: lastMonth.toISOString(), providerId: "x", costUsd: 7 }, { at: NOW.toISOString(), providerId: "x", costUsd: 2 },
-    { at: NOW.toISOString(), providerId: "y", costUsd: 1 }, { at: NOW.toISOString(), providerId: "x" },
-  ] as GatewayLogEntry[];
-  loadMonth(entries, NOW);
-  assert.equal(spentThisMonth("x", NOW), 2, "rebuilt from the ledger: this month only");
-  assert.equal(spentThisMonth("y", NOW), 1);
-  const nextMonth = new Date(NOW.getFullYear(), NOW.getMonth() + 1, 2);
-  assert.equal(spentThisMonth("x", nextMonth), 0, "when the month turns the totals start over");
-  assert.equal(monthStart(NOW).getDate(), 1);
+test("source months use local calendar boundaries, reset across years, and ignore stale or future entries", t => {
+  let now = new Date(2026, 11, 31, 23, 59, 59);
+  const { ledger, budget } = fixture(t, () => now);
+  assert.deepEqual(monthWindow(now), { start: new Date(2026, 11, 1), end: new Date(2027, 0, 1) });
+  assert.equal(monthStart(now).getDate(), 1);
+  ledger.append(entry({ at: new Date(2026, 10, 30, 23, 59, 59).toISOString(), costUsd: 50 }));
+  ledger.append(entry({ at: now.toISOString(), costUsd: 2 }));
+  ledger.append(entry({ at: new Date(2027, 0, 1).toISOString(), costUsd: 3 }));
+  ledger.append(entry({ at: new Date(2027, 0, 2).toISOString(), costUsd: 90 }));
+  const p = provider({ monthlyUsd: 2, stop: true });
+  const old = budget.budgetStatus(p)!;
+  assert.equal(old.spent, 2); assert.equal(old.blocked, true);
+  assert.equal(old.startsAt, new Date(2026, 11, 1).toISOString());
+  assert.equal(old.resetsAt, new Date(2027, 0, 1).toISOString());
+  assert.equal(old.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+  now = new Date(2027, 0, 1, 0, 0, 1);
+  assert.equal(budget.spentThisMonth("x"), 3, "past month clears and future January entries still do not count");
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 4, stop: true })), false);
 });
 
-test("a source that has used its budget and is set to stop leaves the model catalog, like a switched-off one", () => {
-  const prov = { id: "x", name: "X", baseUrl: "http://x", models: ["m"], budget: { monthlyUsd: 1, stop: true } } as Provider;
-  assert.equal(catalogModels([prov]).length, 1);
-  addSpend("x", 2);
-  assert.equal(catalogModels([prov]).length, 0);
+test("local source months remain distinct from UTC month boundaries", () => {
+  const previous = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const now = new Date("2026-10-01T00:30:00Z");
+    const budget = new ProviderBudgetController({ now: () => now, readEntries: () => [entry({ at: "2026-09-30T23:00:00Z", costUsd: 7 })] });
+    const s = budget.budgetStatus(provider({ monthlyUsd: 10 }))!;
+    assert.equal(s.spent, 7);
+    assert.equal(s.startsAt, "2026-09-01T07:00:00.000Z");
+    assert.equal(s.resetsAt, "2026-10-01T07:00:00.000Z");
+    assert.equal(s.timezone, "America/Los_Angeles");
+  } finally {
+    if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
+  }
 });
 
-let relay: Awaited<ReturnType<typeof startMockRelay>>;
-let server: Server;
-let port: number;
-let store: Store;
-const dir = mkdtempSync(join(tmpdir(), "es-budget-"));
-const H = { "content-type": "application/json", "x-easyswitch": "1" };
-const api = (m: string, path: string, b?: unknown) => fetch(`http://127.0.0.1:${port}${path}`, { method: m, headers: H, ...(b ? { body: JSON.stringify(b) } : {}) });
-
-before(async () => {
-  relay = await startMockRelay(0, { apiKey: "k1" });
-  port = await new Promise<number>(resolve => { const s = createServer().listen(0, "127.0.0.1", () => { const n = (s.address() as { port: number }).port; s.close(() => resolve(n)); }); });
-  store = new Store(join(dir, "store"));
-  server = createEasySwitchServer({ store, secrets: createSecretStore(), port });
-  await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
+test("subscription fees are excluded and unknown prices or usage are disclosed rather than counted as zero", t => {
+  const { ledger, budget } = fixture(t);
+  ledger.append(entry());
+  ledger.append(entry({ costUsd: 99, costNote: "subscription" }));
+  ledger.append(entry({ costUsd: undefined, costNote: "unpriced" }));
+  ledger.append(entry({ costUsd: undefined, inputTokens: undefined, outputTokens: undefined }));
+  ledger.append(entry({ costUsd: 2, outputTokens: undefined }));
+  const s = budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
+  assert.equal(s.spent, 3); assert.equal(s.unknownCostCalls, 3);
+  assert.equal(s.blocked, false); assert.equal(s.accountingUnavailable, false);
+  assert.match(s.warning!, /缺少价格或用量/); assert.match(s.limitations, /正在进行/);
 });
-after(() => { server.closeAllConnections(); server.close(); relay.server.closeAllConnections(); relay.server.close(); rmSync(dir, { recursive: true, force: true }); });
 
-test("through the gateway: a budget is set and shown, a source over it that is set to stop is refused with a plain reason, and lifting the budget brings it back", async () => {
-  const made = await api("POST", "/api/providers", { name: "relay", baseUrl: relay.baseUrl, apiKey: "k1" });
-  const id = ((await made.json()) as { id: string }).id;
-  const provider = store.provider(id)!; provider.models = ["mock-coder"]; store.upsertProvider(provider);
-  const ask = () => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" }, body: JSON.stringify({ model: `${id}/mock-coder`, messages: [{ role: "user", content: "hi" }] }) });
+test("legacy exposed model names identify a source, while explicit provider IDs take precedence", t => {
+  const { ledger, budget } = fixture(t);
+  ledger.append(entry({ providerId: undefined, model: "x/model/with/slashes", costUsd: 2 }));
+  ledger.append(entry({ providerId: "y", model: "x/m", costUsd: 3 }));
+  ledger.append(entry({ providerId: undefined, model: "native", costUsd: undefined }));
+  assert.equal(budget.spentThisMonth("x"), 2);
+  assert.equal(budget.spentThisMonth("y"), 3);
+});
 
-  assert.equal((await api("PUT", `/api/providers/${id}/budget`, { monthlyUsd: -3 })).status, 400);
-  assert.equal((await api("PUT", `/api/providers/nope/budget`, { monthlyUsd: 3 })).status, 404);
-  const set = await api("PUT", `/api/providers/${id}/budget`, { monthlyUsd: 5, stop: true });
-  assert.equal(set.status, 200);
-  assert.equal(((await set.json()) as Json).status.level, "ok");
-  assert.equal((await ask()).status, 200);
-  const shown = ((await (await api("GET", "/api/state")).json()) as Json).providers.find((x: Json) => x.id === id);
-  assert.equal(shown.budget.monthlyUsd, 5);
-  assert.equal(shown.budgetStatus.level, "ok", "the console is told how much of the budget is used");
+test("strict source budgets retain entries older than the console's 50k view", t => {
+  const { dir, ledger, budget } = fixture(t);
+  const file = join(dir, "usage.jsonl");
+  writeFileSync(file, `${JSON.stringify(entry({ costUsd: 10 }))}\n${`${JSON.stringify(entry({ costUsd: 0 }))}\n`.repeat(50_000)}`);
+  assert.equal(ledger.read().length, 50_000);
+  assert.equal(budget.spentThisMonth("x"), 10);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
+});
 
-  addSpend(id, 6);
-  const refused = await ask();
-  assert.equal(refused.status, 404);
-  assert.match(((await refused.json()) as Json).error.message, /monthly budget .* used up/);
-  assert.equal(((await (await api("GET", "/api/state")).json()) as Json).providers.find((x: Json) => x.id === id).budgetStatus.level, "over");
+test("torn or missing durable ledgers stop configured sources but warn-only and unbudgeted sources remain usable", t => {
+  const { dir, ledger, budget } = fixture(t);
+  ledger.append(entry());
+  const file = join(dir, "usage.jsonl");
+  appendFileSync(file, '{"at":"torn');
+  const stopped = budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
+  assert.equal(stopped.accountingUnavailable, true); assert.equal(stopped.blocked, true);
+  assert.match(stopped.warning!, /无法完整读取/);
+  assert.throws(() => budget.spentThisMonth("x"), /incomplete/);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: false })), false);
+  assert.equal(budget.budgetStatus(provider({ monthlyUsd: 10 }))!.accountingUnavailable, true);
+  assert.equal(budget.budgetStatus(provider()), undefined);
+  rmSync(file);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
+  writeFileSync(file, `${JSON.stringify(entry())}\n`);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), false, "repairing a read failure restores accounting");
+});
 
-  const warnOnly = await api("PUT", `/api/providers/${id}/budget`, { monthlyUsd: 5, stop: false });
-  assert.equal(warnOnly.status, 200);
-  assert.equal((await ask()).status, 200, "a budget that only warns never refuses a request");
-  assert.equal(((await (await api("PUT", `/api/providers/${id}/budget`, { monthlyUsd: null })).json()) as Json).budget, null, "the budget can be removed");
+test("failed durable appends remain fail-closed even when the file later becomes writable", t => {
+  const { dir, ledger, budget } = fixture(t);
+  const file = join(dir, "usage.jsonl");
+  rmSync(file); mkdirSync(file);
+  ledger.append(entry());
+  rmSync(file, { recursive: true }); writeFileSync(file, "");
+  assert.equal(budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!.accountingUnavailable, true);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
+});
+
+test("malformed persisted source budgets fail closed instead of being treated as unset", t => {
+  const { budget } = fixture(t);
+  for (const value of [null, {}, [], { monthlyUsd: 0 }, { monthlyUsd: -1 }, { monthlyUsd: NaN }, { monthlyUsd: Infinity }, { monthlyUsd: 1_000_001 }, { monthlyUsd: "10" }, { monthlyUsd: 10, stop: "false" }, { monthlyUsd: 10, typo: true }]) {
+    assert.throws(() => validateProviderBudget(value));
+    const invalid = { id: "x", budget: value } as unknown as Pick<Provider, "id" | "budget">;
+    const s = budget.budgetStatus(invalid)!;
+    assert.equal(s.configurationInvalid, true); assert.equal(s.blocked, true);
+    assert.equal(budget.isBudgetStopped(invalid), true);
+    assert.match(s.warning!, /重新保存或移除/);
+  }
+  assert.deepEqual(validateProviderBudget({ monthlyUsd: 5 }), { monthlyUsd: 5 });
+  assert.deepEqual(validateProviderBudget({ monthlyUsd: 5, stop: false }), { monthlyUsd: 5, stop: false });
+  assert.deepEqual(validateProviderBudget({ monthlyUsd: 1_000_000, stop: true }), { monthlyUsd: 1_000_000, stop: true });
+});
+
+test("invalid injected accounting cannot lower source spend or silently permit a stop budget", () => {
+  for (const bad of [entry({ at: "invalid" }), entry({ costUsd: -100 }), entry({ costUsd: Infinity }), entry({ costUsd: NaN }), { ...entry(), providerId: 7 }, { ...entry(), costUsd: "2" }, { ...entry(), costNote: "unknown" }, null, []]) {
+    const budget = new ProviderBudgetController({ now: () => NOW, readEntries: () => [entry({ costUsd: 8 }), bad] as GatewayLogEntry[] });
+    const s = budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
+    assert.equal(s.spent, 8); assert.equal(s.accountingUnavailable, true); assert.equal(s.blocked, true);
+  }
+  const missing = new ProviderBudgetController({ now: () => NOW, readEntries: () => undefined as unknown as GatewayLogEntry[] });
+  assert.equal(missing.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
+});
+
+test("unattributable known costs and overflow fail closed with JSON-safe status numbers", () => {
+  const unattributable = new ProviderBudgetController({ now: () => NOW, readEntries: () => [entry({ providerId: undefined, model: "unattributable", costUsd: 1 })] });
+  assert.equal(unattributable.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!.blocked, true);
+  const overflow = new ProviderBudgetController({ now: () => NOW, readEntries: () => [entry({ costUsd: Number.MAX_VALUE }), entry({ costUsd: Number.MAX_VALUE })] });
+  const s = overflow.budgetStatus(provider({ monthlyUsd: Number.MIN_VALUE, stop: true }))!;
+  assert.equal(s.accountingUnavailable, true); assert.equal(s.blocked, true);
+  assert.ok(Number.isFinite(s.spent)); assert.ok(Number.isFinite(s.ratio));
+  assert.equal(JSON.parse(JSON.stringify(s)).spent, Number.MAX_VALUE);
 });
