@@ -153,19 +153,19 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   "gemini-cli": {
     verified: false,
     efforts: ["low", "medium", "high"],
-    pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自定义地址下能不能列出别的模型",
-    caveat: "环境变量来自它的文档；思考档位写成系统设置里的 thinkingConfig（写法凭记忆，把握不大）；无界面的 `-p` 默认拿不到工具权限（要 --yolo，我们没开）",
-    mcpCaveat: "MCP 通过「系统设置文件」环境变量挂上，变量名和格式是凭记忆写的，要核实",
-    interactive: i => ({ command: i.bin, args: [], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
-    headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: { ...geminiEnv(i), ...geminiSystemSettings(i) }, files: geminiSettingsFiles(i) }),
+    pickerNote: "私有设置启用官方动态模型目录，/model 的 Manual 中可列出外接模型；需支持该设置的版本，内置模型仍可能显示但不代表网关支持它们，真实菜单未实测",
+    caveat: "官方私有 GEMINI_CLI_HOME、动态模型目录和 thinkingConfig；真实 CLI 没有实测。受信项目设置仍可覆盖或迁移，私有用户目录不代表项目隔离；后台任务仍保留程序自己的工具确认",
+    mcpCaveat: "MCP 写入私有用户设置的 mcpServers；不再使用会被当前版本信任检查忽略的临时系统设置文件，真实 CLI 未实测",
+    interactive: i => ({ command: i.bin, args: [], env: geminiEnv(i), files: geminiSettingsFiles(i) }),
+    headless: i => ({ command: i.bin, args: ["-p", i.task ?? ""], env: geminiEnv(i), files: geminiSettingsFiles(i) }),
   },
   "qwen-code": {
     verified: false,
-    pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自定义地址下能不能列出别的模型",
-    caveat: "没有任何本地资料可对，命令行参数全凭记忆；无界面的 `-p` 默认拿不到工具权限",
-    mcpCaveat: "MCP 的系统设置文件环境变量名是猜的（从 Gemini CLI 改名而来），要核实",
-    interactive: i => ({ command: i.bin, args: ["--auth-type", "openai"], env: { ...openaiEnv(i), ...geminiSystemSettings(i, true) }, files: geminiSettingsFiles(i) }),
-    headless: i => ({ command: i.bin, args: ["--auth-type", "openai", "-p", i.task ?? ""], env: { ...openaiEnv(i), ...geminiSystemSettings(i, true) }, files: geminiSettingsFiles(i) }),
+    pickerNote: "官方 modelProviders 将全部外接模型列入 /model；/model --global 把选择存回私有 QWEN_HOME。项目级保存与旧版本兼容性仍需真实程序验收",
+    caveat: "官方 modelProviders、QWEN_HOME 和 openai 鉴权配置；真实 CLI 没有实测。项目配置仍会加载，选择 /model --global 可把菜单选择保存在私有目录；不自动批准后台工具",
+    mcpCaveat: "MCP 通过官方 QWEN_CODE_SYSTEM_SETTINGS_PATH 下的私有 mcpServers 配置；与 Gemini 的鉴权和目录格式分开，真实 CLI 未实测",
+    interactive: i => qwenSpec(i, ["--auth-type", "openai"]),
+    headless: i => qwenSpec(i, ["--auth-type", "openai", "-p", i.task ?? ""]),
   },
   opencode: {
     verified: false,
@@ -190,9 +190,9 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
   "copilot-cli": {
     verified: false,
     efforts: ["low", "medium", "high", "xhigh"],
-    pickerNote: "它靠环境变量一次只能指定一个模型；还没查它的 /model 在自带模型（BYOK）下能不能列出别的模型",
-    caveat: "BYOK 环境变量凭记忆；思考档位写在私有目录的 settings.json 里（effortLevel，文件位置和键名来自资料、没有实测）；无界面的 `-p` 默认拿不到工具权限（要 --allow-all-tools，我们没开）",
-    mcpCaveat: "`--additional-mcp-config` 是凭记忆写的，要核实",
+    pickerNote: "官方已提供 providers.json 多模型注册表与 /model 菜单，但内部条目和凭据引用格式尚未核实；目前只用官方环境变量指定默认模型，不声称已注入全部模型",
+    caveat: "BYOK 环境变量、COPILOT_HOME 和 effortLevel 来自官方文档；始终使用私有配置目录，真实 CLI 没有实测；后台任务仍保留程序自己的工具确认",
+    mcpCaveat: "按官方 --additional-mcp-config @文件 传本次私有配置，令牌不放 argv；真实 CLI 未实测",
     interactive: i => copilotSpec(i, copilotMcp(i)),
     headless: i => copilotSpec(i, ["-p", i.task ?? "", ...copilotMcp(i)]),
   },
@@ -241,7 +241,7 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
 }
 
 function geminiEnv(i: LaunchInput): Record<string, string> {
-  return { GOOGLE_GEMINI_BASE_URL: gateway(i), GEMINI_API_KEY: i.token, GEMINI_MODEL: i.model };
+  return { GOOGLE_GEMINI_BASE_URL: gateway(i), GEMINI_API_KEY: i.token, GEMINI_MODEL: i.model, GEMINI_CLI_HOME: join(i.sessionDir, "gemini-home") };
 }
 
 function copilotEnv(i: LaunchInput): Record<string, string> {
@@ -276,34 +276,54 @@ function aiderBase(i: LaunchInput): string[] {
     ...(i.tiers?.small ? ["--weak-model", `openai/${i.tiers.small}`] : []), ...(i.effort ? ["--reasoning-effort", i.effort] : [])];
 }
 
-/** The system settings file that Gemini CLI and its forks read as their highest layer; written only for this launch. */
-const GEMINI_SETTINGS = "gemini-system-settings.json";
-function geminiSystemSettings(i: LaunchInput, qwen = false): Record<string, string> {
-  const path = join(i.sessionDir, GEMINI_SETTINGS);
-  return { GEMINI_CLI_SYSTEM_SETTINGS_PATH: path, ...(qwen ? { QWEN_CODE_SYSTEM_SETTINGS_PATH: path } : {}) };
-}
+/** Official modelDefinitions drive /model only when dynamic model configuration is enabled.
+ * A user-owned system override is rejected by current Gemini CLI; use its private user directory.
+ * See research/model-menu-facts.md for version and project-setting limits.
+ */
 function geminiSettingsFiles(i: LaunchInput): Record<string, string> {
   const level = i.effort && ["low", "medium", "high"].includes(i.effort) ? i.effort.toUpperCase() : undefined;
-  return { [GEMINI_SETTINGS]: JSON.stringify({
+  return { [join(i.sessionDir, "gemini-home", ".gemini", "settings.json")]: JSON.stringify({
     security: { auth: { selectedType: "gemini-api-key" } },
-    ...(level ? { modelConfigs: { overrides: [{ match: { model: i.model }, modelConfig: { generateContentConfig: { thinkingConfig: { thinkingLevel: level } } } }] } } : {}),
+    model: { name: i.model },
+    experimental: { dynamicModelConfiguration: true },
+    modelConfigs: {
+      modelDefinitions: Object.fromEntries(allModels(i).map(model => [model, { displayName: model, tier: "custom", family: "custom", isVisible: true, isPreview: false }])),
+      ...(level ? { overrides: [{ match: { model: i.model }, modelConfig: { generateContentConfig: { thinkingConfig: { thinkingLevel: level } } } }] } : {}),
+    },
     ...(i.mcp ? { mcpServers: { easyswitch: { httpUrl: i.mcp.url, headers: i.mcp.headers, trust: true } } } : {}),
   }) };
 }
 
-/**
- * Copilot takes its thinking level as a setting (`effortLevel`), not a flag: it goes into a settings file of a private
- * home that is used only when a level is asked for (BYOK needs no login there). Without a level the person's own home stays in use.
- */
+function qwenSpec(i: LaunchInput, args: string[]): LaunchSpec {
+  const home = join(i.sessionDir, "qwen-home");
+  const settingsPath = join(i.sessionDir, "qwen-system-settings.json");
+  const settings = JSON.stringify({
+    security: { auth: { selectedType: "openai" } },
+    model: { name: i.model },
+    modelProviders: { openai: allModels(i).map(model => ({ id: model, name: model, envKey: "EASYSWITCH_GATEWAY_TOKEN", baseUrl: `${gateway(i)}/v1`,
+      ...(model === i.model && i.effort ? { generationConfig: { reasoning: { effort: i.effort } } } : {}),
+    })) },
+    ...(i.mcp ? { mcpServers: { easyswitch: { httpUrl: i.mcp.url, headers: i.mcp.headers, trust: true } } } : {}),
+  });
+  return { command: i.bin, args, env: { ...openaiEnv(i), EASYSWITCH_GATEWAY_TOKEN: i.token, QWEN_HOME: home, QWEN_RUNTIME_DIR: home, QWEN_CODE_SYSTEM_SETTINGS_PATH: settingsPath },
+    files: { [settingsPath]: settings, [join(home, "settings.json")]: settings } };
+}
+
+/** Keep /model --global writes and inherited BYOK registries out of the person's original configuration. */
 function copilotSpec(i: LaunchInput, args: string[]): LaunchSpec {
   const env = copilotEnv(i);
-  if (!i.effort) return { command: i.bin, args, env };
   const home = join(i.sessionDir, "copilot-home");
-  return { command: i.bin, args, env: { ...env, COPILOT_HOME: home }, files: { [join(home, "settings.json")]: JSON.stringify({ effortLevel: i.effort }) } };
+  return { command: i.bin, args, env: { ...env, COPILOT_HOME: home, COPILOT_CACHE_HOME: join(home, "cache") },
+    // These official overrides can supersede our token, endpoint, or model selection.
+    unset: ["COPILOT_PROVIDERS_CONFIG", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_PROVIDER_HEADERS", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL"],
+    files: {
+      [join(home, "settings.json")]: JSON.stringify(i.effort ? { effortLevel: i.effort } : {}),
+      ...(i.mcp ? { [join(home, "easyswitch-mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers, tools: ["*"] } } }) } : {}),
+    } };
 }
 
 function copilotMcp(i: LaunchInput): string[] {
-  return i.mcp ? ["--additional-mcp-config", JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers, tools: ["*"] } } })] : [];
+  return i.mcp ? ["--additional-mcp-config", `@${join(i.sessionDir, "copilot-home", "easyswitch-mcp.json")}`] : [];
 }
 
 /**

@@ -54,7 +54,7 @@ test("launch specs pass the gateway address, token and model per process, and cl
   const input = { bin: "/bin/qwen", port: 18765, model: "ds/deepseek-chat", token: "es-session-qwencode-x", sessionDir: "/tmp/s" };
   const spec = LAUNCHERS["qwen-code"]!.interactive!(input);
   // The system-settings file (MCP + auth type) lives in the session directory, not in the user's own settings.
-  assert.deepEqual(spec.env, { OPENAI_BASE_URL: "http://127.0.0.1:18765/v1", OPENAI_API_KEY: "es-session-qwencode-x", OPENAI_MODEL: "ds/deepseek-chat", GEMINI_CLI_SYSTEM_SETTINGS_PATH: "/tmp/s/gemini-system-settings.json", QWEN_CODE_SYSTEM_SETTINGS_PATH: "/tmp/s/gemini-system-settings.json" });
+  assert.deepEqual(spec.env, { OPENAI_BASE_URL: "http://127.0.0.1:18765/v1", OPENAI_API_KEY: "es-session-qwencode-x", OPENAI_MODEL: "ds/deepseek-chat", EASYSWITCH_GATEWAY_TOKEN: "es-session-qwencode-x", QWEN_HOME: "/tmp/s/qwen-home", QWEN_RUNTIME_DIR: "/tmp/s/qwen-home", QWEN_CODE_SYSTEM_SETTINGS_PATH: "/tmp/s/qwen-system-settings.json" });
   assert.match(commandLine(spec), /^env OPENAI_BASE_URL='http:\/\/127\.0\.0\.1:18765\/v1' .* '\/bin\/qwen' '--auth-type' 'openai'$/);
   const oc = JSON.parse(LAUNCHERS.opencode!.headless!({ ...input, task: "x" }).env.OPENCODE_CONFIG_CONTENT!) as { provider: { easyswitch: { options: { baseURL: string } } } };
   assert.equal(oc.provider.easyswitch.options.baseURL, "http://127.0.0.1:18765/v1");

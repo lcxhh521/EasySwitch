@@ -207,7 +207,7 @@ test("the backlog hooks never hold back a session that EasySwitch started itself
 test("every launcher that has a model list in its own configuration gets all the models, with the chosen one as the default", () => {
   const models = ["prov/alpha-1", "prov/beta-2", "other/gamma-3"];
   const listers = Object.entries({ ...LAUNCHERS }).filter(([, l]) => launcherListsModels(l)).map(([id]) => id).sort();
-  assert.deepEqual(listers, ["crush", "cline", "droid", "dsh", "goose", "grok-build", "hermes", "kimi-cli", "minimax-code", "omp", "openclaw", "opencode", "pi", "qoder-cli", "atomcode"].sort(), "update this when another launcher learns to list models");
+  assert.deepEqual(listers, ["crush", "cline", "droid", "dsh", "gemini-cli", "goose", "grok-build", "hermes", "kimi-cli", "minimax-code", "omp", "openclaw", "opencode", "pi", "qoder-cli", "qwen-code", "atomcode"].sort(), "update this when another launcher learns to list models");
   for (const id of listers) {
     const l = LAUNCHERS[id]!;
     const dir = mkdtempSync(join(tmpdir(), "es-launch-test-"));
@@ -224,13 +224,21 @@ test("every launcher that has a model list in its own configuration gets all the
   assert.equal(matrix.aider!.picker.state, "todo");
   assert.match(matrix.aider!.picker.note!, /\/model/);
   assert.equal(matrix["trae-agent"]!.picker.state, "impossible");
+  for (const id of ["gemini-cli", "qwen-code"]) {
+    assert.equal(matrix[id]!.picker.state, "documented");
+    assert.equal(launcherListsModels(LAUNCHERS[id]), true);
+    assert.match(matrix[id]!.picker.note!, /未实测/);
+  }
+  assert.equal(matrix["copilot-cli"]!.picker.state, "todo");
+  assert.equal(launcherListsModels(LAUNCHERS["copilot-cli"]), false);
+  assert.match(matrix["copilot-cli"]!.picker.note!, /providers\.json.*尚未核实/);
 });
 
-test("Copilot's level is a settings file in a private home used only when a level is asked for, Gemini's a thinking setting in the launch's own settings file, and Trae Agent reaches the MCP server through the stdio bridge", async () => {
+test("Copilot always keeps its model settings in a private home, Gemini preserves its thinking setting, and Trae Agent reaches the MCP server through the stdio bridge", async () => {
   const base = { bin: "/bin/x", port: 18765, model: "prov/m", token: "es-session-x-1", sessionDir: "/tmp/es-s", task: "t" };
   const none = LAUNCHERS["copilot-cli"]!.headless!(base);
-  assert.equal(none.env.COPILOT_HOME, undefined, "no level asked: the person's own home is left in use");
-  assert.equal(none.files, undefined);
+  assert.equal(none.env.COPILOT_HOME, "/tmp/es-s/copilot-home", "even without effort, /model must not write the original home");
+  assert.deepEqual(JSON.parse(none.files!["/tmp/es-s/copilot-home/settings.json"]!), {});
   const high = LAUNCHERS["copilot-cli"]!.headless!({ ...base, effort: "high" });
   assert.equal(high.env.COPILOT_HOME, "/tmp/es-s/copilot-home");
   assert.deepEqual(JSON.parse(Object.values(high.files!)[0]!), { effortLevel: "high" });
@@ -238,7 +246,7 @@ test("Copilot's level is a settings file in a private home used only when a leve
   const settings = JSON.parse(Object.values(gem.files!)[0]!) as Record<string, any>;
   assert.equal(settings.modelConfigs.overrides[0].modelConfig.generateContentConfig.thinkingConfig.thinkingLevel, "LOW");
   assert.equal(settings.security.auth.selectedType, "gemini-api-key");
-  assert.equal(JSON.parse(Object.values(LAUNCHERS["gemini-cli"]!.headless!(base).files!)[0]!).modelConfigs, undefined, "no level, no override");
+  assert.equal(JSON.parse(Object.values(LAUNCHERS["gemini-cli"]!.headless!(base).files!)[0]!).modelConfigs.overrides, undefined, "no level, no thinking override");
   const trae = LAUNCHERS["trae-agent"]!.headless!({ ...base, mcp: { url: "http://127.0.0.1:18765/mcp", headers: { Authorization: "Bearer es-session-x-1" } } });
   const config = JSON.parse(Object.values(trae.files!)[0]!);
   assert.equal(config.mcp_servers.easyswitch.command, process.execPath);

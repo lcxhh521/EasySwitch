@@ -215,11 +215,11 @@ test("Codex and Hermes send the issued gateway token, without persistent token t
 
 test("the remote Gemini and Copilot effort settings remain private and retain runtime-unverified caveats", () => {
   const gemini = LAUNCHERS["gemini-cli"]!.headless!(input({ effort: "medium", mcp }));
-  const settings = JSON.parse(gemini.files!["gemini-system-settings.json"]!);
+  const settings = JSON.parse(gemini.files![join(input().sessionDir, "gemini-home", ".gemini", "settings.json")]!);
   assert.deepEqual(settings.modelConfigs.overrides, [{ match: { model: "p/main" }, modelConfig: { generateContentConfig: { thinkingConfig: { thinkingLevel: "MEDIUM" } } } }]);
   assert.equal(settings.mcpServers.easyswitch.httpUrl, mcp.url);
   const plainGemini = LAUNCHERS["gemini-cli"]!.headless!(input());
-  assert.equal(JSON.parse(plainGemini.files!["gemini-system-settings.json"]!).modelConfigs, undefined);
+  assert.equal(JSON.parse(plainGemini.files![join(input().sessionDir, "gemini-home", ".gemini", "settings.json")]!).modelConfigs.overrides, undefined);
   const copilot = LAUNCHERS["copilot-cli"]!.headless!(input({ effort: "xhigh" }));
   assert.equal(copilot.env.COPILOT_HOME, join(input().sessionDir, "copilot-home"));
   assert.deepEqual(JSON.parse(copilot.files![join(input().sessionDir, "copilot-home", "settings.json")]!), { effortLevel: "xhigh" });
@@ -228,6 +228,88 @@ test("the remote Gemini and Copilot effort settings remain private and retain ru
     assert.equal(LAUNCHERS[id]!.verified, false);
     assert.match(LAUNCHERS[id]!.caveat!, /凭记忆|没有实测/);
   }
+});
+
+test("Gemini registers every gateway model in its private dynamic menu without inventing capabilities", () => {
+  const models = ["p/main", "p/second", "pool/shared", "quoted/model-\"name"];
+  for (const form of ["interactive", "headless"] as const) {
+    const spec = LAUNCHERS["gemini-cli"]![form]!(input({ models: [...models, "p/main"], mcp, effort: "low" }));
+    assert.equal(spec.env.GEMINI_CLI_HOME, join(input().sessionDir, "gemini-home"));
+    assert.equal(spec.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, undefined, "user-owned system overlays are ignored by current Gemini trust checks");
+    const path = join(spec.env.GEMINI_CLI_HOME!, ".gemini", "settings.json");
+    const settings = JSON.parse(spec.files![path]!);
+    assert.equal(settings.experimental.dynamicModelConfiguration, true);
+    assert.equal(settings.security.auth.selectedType, "gemini-api-key");
+    assert.equal(settings.model.name, "p/main");
+    assert.deepEqual(Object.keys(settings.modelConfigs.modelDefinitions), models);
+    for (const model of models) assert.deepEqual(settings.modelConfigs.modelDefinitions[model], { displayName: model, tier: "custom", family: "custom", isVisible: true, isPreview: false });
+    assert.deepEqual(settings.mcpServers.easyswitch.headers, mcp.headers);
+    assert.equal(settings.modelConfigs.overrides[0].match.model, "p/main");
+    assert.ok(!JSON.stringify(spec.args).includes(input().token));
+    assert.equal(LAUNCHERS["gemini-cli"]!.verified, false);
+  }
+});
+
+test("Qwen uses its own modelProviders schema and private writable settings, with token references", () => {
+  const models = ["p/main", "p/other", "pool/shared"];
+  for (const form of ["interactive", "headless"] as const) {
+    const spec = LAUNCHERS["qwen-code"]![form]!(input({ models, effort: "high" }));
+    assert.equal(spec.env.QWEN_HOME, join(input().sessionDir, "qwen-home"));
+    assert.equal(spec.env.QWEN_RUNTIME_DIR, spec.env.QWEN_HOME);
+    assert.equal(spec.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, undefined);
+    assert.equal(spec.env.EASYSWITCH_GATEWAY_TOKEN, input().token);
+    const system = JSON.parse(spec.files![spec.env.QWEN_CODE_SYSTEM_SETTINGS_PATH!]!);
+    const user = JSON.parse(spec.files![join(spec.env.QWEN_HOME!, "settings.json")]!);
+    assert.deepEqual(system, user);
+    assert.equal(system.security.auth.selectedType, "openai");
+    assert.equal(system.model.name, "p/main");
+    assert.deepEqual(system.modelProviders.openai.map((m: {id:string}) => m.id), models);
+    for (const model of system.modelProviders.openai) {
+      assert.equal(model.envKey, "EASYSWITCH_GATEWAY_TOKEN");
+      assert.equal(model.baseUrl, "http://127.0.0.1:18765/v1");
+      if (model.id !== "p/main") assert.equal(model.generationConfig, undefined);
+    }
+    assert.deepEqual(system.modelProviders.openai[0].generationConfig, { reasoning: { effort: "high" } });
+    assert.ok(!JSON.stringify(spec.files).includes(input().token), "provider entries reference an environment variable instead of storing a key");
+    assert.equal(system.modelConfigs, undefined, "Qwen must not inherit Gemini thinking or menu settings");
+    assert.deepEqual(spec.args.slice(0, 2), ["--auth-type", "openai"]);
+  }
+});
+
+test("Copilot retains documented single-model BYOK without guessing registry fields or using the original home", () => {
+  for (const form of ["interactive", "headless"] as const) {
+    const spec = LAUNCHERS["copilot-cli"]![form]!(input({ models: ["p/main", "p/other"], mcp }));
+    assert.equal(spec.env.COPILOT_HOME, join(input().sessionDir, "copilot-home"));
+    assert.equal(spec.env.COPILOT_MODEL, "p/main");
+    assert.equal(spec.env.COPILOT_PROVIDER_BASE_URL, "http://127.0.0.1:18765/v1");
+    assert.deepEqual(JSON.parse(spec.files![join(spec.env.COPILOT_HOME!, "settings.json")]!), {});
+    assert.ok(!Object.keys(spec.files!).some(path => path.endsWith("providers.json")), "registry inner schema is still unverified");
+    for (const inherited of ["COPILOT_PROVIDERS_CONFIG", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_PROVIDER_HEADERS", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL"]) assert.ok(spec.unset!.includes(inherited));
+    const flag = spec.args.indexOf("--additional-mcp-config");
+    const path = spec.args[flag + 1]!;
+    assert.ok(path.startsWith("@"));
+    assert.deepEqual(JSON.parse(spec.files![path.slice(1)]!).mcpServers.easyswitch.headers, mcp.headers);
+    assert.ok(!JSON.stringify(spec.args).includes("test-mcp-token"));
+  }
+});
+
+test("menu config materialization writes only the owned session and leaves native fixture settings untouched", () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "es-menu-config-"));
+  try {
+    const original = join(root, "native-settings.json");
+    writeFileSync(original, "untouched fixture", { mode: 0o600 });
+    for (const id of ["gemini-cli", "qwen-code", "copilot-cli"]) {
+      const sessionDir = join(root, id);
+      const spec = LAUNCHERS[id]!.interactive!(input({ sessionDir, models: ["p/main", "p/other"] }));
+      assert.ok(Object.keys(spec.files!).every(path => path.startsWith(sessionDir + "/")));
+      materialize(spec, sessionDir);
+      for (const [path, contents] of Object.entries(spec.files!)) {
+        assert.equal(readFileSync(path, "utf8"), contents);
+        if (process.platform !== "win32") assert.equal(lstatSync(path).mode & 0o777, 0o600);
+      }
+    }
+    assert.equal(readFileSync(original, "utf8"), "untouched fixture");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("runHeadless revokes authentication and removes the directory when spec generation fails", async () => {

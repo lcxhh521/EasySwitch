@@ -95,7 +95,11 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     source: { state: "documented", note: "实验性CLI纯文字来源已接入：显式PAT、私有HOME/cwd、默认关闭；不支持工具/图片，角色只作文字transcript，结果缓冲；仅假程序验证，真实CLI未验收" },
   },
   "gemini-cli": {
+    picker: { state: "documented", note: "官方动态 modelDefinitions 目录已写入私有 GEMINI_CLI_HOME；需支持 dynamicModelConfiguration 的版本，/model → Manual 可列外接模型。内置条目仍可能显示，项目设置可覆盖；真实菜单未实测" },
     source: { state: "impossible", note: "个人账号的 Google 登录已不再提供给 Gemini CLI 的 Code Assist（只有标准版/企业版账号，且要自备 Cloud 项目）；想用自己的 Gemini 额度，走 API Key（已有 Google 预设）。企业账号走 Code Assist 的路是可做的，但我们没有这类账号可测" },
+  },
+  "qwen-code": {
+    picker: { state: "documented", note: "官方 modelProviders 已写入私有 QWEN_HOME 及本次系统覆盖；用 /model --global 选择并保存到私有目录，EasySwitch 只指定默认模型。旧版本和真实菜单未实测，项目级保存不隔离" },
   },
   "kimi-cli": {
     source: { state: "documented", note: "两种办法：Kimi 编程套餐的 Key（预设）；或用 Kimi 会员设备码登录（令牌存钥匙串、额度能显示）。官方允许会员在第三方工具里用；都只用假服务验证过，没有用真账号测" },
@@ -109,6 +113,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     source: { state: "impossible", note: "按你的决定：Claude 订阅不借给别的 harness（风险太大）；Claude Code 里原生模型和外接模型并排显示" },
   },
   "copilot-cli": {
+    picker: { state: "todo", note: "官方存在 providers.json 注册表和 /model 菜单；已确认文件覆盖路径与优先级，内部模型/鉴权条目格式尚未核实，因此暂不生成多模型注册表。现用私有目录及单模型 BYOK 环境变量，不能说菜单已齐全" },
     source: { state: "documented", note: "用 GitHub 设备码登录，换短期令牌（用本地假服务验证过，没用真账号测）" },
   },
   cursor: {
