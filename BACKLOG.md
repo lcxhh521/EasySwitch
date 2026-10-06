@@ -9,6 +9,19 @@
 5. 检查：`npm run backlog`（看未完成）、`npm run backlog -- --check`（查格式和证据）。Claude Code 里有两个钩子自动提醒/拦截（见 `.claude/settings.json`）。
 6. 编号只增不改。这份文件是私有的，发布公开版时被排除。
 
+## 谁在改什么（防撞车，Claude 和 Dot 都在 `dev` 上开发）
+
+规矩：
+1. **开工前先 `git fetch && git log HEAD..origin/dev`**，看对方推了什么；改到同一个文件，先 `git pull --rebase` 再动手。
+2. **小步提交，做完一件就推**（推之前 `git pull --rebase`）。不要攒一大堆改动，也不要对共享文件做重排、改名、格式化。
+3. **碰共享文件之前，先在下面「正在改」登记**（`server.ts`、`types.ts`、`gateway*.ts`、`upstream*.ts`、`model-efforts.ts`、`web/app.js`、`agent-launch.ts`），推完就删掉登记。
+4. 撞了，后推的人负责合并；合并不了就在这里写一行问用户，不要覆盖对方的改动。
+5. 新功能尽量放新文件，共享文件里只留最少的接线。
+
+正在改（谁 · 哪些文件 · 做什么 · 登记时间）：
+- Claude · `core/src/gateway-auth.ts`（新）、`gateway-chat.ts`（只改 sessionToken）、`server.ts`（只加鉴权那一处）、`launch.ts`（codexArgs 加令牌）、`agent-launch.ts`（Hermes 令牌）、`setup-guides.ts`、`main.ts` · B30 网关鉴权 · 10-06
+- Dot · （还没登记；B21 会碰 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`，B45 是新文件为主）
+
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
 
 - [~] B2 · 所有 CLI 的启动方式和后台任务：代码都写好了（launchers-extra.ts 等），**剩下的是在真实程序上实测**（B57 给你命令；B5 是已有的那几个）— 来源：「前面让你实现的功能你也只是在一两个agent上实现了」（10-06）· 备注：事实表在 research/；每个启动器的 caveat 写明哪部分是猜的
