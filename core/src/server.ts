@@ -300,7 +300,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
-  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; cleanup: () => Promise<void> } | { error: string; status: number }> {
+  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; cleanup: () => Promise<void> } | { error: string; status: number }> {
     const launcher = LAUNCHERS[id];
     const known = AGENTS.find(a => a.id === id);
     const bin = await agentBinary(id);
@@ -321,11 +321,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const sessionDir = deps.interactiveRuntime?.newSessionDir() ?? newSessionDir();
     let token: string | undefined;
     try {
-    token = auth.issue(id, { depth: 0, allowMcp: store.settings().agentCalls, allowNativeClaude: keepLogin }).token;
+    const issued = auth.issue(id, { depth: 0, allowMcp: store.settings().agentCalls, allowNativeClaude: keepLogin });
+    token = issued.token;
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
     const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
     materialize(spec, sessionDir);
-    return { spec, sessionDir, model, name: known.name, cleanup: async () => { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
+    return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
     } catch (error) { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
   }
 
@@ -581,6 +582,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     const body = method === "GET" ? {} : ((JSON.parse((await readBody(req)) || "{}")) as Json);
 
+    if (path === "/api/models" && method === "GET") {
+      if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "missing x-easyswitch header" }); return; }
+      json(res, 200, listExposedModels(store, false)); return;
+    }
     if (path === "/api/gateway/sessions") {
       if (method === "GET") { json(res, 200, { sessions: auth.list() }); return; }
       if (method === "POST") {
@@ -1184,7 +1189,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if ("error" in made) { json(res, made.status, { error: made.error }); return; }
       if (agentAction[2] === "command") {
         // For the `es` command: the caller runs this in its own terminal and removes sessionDir afterwards.
-        json(res, 200, { command: made.spec.command, args: made.spec.args, env: made.spec.env, unset: made.spec.unset ?? [], sessionDir: made.sessionDir, model: made.model, name: made.name });
+        json(res, 200, { command: made.spec.command, args: made.spec.args, env: made.spec.env, unset: made.spec.unset ?? [], sessionDir: made.sessionDir, model: made.model, name: made.name, session: made.session });
         return;
       }
       const launcher = LAUNCHERS[id]!;

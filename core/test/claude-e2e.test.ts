@@ -4,8 +4,9 @@
  * Bash tool round trip. Runs in a throwaway HOME and CLAUDE_CONFIG_DIR.
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,8 @@ import { SHELL_MARKER, startMockRelay } from "./mock-relay.ts";
 
 type Json = Record<string, unknown>;
 const run = promisify(execFile);
+function realSettingsHash(): string { try { return createHash("sha256").update(readFileSync(join(homedir(), ".claude", "settings.json"))).digest("hex"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent"; throw new Error("Cannot verify the native Claude settings baseline"); } }
+const settingsBefore = realSettingsHash();
 process.env.EASYSWITCH_SECRETS = "memory";
 
 function freePort(): Promise<number> {
@@ -50,7 +53,8 @@ before(async () => {
   relay = await startMockRelay(0);
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-home-"))), secrets: createSecretStore(), port });
+  const store = new Store(mkdtempSync(join(tmpdir(), "es-home-"))); store.setSettings({ claudeNative: false });
+  server = createEasySwitchServer({ store, secrets: createSecretStore(), port });
   await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
   await api("POST", "/api/providers", { name: "Mock Relay", baseUrl: relay.baseUrl });
 });
@@ -69,11 +73,14 @@ test("a chat-only relay is routed through Messages translation", async () => {
 
 test("the launch command passes everything per process: env plus a --settings layer", async () => {
   await api("PUT", "/api/bindings/claude", { providerId: "mock-relay", model: "mock-coder" });
-  const { command, model } = await api("POST", "/api/launch/claude", {});
-  assert.equal(model, "mock-relay/mock-coder");
-  assert.match(String(command), /--settings/);
-  assert.match(String(command), /ANTHROPIC_BASE_URL=/);
-  assert.match(String(command), /EASYSWITCH_SESSION/);
+  const spec = await api("POST", "/api/agents/claude/command", {});
+  assert.equal(spec.model, "mock-relay/mock-coder");
+  assert.ok((spec.args as string[]).includes("--settings"));
+  assert.equal((spec.env as Json).ANTHROPIC_BASE_URL, base);
+  assert.equal((spec.env as Json).EASYSWITCH_SESSION, "1");
+  assert.ok((spec.session as Json)?.id);
+  await api("DELETE", `/api/gateway/sessions/${(spec.session as Json).id}`);
+  rmSync(String(spec.sessionDir), { recursive: true, force: true });
 });
 
 test("count_tokens answers locally", async () => {
@@ -138,8 +145,6 @@ test("picker ids survive any model name and route back to their provider", async
   assert.equal((relay.requests[before] as Json).model, "mock-mini");
 });
 
-test("EasySwitch leaves no trace in the user's real Claude Code settings", () => {
-  let text = "";
-  try { text = readFileSync(join(homedir(), ".claude", "settings.json"), "utf8"); } catch { /* none is clean too */ }
-  assert.equal(/easyswitch/i.test(text), false);
+test("the real Claude settings must remain byte-identical during native acceptance", () => {
+  assert.equal(realSettingsHash(), settingsBefore, "Native settings changed during acceptance; investigate instead of attributing by marker absence");
 });

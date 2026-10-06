@@ -7,7 +7,6 @@
  * Codex runs with a throwaway CODEX_HOME, and the user's real
  * ~/.codex/config.toml is fingerprinted before and after.
  */
-import { withoutProjectPaths } from "../src/native.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -41,8 +40,9 @@ function freePort(): Promise<number> {
 function realCodexConfigHash(): string {
   try {
     return createHash("sha256").update(readFileSync(join(homedir(), ".codex", "config.toml"))).digest("hex");
-  } catch {
-    return "absent";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    throw new Error("Cannot verify the native Codex configuration baseline");
   }
 }
 
@@ -100,10 +100,13 @@ test("the management API refuses requests without the local header", async () =>
 
 test("a binding yields a Codex command that touches nothing but this one process", async () => {
   await api("PUT", "/api/bindings/codex", { providerId: "mock-relay", model: "mock-coder" });
-  const { json } = await api("POST", "/api/launch/codex", {});
+  const { json } = await api("POST", "/api/agents/codex/command", {});
   assert.equal(json.model, "mock-relay/mock-coder");
-  assert.match(String(json.command), new RegExp(SESSION_MARKER.replace(".", "\\.")));
-  if (await findCodex()) assert.ok(String(json.command).includes(join(store.dir, "codex-catalog.json")), "the catalog lives in EasySwitch's own data dir");
+  assert.match(JSON.stringify(json.args), new RegExp(SESSION_MARKER.replace(".", "\\.")));
+  if (await findCodex()) assert.ok(JSON.stringify(json.args).includes(join(store.dir, "codex-catalog.json")), "the catalog lives in EasySwitch's own data dir");
+  assert.ok((json.session as Json)?.id);
+  await api("DELETE", `/api/gateway/sessions/${(json.session as Json).id}`);
+  rmSync(String(json.sessionDir), { recursive: true, force: true });
 });
 
 test("Codex's own model list in an augmented session is every EasySwitch model", async t => {
@@ -162,15 +165,6 @@ test("the real Codex binary completes a tool round trip through the gateway", as
   assert.ok(String(toolMessage?.content).includes(SHELL_MARKER), "the command output came back as a tool message");
 });
 
-test("EasySwitch leaves no trace in the user's real Codex config", t => {
-  // Other writers (the ChatGPT app shares ~/.codex) may change the file while
-  // tests run, so the claim checked here is ours alone: nothing of EasySwitch
-  // ever lands in it. A changed hash is reported, not failed on.
-  const real = join(homedir(), ".codex", "config.toml");
-  let text = "";
-  try { text = readFileSync(real, "utf8"); } catch { /* no config at all is clean too */ }
-  // A `[projects."<path>"]` header is Codex remembering a folder the user trusts (their own checkout of
-  // this project has our name in its path); it is not something EasySwitch wrote.
-  assert.equal(/easyswitch|es-codex-home|es-work-/i.test(withoutProjectPaths(text)), false);
-  if (realCodexConfigHash() !== hashBefore) t.diagnostic("~/.codex/config.toml changed during the run (not by EasySwitch: no trace above)");
+test("the real Codex config must remain byte-identical during native acceptance", () => {
+  assert.equal(realCodexConfigHash(), hashBefore, "Native configuration changed during acceptance; attribution requires investigation, not a marker-based exemption");
 });
