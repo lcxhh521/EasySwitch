@@ -111,11 +111,20 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
     effort: { state: "impossible", note: "它自己挑模型，不开放档位" },
     tiers: { state: "impossible", note: "它自己挑模型，不开放" },
   },
+  // CodeBuddy Code (the command line) and WorkBuddy (the desktop app) are two products: they are never described as one.
   codebuddy: {
-    task: { state: "impossible", note: "命令行版没有改地址的办法（只能切换区域和账号）；桌面版 WorkBuddy 可以读私有 models.json，但具体用哪个模型要在它的窗口里选，没法每次启动指定" },
-    mcp: { state: "impossible", note: "命令行版没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它，所以也没法给它挂 MCP" },
-    effort: { state: "impossible", note: "命令行版没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它，档位由它自己的服务决定" },
-    tiers: { state: "impossible", note: "命令行版没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它，用什么模型由它自己的服务决定" },
+    launch: { state: "impossible", note: "命令行版只有区域和账号两个开关，没有改它连的服务地址的办法，EasySwitch 没法把别的模型接进它" },
+    task: { state: "impossible", note: "同一个原因：改不了它连的服务地址，别的模型接不进去" },
+    mcp: { state: "impossible", note: "改不了它连的服务地址，别的模型接不进去，也就没法每次启动给它挂我们的 MCP" },
+    effort: { state: "impossible", note: "改不了它连的服务地址，用什么模型、什么档位由腾讯自己的服务决定" },
+    tiers: { state: "impossible", note: "改不了它连的服务地址，用什么模型由腾讯自己的服务决定" },
+  },
+  workbuddy: {
+    launch: { state: "todo", note: "做得了：另开一个 WorkBuddy，把 WORKBUDDY_CONFIG_DIR 指向一个私有目录，里面写好 models.json（地址、令牌、模型），不碰你平时那份 ~/.workbuddy；还没做，也没实测。具体用哪个模型要在它的窗口里选，没法每次启动替你选好；使用条款待核实" },
+    task: { state: "impossible", note: "桌面应用，没有无界面的调用方式" },
+    mcp: { state: "todo", note: "还没查它的 MCP 配置怎么给" },
+    effort: { state: "todo", note: "models.json 里有档位字段（reasoning.supportedEfforts），还没做" },
+    tiers: { state: "todo", note: "还没查它有没有子 agent / 小任务的模型设置" },
   },
   "minimax-code": {
     mcp: { state: "impossible", note: "它没有用户级的 MCP 配置文件，只有插件自带的；每次启动挂不上" },
@@ -143,7 +152,7 @@ const DECLARED: Record<string, Partial<Record<FeatureId, Cap>>> = {
 };
 
 /** Closed apps that need EasySwitch to hand the user the settings to type in by hand: see the setup helper. */
-const BY_HAND = new Set(["trae", "zcode", "windsurf", "codebuddy", "doubao"]);
+const BY_HAND = new Set(["trae", "zcode", "windsurf", "doubao"]);
 
 /** The agents whose own subscription is worth turning into a model source (everyone else: not applicable). */
 const HAS_SUBSCRIPTION = new Set(["gemini-cli", "qoder-cli", "codebuddy", "trae", "amp", "doubao", "grok-build", "minimax-code", "kimi-cli", "droid"]);

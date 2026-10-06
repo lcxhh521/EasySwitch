@@ -47,6 +47,7 @@
 - [x] B56 · Antigravity 的 OAuth 客户端 ID 和密钥：照 opencodex 的做法先写死在代码里，为了先跑通 — 来源：「我觉得可以先参照opencodex的做法先写死在里面，因为我们是为了跑通，后续再迭代」（10-06），这是对「密钥不得写进仓库」的一次明确例外 · 验证：只在 core/src/antigravity-client.ts 一个文件，文件头声明出处和「公开前必须移除」，AGENTS.md 私有段和 PROVENANCE.md 都有记录；antigravity.test.ts 8 个用例（假 Google：PKCE、刷新、项目发现、信封、流式、失败）
 - [ ] B58 · 把 Antigravity 的客户端密钥从写死改成运行时读取，并从仓库里移除（公开前必做，B33 的一部分）— 来源：B56 的「后续再迭代」（10-06）
 - [ ] B57 · 给用户一条命令，在本机一次性验证新写的 13 个启动器里已装的那几个（只读：看参数是否被程序接受，不跑任务）— 来源：「其余你说的几个事情是都要做的」（10-06），对应 B2 的真机实测 · 备注：不读任何用户凭据
+- [x] B59 · WorkBuddy 和 CodeBuddy 分开成两个 agent，不混成一个 — 来源：「workbuddy和codebuddy要分开，不能混成一个」（10-06）· 验证：目录里是两行（CodeBuddy Code 命令行、WorkBuddy 桌面应用），各有名字、图标、检测方式和逐项能力状态；/api/agents 实测：WorkBuddy 已检测到（本机装了），CodeBuddy 命令行未装；capabilities.test.ts 通过
 
 ## 产品方向（2026-10-06 讨论，用户拍板）
 
