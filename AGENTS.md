@@ -42,6 +42,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 | `responses-upstream.ts` | Chat → Responses 请求与返回流的翻译（订阅通道用） |
 | `mimo-free.ts` | 小米 MiMo Free 免 key 适配（bootstrap JWT + 系统标记） |
 | `kiro.ts` + `kiro-login.ts` / `kiro-schema.ts` / `aws-eventstream.ts` | Kiro 订阅：每次请求只读 Kiro CLI 的本机登录库，Chat → Kiro 对话状态，AWS 事件流 → Chat 分片；新来源默认关 |
+| `antigravity.ts` + `antigravity-client.ts` + `gemini-upstream.ts` | Antigravity 订阅：浏览器里 Google 登录（刷新令牌存钥匙串）、Cloud Code Assist 信封、Chat ↔ Gemini 互转；客户端密钥暂时写在 `antigravity-client.ts`（见私有段） |
 | `quota.ts` | 订阅额度：读响应头和「用完了」的 429，池子据此跳过用完的订阅，控制台显示还剩多少 |
 | `agent-launch.ts` | 各 agent 的启动方式（interactive/headless）、`runHeadless`、任务执行 |
 | `launch.ts` | Codex/Claude Code 的参数与环境（含 MCP 附着、`claudeEnv` keepLogin） |
@@ -108,7 +109,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 ### 其他厂商订阅的适配（B20：Dot 说不做，用户 2026-10-06 定为 Claude 自己做；起点是云端 `gpt-wip` 分支里 GPT 的快照）
 
 - Cursor 是 connect+protobuf over HTTP/2（`agent.v1.AgentService/Run`，PKCE poll 登录）；Kiro 是 AWS CodeWhisperer eventstream（kiro-cli sqlite 导入）；Antigravity 是 Cloud Code Assist envelope（Google OAuth）。协议事实已从 opencodex 调研完毕，可以直接移植它的代码再按 EasySwitch 的接口适配（保留许可证、文件头声明、台账记一行）。
-- Antigravity 的 OAuth client secret **不得**写进仓库（会触发密钥扫描），运行时从用户本机读。
+- **唯一例外（用户 2026-10-06 明确决定，BACKLOG B56）**：Antigravity 桌面端的公开 OAuth 客户端 ID 和密钥，照 opencodex 的做法暂时写在 `core/src/antigravity-client.ts` 一个文件里，为了先跑通；后续改成运行时读取。公开前必须移除，发布检查的密钥扫描会一直报它，**不要加进放行清单**。除此之外，任何密钥、令牌都不得写进仓库。
 
 ### 分工与分支
 

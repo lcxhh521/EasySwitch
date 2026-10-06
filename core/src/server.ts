@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, isAbsolute } from "node:path";
+import { antigravityAccessToken, AntigravityError, beginAntigravitySignIn, forgetAntigravityAccount, listAntigravityModels, type AntigravityAccount } from "./antigravity.ts";
+import { antigravityEndpoints } from "./antigravity-client.ts";
 import { listKiroModels } from "./kiro.ts";
 import { KiroError } from "./kiro-login.ts";
 import { fileURLToPath } from "node:url";
@@ -23,7 +25,7 @@ import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
-import { setPlanToken } from "./keypool.ts";
+import { setAntigravityToken, setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
 import { describeQuota, exhaustedUntil, quotaOf } from "./quota.ts";
@@ -256,7 +258,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const siwcStore = store.siwcStorage();
   /** What the plan behind this account has said about its quota (see quota.ts), for the subscription card. */
   const planQuota = (accountId: string): { quota?: { text: string; exhaustedUntil?: number } } => {
-    const providerIds = store.providers().filter(p => p.plan?.accountId === accountId).map(p => p.id);
+    const providerIds = store.providers().filter(p => p.plan?.accountId === accountId || p.antigravity?.accountId === accountId || p.id === accountId).map(p => p.id);
     for (const id of providerIds) {
       const text = describeQuota(quotaOf(id));
       if (text) return { quota: { text, ...(exhaustedUntil(id) ? { exhaustedUntil: exhaustedUntil(id)! } : {}) } };
@@ -305,6 +307,33 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     store.upsertProvider(provider);
     return provider;
   }
+
+  // ---- Google Antigravity: the token source the send path asks for, and the provider an account becomes
+  setAntigravityToken(async provider => {
+    try { return await antigravityAccessToken(secrets, provider.antigravity!.accountId); } catch (error) { throw new Error(String((error as Error).message)); }
+  });
+  const syncAntigravity = async (account: AntigravityAccount): Promise<Provider> => {
+    const token = await antigravityAccessToken(secrets, account.id);
+    const models = await listAntigravityModels(token, account.projectId);
+    let provider = store.providers().find(p => p.antigravity?.accountId === account.id);
+    if (!provider) {
+      const name = `Antigravity · ${account.email}`;
+      provider = {
+        id: slugify(name, [...store.providers().map(p => p.id), "pool"]), name, baseUrl: antigravityEndpoints().api,
+        models: [], route: "chat-translate", routePinned: true, streamUsage: false, billing: "subscription",
+        // Antigravity takes no Chat-style thinking level from us, so none is sent.
+        reasoningEffort: false, antigravity: { accountId: account.id, email: account.email, projectId: account.projectId },
+        icon: "antigravity-color", createdAt: new Date().toISOString(),
+        // A new subscription starts switched off: the user decides when it is used.
+        off: true,
+      };
+    }
+    provider.antigravity = { accountId: account.id, email: account.email, projectId: account.projectId };
+    provider.models = models;
+    provider.defaultModel = provider.defaultModel && models.includes(provider.defaultModel) ? provider.defaultModel : models[0]!;
+    store.upsertProvider(provider);
+    return provider;
+  };
 
   const mcpDeps: McpDeps = {
     store, secrets, log: pushLog,
@@ -501,6 +530,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           ...siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...planQuota(a.id) })),
           // Kiro has no account of ours (its login stays in the Kiro CLI), only a source; it shows in the same list so it gets the same switch.
           ...store.providers().filter(p => p.kiro).map(p => ({ id: p.id, kind: "kiro", label: p.name, planUsage: true, needsSignIn: false, on: !p.off, ...planQuota(p.id) })),
+          ...store.providers().filter(p => p.antigravity).map(p => ({ id: p.antigravity!.accountId, kind: "antigravity", label: p.name, email: p.antigravity!.email, planUsage: true, needsSignIn: false, on: !p.off, ...planQuota(p.id) })),
         ],
         signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.userCode ? { userCode: planSignIn.userCode } : {}), ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
       });
@@ -509,7 +539,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // The switch on a subscription: on or off, the user decides. Off keeps the login and the settings.
     const planSwitch = /^\/api\/plan\/([A-Za-z0-9_-]+)\/switch$/.exec(path);
     if (planSwitch && method === "PUT") {
-      const mine = store.providers().filter(p => p.plan?.accountId === planSwitch[1] || (p.kiro && p.id === planSwitch[1]));
+      const mine = store.providers().filter(p => p.plan?.accountId === planSwitch[1] || p.antigravity?.accountId === planSwitch[1] || (p.kiro && p.id === planSwitch[1]));
       if (!mine.length) { json(res, 404, { error: "没有这个订阅" }); return; }
       if (typeof body.on !== "boolean") { json(res, 400, { error: "需要 on: true 或 false" }); return; }
       for (const p of mine) { if (body.on) delete p.off; else p.off = true; store.upsertProvider(p); }
@@ -545,6 +575,40 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, e.status === 401 ? 409 : e.status || 502, { error: e.message });
       }
       return;
+    }
+    // --- Google Antigravity: a Google sign-in in the browser. The refresh token goes to the Keychain; the account becomes a source that starts off.
+    if (path === "/api/antigravity/signin" && method === "POST") {
+      planSignIn?.cancel();
+      try {
+        const si = await beginAntigravitySignIn({ secrets, ...(deps.openUrl ? { open: deps.openUrl } : {}) });
+        const current: NonNullable<typeof planSignIn> = { status: "waiting", url: si.url, cancel: si.cancel };
+        planSignIn = current;
+        si.done.then(async account => {
+          try { await syncAntigravity(account); current.status = "done"; }
+          catch (error) { current.status = "error"; current.message = `登录成功，但读取模型失败：${String((error as Error).message)}`; }
+        }).catch(error => { current.status = "error"; current.message = String((error as Error).message); });
+        json(res, 200, { url: si.url });
+      } catch (error) {
+        json(res, 409, { error: String((error as Error).message) });
+      }
+      return;
+    }
+    const agMatch = /^\/api\/antigravity\/([a-z0-9-]+)(?:\/(refresh))?$/.exec(path);
+    if (agMatch) {
+      const providers = store.providers().filter(p => p.antigravity?.accountId === agMatch[1]);
+      if (!providers.length) { json(res, 404, { error: "没有这个 Antigravity 账号" }); return; }
+      if (agMatch[2] === "refresh" && method === "POST") {
+        const known = providers[0]!.antigravity!;
+        try { json(res, 200, { models: (await syncAntigravity({ id: known.accountId, email: known.email, projectId: known.projectId })).models }); }
+        catch (error) { const e = error as AntigravityError; json(res, e.status === 401 ? 409 : e.status || 502, { error: e.message }); }
+        return;
+      }
+      if (!agMatch[2] && method === "DELETE") {
+        for (const p of providers) store.removeProvider(p.id);
+        await forgetAntigravityAccount(secrets, agMatch[1]!);
+        json(res, 200, { ok: true });
+        return;
+      }
     }
     const kiroRemove = /^\/api\/kiro\/([A-Za-z0-9_-]+)$/.exec(path);
     if (kiroRemove && method === "DELETE") {
