@@ -1,8 +1,4 @@
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
-
-const run = promisify(execFile);
-const SERVICE = "EasySwitch";
+import { NativeKeychainStore } from "./native-keychain.ts";
 
 /** Provider API keys live in the macOS Keychain, never in our JSON files. */
 export interface SecretStore {
@@ -23,45 +19,27 @@ export function decodeSecret(stored: string): string {
   return stored.startsWith(PREFIX) ? Buffer.from(stored.slice(PREFIX.length), "base64").toString("utf8") : stored;
 }
 
-/** One line for `security -i`: names are double-quoted (only `\` and `"` need escaping inside), the value is base64 and needs no quoting. */
+/** Pure compatibility formatter for older clients; production never runs the security CLI. */
 export function keychainSetCommand(service: string, account: string, value: string): string {
   const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   return `add-generic-password -U -s ${quote(service)} -a ${quote(account)} -w ${encodeSecret(value)}\n`;
 }
 
 /**
- * Keychain through the `security` tool. The value is sent on its standard input (`security -i`), never as a
- * command-line argument, so it is not in the process list while it is being written.
+ * Decode existing EasySwitch values at the storage boundary, leaving the native
+ * bridge byte-preserving. New values retain the b64: format so earlier versions
+ * can still read them; unprefixed legacy values need no migration.
+ * A failed lookup is never confused with a missing key.
  */
-class KeychainStore implements SecretStore {
+export class EncodedSecretStore implements SecretStore {
+  #raw: SecretStore;
+  constructor(raw: SecretStore) { this.#raw = raw; }
   async get(account: string): Promise<string | undefined> {
-    try {
-      const { stdout } = await run("security", ["find-generic-password", "-s", SERVICE, "-a", account, "-w"]);
-      return decodeSecret(stdout.replace(/\n$/, ""));
-    } catch {
-      return undefined;
-    }
+    const stored = await this.#raw.get(account);
+    return stored === undefined ? undefined : decodeSecret(stored);
   }
-
-  async set(account: string, value: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn("security", ["-i"], { stdio: ["pipe", "pipe", "pipe"] });
-      let output = "";
-      child.stdout.on("data", d => (output += d));
-      child.stderr.on("data", d => (output += d));
-      child.on("error", reject);
-      child.on("close", code => (code === 0 && !/^security:|error/i.test(output.trim()) ? resolve() : reject(new Error("没能写入钥匙串"))));
-      child.stdin.end(keychainSetCommand(SERVICE, account, value));
-    });
-  }
-
-  async delete(account: string): Promise<void> {
-    try {
-      await run("security", ["delete-generic-password", "-s", SERVICE, "-a", account]);
-    } catch {
-      // Already absent.
-    }
-  }
+  async set(account: string, value: string): Promise<void> { await this.#raw.set(account, encodeSecret(value)); }
+  async delete(account: string): Promise<void> { await this.#raw.delete(account); }
 }
 
 /** Tests and CI: nothing touches the user's Keychain. */
@@ -73,5 +51,5 @@ class MemoryStore implements SecretStore {
 }
 
 export function createSecretStore(): SecretStore {
-  return process.env.EASYSWITCH_SECRETS === "memory" ? new MemoryStore() : new KeychainStore();
+  return process.env.EASYSWITCH_SECRETS === "memory" ? new MemoryStore() : new EncodedSecretStore(new NativeKeychainStore());
 }

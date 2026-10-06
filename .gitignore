@@ -1,4 +1,5 @@
 node_modules/
 menubar/build/
+core/native/build/
 *.log
 .DS_Store
