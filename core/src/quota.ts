@@ -24,6 +24,8 @@ export interface QuotaState {
   windows: QuotaWindow[];
   /** The plan said it is used up; no request is sent to it before this moment. */
   exhaustedUntil?: number;
+  /** True only when a full reported window supplies the reset; otherwise this is a local retry time. */
+  exhaustionResetKnown?: boolean;
   updatedAt: number;
 }
 
@@ -63,10 +65,10 @@ export function parseQuotaHeaders(headers: Headers, now = Date.now()): QuotaWind
 export function recordWindows(providerId: string, windows: QuotaWindow[], now = Date.now()): void {
   if (!windows.length) return;
   const before = states.get(providerId);
-  const state: QuotaState = { windows, updatedAt: now, ...(before?.exhaustedUntil && before.exhaustedUntil > now ? { exhaustedUntil: before.exhaustedUntil } : {}) };
+  const state: QuotaState = { windows, updatedAt: now, ...(before?.exhaustedUntil && before.exhaustedUntil > now ? { exhaustedUntil: before.exhaustedUntil, exhaustionResetKnown: before.exhaustionResetKnown } : {}) };
   const full = windows.filter(w => w.usedPercent >= FULL_PERCENT && w.resetAt && w.resetAt > now);
-  if (full.length) state.exhaustedUntil = Math.max(...full.map(w => w.resetAt!));
-  else if (state.exhaustedUntil && windows.every(w => w.usedPercent < FULL_PERCENT)) delete state.exhaustedUntil;
+  if (full.length) { state.exhaustedUntil = Math.max(...full.map(w => w.resetAt!)); state.exhaustionResetKnown = true; }
+  else if (state.exhaustedUntil && windows.every(w => w.usedPercent < FULL_PERCENT)) { delete state.exhaustedUntil; delete state.exhaustionResetKnown; }
   states.set(providerId, state);
 }
 
@@ -90,7 +92,7 @@ export function recordLimitReached(providerId: string, now = Date.now()): void {
   const resetHints = before?.windows.map(w => w.resetAt).filter((t): t is number => typeof t === "number" && t > now) ?? [];
   // The full window's reset if known; otherwise the soonest reset the plan mentioned; otherwise a wait.
   const until = known.length ? Math.max(...known) : resetHints.length ? Math.min(...resetHints) : now + DEFAULT_EXHAUSTED_MS;
-  states.set(providerId, { windows: before?.windows ?? [], updatedAt: now, exhaustedUntil: until });
+  states.set(providerId, { windows: before?.windows ?? [], updatedAt: now, exhaustedUntil: until, exhaustionResetKnown: known.length > 0 });
 }
 
 export function isExhausted(providerId: string, now = Date.now()): boolean {
@@ -121,9 +123,24 @@ export function describeQuota(state: QuotaState | undefined, now = Date.now()): 
     return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
   };
   const until = state.exhaustedUntil && state.exhaustedUntil > now ? state.exhaustedUntil : undefined;
-  if (until) return `已用完，${clock(until)} 恢复`;
+  if (until) return state.exhaustionResetKnown ? `已用完，${clock(until)} 恢复` : `额度暂不可用，${clock(until)} 后可重试（恢复时间未知）`;
   const shown = [...state.windows].sort((a, b) => b.usedPercent - a.usedPercent)[0];
   if (!shown) return undefined;
   const length = shown.windowMinutes ? (shown.windowMinutes >= 1440 ? `${Math.round(shown.windowMinutes / 1440)} 天` : `${Math.round(shown.windowMinutes / 60)} 小时`) : undefined;
   return `已用 ${Math.round(shown.usedPercent)}%${length ? `（${length}窗口）` : ""}${shown.resetAt ? `，${clock(shown.resetAt)} 恢复` : ""}`;
+}
+
+/** Kimi Code documents these quota refusals as 403; other 403s (including concurrency) are not quota. */
+export function isKimiUsageLimit(status: number, bodyText: string): boolean {
+  if (status !== 403) return isUsageLimit(status, bodyText);
+  if (bodyText.length > 16_384) return false;
+  let message = bodyText.trim();
+  try {
+    const body = JSON.parse(message) as { error?: { message?: unknown }; message?: unknown };
+    const value = body?.error?.message ?? body?.message;
+    if (typeof value !== "string") return false;
+    message = value;
+  } catch { /* The documented human-readable refusal is also accepted as plain text. */ }
+  return /^You've reached your (?:5-hour|weekly \(7-day\)) usage limit\.(?:\s|$)/.test(message)
+    || /^You've reached your monthly usage limit for this billing cycle\.(?:\s|$)/.test(message);
 }

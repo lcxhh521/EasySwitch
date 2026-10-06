@@ -65,6 +65,7 @@ import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./c
 import { costOf, ratesFor } from "./pricing/cost.ts";
 import { accountCommandLine, clearResting, createAccount, isResting, markResting, pickAccount, touch as touchAccount } from "./accounts.ts";
 import { keySecretId, newKeyId, pickKey } from "./keypool.ts";
+import { copilotQuotaCapability } from "./copilot-quota.ts";
 import { hasPlanUsage, refreshPlanUsage } from "./plan-usage.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
@@ -185,7 +186,7 @@ function basePublicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []
   const sample = p.defaultModel ?? p.models[0];
   const priced = sample ? ratesFor(p, sample) : undefined;
   return {
-    ...p, hasKey, supportedProtocols: sourceProtocols(p, ""), ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
+    ...p, hasKey, ...(p.plan?.kind === "copilot" ? { quotaSupport: copilotQuotaCapability() } : {}), supportedProtocols: sourceProtocols(p, ""), ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
     ...(describeQuota(quotaOf(p.id)) ? { quota: { text: describeQuota(quotaOf(p.id))!, ...(exhaustedUntil(p.id) ? { exhaustedUntil: exhaustedUntil(p.id)! } : {}) } } : {}),
     ...(sample ? { priceSample: { model: sample, ...(priced ? { rates: priced.rates, source: priced.source } : {}) } } : {}),
   };
@@ -812,8 +813,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/plan" && method === "GET") {
       json(res, 200, {
         subscriptionSupport: subscriptionSupport(),
+        quotaSupport: { copilot: copilotQuotaCapability() },
         accounts: [
-          ...siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...planQuota(a.id) })),
+          ...siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, on: store.providers().some(p => p.plan?.accountId === a.id && !p.off), ...(a.kind === "copilot" ? { quotaSupport: copilotQuotaCapability() } : {}), ...planQuota(a.id) })),
           // Kiro has no account of ours (its login stays in the Kiro CLI), only a source; it shows in the same list so it gets the same switch.
           ...store.providers().filter(p => p.kiro).map(p => ({ id: p.id, kind: "kiro", label: p.name, planUsage: true, needsSignIn: false, on: !p.off, ...planQuota(p.id) })),
           ...store.providers().filter(p => p.kimi).map(p => ({ id: p.kimi!.accountId, kind: "kimi", label: p.name, ...(p.kimi!.email ? { email: p.kimi!.email } : {}), planUsage: true, needsSignIn: false, on: !p.off, ...planQuota(p.id) })),

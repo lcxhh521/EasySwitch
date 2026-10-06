@@ -55,3 +55,33 @@ test("the one-line summary reads like a person would say it", () => {
   assert.match(describeQuota(quotaOf("q"), NOW)!, /^已用完，(?:\d{1,2}\/\d{1,2} )?\d\d:\d\d 恢复$/);
   assert.equal(describeQuota(undefined), undefined);
 });
+
+test("only Kimi's documented quota 403s count, never permission or concurrency refusals", async () => {
+  const { isKimiUsageLimit } = await import("../src/quota.ts");
+  for (const period of ["5-hour", "weekly (7-day)", "monthly"]) {
+    const message = `You've reached your ${period} usage limit${period === "monthly" ? " for this billing cycle" : ""}.`;
+    assert.equal(isKimiUsageLimit(403, JSON.stringify({ error: { message } })), true);
+    assert.equal(isKimiUsageLimit(403, message), true);
+    assert.equal(isUsageLimit(403, message), false, "generic 403 semantics stay unchanged");
+  }
+  for (const message of ["You've reached your concurrent request limit. Please wait.", "Invalid Authentication", "permission denied", "quota exceeded", "quoted: You've reached your 5-hour usage limit."]) assert.equal(isKimiUsageLimit(403, JSON.stringify({error:{message}})), false);
+  assert.equal(isKimiUsageLimit(401, "You've reached your 5-hour usage limit."), false);
+  assert.equal(isKimiUsageLimit(429, "rate_limit_exceeded"), false);
+  assert.equal(isKimiUsageLimit(429, "usage_limit"), true);
+  assert.equal(isKimiUsageLimit(403, "x".repeat(16_385)), false);
+});
+
+
+test("quota recovery wording distinguishes a vendor reset from an unchanged local retry delay", () => {
+  recordLimitReached("unknown", NOW);
+  assert.equal(exhaustedUntil("unknown", NOW), NOW + 30 * 60_000);
+  assert.match(describeQuota(quotaOf("unknown"), NOW)!, /后可重试（恢复时间未知）$/);
+  recordQuotaHeaders("hint", headers({ "x-codex-primary-used-percent": "80", "x-codex-primary-reset-at": String((NOW + 600_000) / 1000) }), NOW);
+  recordLimitReached("hint", NOW);
+  assert.equal(exhaustedUntil("hint", NOW), NOW + 600_000, "the existing retry choice is unchanged");
+  assert.match(describeQuota(quotaOf("hint"), NOW)!, /恢复时间未知/, "a non-full window does not prove which limit caused the refusal");
+  recordQuotaHeaders("reported", headers({ "x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": String((NOW + 1_800_000) / 1000) }), NOW);
+  recordLimitReached("reported", NOW);
+  assert.equal(quotaOf("reported")!.exhaustionResetKnown, true);
+  assert.match(describeQuota(quotaOf("reported"), NOW)!, /^已用完，.* 恢复$/);
+});

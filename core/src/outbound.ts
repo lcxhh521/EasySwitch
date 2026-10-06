@@ -5,7 +5,7 @@ import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { prepareQoderTextBridge, type QoderExecutor } from "./qoder-text-bridge.ts";
 import { DROID_TEXT_BRIDGE_BLOCKER } from "./droid-text-bridge.ts";
 import { existingSubscriptionKind, prepareExistingSubscription } from "./subscription-compat.ts";
-import { recordQuotaHeaders, isUsageLimit, recordLimitReached } from "./quota.ts";
+import { recordQuotaHeaders, isUsageLimit, isKimiUsageLimit, recordLimitReached } from "./quota.ts";
 import { prepareVertex } from "./vertex-gemini.ts";
 import { vertexConfigIssue, vertexKind as vertexMode } from "./vertex-config.ts";
 import { vertexBaseUrl } from "./vertex.ts";
@@ -161,6 +161,9 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
           recordQuotaHeaders(provider.id, response.headers);
           if (response.status === 429 && isUsageLimit(429, await boundedUpstreamErrorText(response.clone()))) recordLimitReached(provider.id);
         }
+        const destination = new URL(url);
+        if (["api.kimi.com", "api.kimi.ai"].includes(destination.hostname) && destination.protocol === "https:" && !destination.port && !destination.username && !destination.password
+          && (response.status === 403 || response.status === 429) && isKimiUsageLimit(response.status, await boundedUpstreamErrorText(response.clone()))) recordLimitReached(provider.id);
         // Claude Code commonly requests 32k output. Retry only an explicit limit rejection,
         // using the same destination, key and source shaping as the original attempt.
         if (input.protocol === "messages" && target === "chat" && response.status === 400 && body.max_tokens !== undefined) {

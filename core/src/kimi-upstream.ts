@@ -5,6 +5,8 @@ import { encodeRequest } from "./outbound-format.ts";
 import { repairConversation, subscriptionCacheKey } from "./subscription-input.ts";
 import { applyEffort, quirksFor, shapeChat } from "./quirks.ts";
 import { modelEfforts } from "./model-efforts.ts";
+import { isKimiUsageLimit, recordLimitReached } from "./quota.ts";
+import { boundedUpstreamErrorText } from "./upstream-error.ts";
 import type { ChatRequest } from "./translate.ts";
 
 const KIMI_MODEL_ENDPOINT = "https://api.kimi.com/coding/v1";
@@ -28,9 +30,11 @@ export async function sendKimiConversation(provider: Provider, token: string | u
   if (!token) return Response.json({ error: { type: "kimi_error", message: "没有拿到 Kimi 的有效登录，请回到 EasySwitch 重新登录。" } }, { status: 401 });
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(provider.wire?.headers ?? {})) if (["user-agent", "x-msh-platform", "x-msh-version", "x-msh-device-name", "x-msh-device-model", "x-msh-os-version", "x-msh-device-id"].includes(name.toLowerCase()) && typeof value === "string" && !/[\r\n]/.test(value)) headers[name.toLowerCase()] = value;
-  return fetch(`${endpoint}/chat/completions`, {
+  const response = await fetch(`${endpoint}/chat/completions`, {
     method: "POST", redirect: "error", signal,
     headers: { ...headers, "content-type": "application/json", accept: request.stream ? "text/event-stream" : "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify(conversationToKimi(provider, value, request).body),
   });
+  if ((response.status === 403 || response.status === 429) && isKimiUsageLimit(response.status, await boundedUpstreamErrorText(response.clone()))) recordLimitReached(provider.id);
+  return response;
 }
