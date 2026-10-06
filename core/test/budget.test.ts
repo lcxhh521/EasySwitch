@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ProviderBudgetController, monthStart, monthWindow, validateProviderBudget } from "../src/budget.ts";
+import { ProviderBudgetController, migrateProviderBudget, monthStart, monthWindow, validateProviderBudget } from "../src/budget.ts";
 import { Ledger } from "../src/ledger.ts";
 import type { GatewayLogEntry, Provider } from "../src/types.ts";
 
@@ -14,7 +14,7 @@ function fixture(t: { after(fn: () => void): void }, now: () => Date = () => NOW
   const dir = mkdtempSync(join(tmpdir(), "es-source-budget-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const ledger = new Ledger(dir);
-  const budget = new ProviderBudgetController({ readEntries: since => ledger.readForBudget(since), now });
+  const budget = new ProviderBudgetController({ readSummary: (start, end, now) => ledger.budgetSummary(start, end, now), now });
   return { dir, ledger, budget };
 }
 
@@ -119,11 +119,15 @@ test("strict source budgets retain entries older than the console's 50k view", t
   assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
 });
 
-test("torn or missing durable ledgers stop configured sources but warn-only and unbudgeted sources remain usable", t => {
+test("a partial tail waits for completion, while a complete corrupt row or missing ledger stops configured sources", t => {
   const { dir, ledger, budget } = fixture(t);
   ledger.append(entry());
   const file = join(dir, "usage.jsonl");
   appendFileSync(file, '{"at":"torn');
+  const partial = budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
+  assert.equal(partial.pendingPartialLine, true); assert.equal(partial.accountingUnavailable, false); assert.equal(partial.blocked, false);
+  assert.match(partial.warning!, /尚未写完整/);
+  appendFileSync(file, '\n');
   const stopped = budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
   assert.equal(stopped.accountingUnavailable, true); assert.equal(stopped.blocked, true);
   assert.match(stopped.warning!, /无法完整读取/);
@@ -137,19 +141,22 @@ test("torn or missing durable ledgers stop configured sources but warn-only and 
   assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), false, "repairing a read failure restores accounting");
 });
 
-test("failed durable appends remain fail-closed even when the file later becomes writable", t => {
+test("failed durable appends stop budgets while unavailable and retry once the file becomes writable", t => {
   const { dir, ledger, budget } = fixture(t);
   const file = join(dir, "usage.jsonl");
   rmSync(file); mkdirSync(file);
   ledger.append(entry());
-  rmSync(file, { recursive: true }); writeFileSync(file, "");
   assert.equal(budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!.accountingUnavailable, true);
-  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
+  rmSync(file, { recursive: true }); writeFileSync(file, "");
+  assert.equal(budget.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!.accountingUnavailable, false);
+  assert.equal(budget.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), false);
+  assert.equal(budget.spentThisMonth("x"), 1);
+  assert.equal(budget.spentThisMonth("x"), 1, "rechecking does not duplicate the recovered entry");
 });
 
 test("malformed persisted source budgets fail closed instead of being treated as unset", t => {
   const { budget } = fixture(t);
-  for (const value of [null, {}, [], { monthlyUsd: 0 }, { monthlyUsd: -1 }, { monthlyUsd: NaN }, { monthlyUsd: Infinity }, { monthlyUsd: 1_000_001 }, { monthlyUsd: "10" }, { monthlyUsd: 10, stop: "false" }, { monthlyUsd: 10, typo: true }]) {
+  for (const value of [null, {}, [], { monthlyUsd: -1 }, { monthlyUsd: NaN }, { monthlyUsd: Infinity }, { monthlyUsd: 1_000_001 }, { monthlyUsd: "10" }, { monthlyUsd: 10, stop: "false" }, { monthlyUsd: 10, typo: true }, { monthlyUsd: 0, stop: "false" }]) {
     assert.throws(() => validateProviderBudget(value));
     const invalid = { id: "x", budget: value } as unknown as Pick<Provider, "id" | "budget">;
     const s = budget.budgetStatus(invalid)!;
@@ -162,6 +169,18 @@ test("malformed persisted source budgets fail closed instead of being treated as
   assert.deepEqual(validateProviderBudget({ monthlyUsd: 1_000_000, stop: true }), { monthlyUsd: 1_000_000, stop: true });
 });
 
+test("legacy source budget zero migrates to unset without weakening malformed or positive budgets", t => {
+  const { budget } = fixture(t);
+  for (const value of [{ monthlyUsd: 0 }, { monthlyUsd: 0, stop: true }, { monthlyUsd: 0, stop: false }]) {
+    assert.deepEqual(migrateProviderBudget(value), { version: 1 });
+    assert.equal(budget.budgetStatus(provider(value)), undefined);
+    assert.equal(budget.isBudgetStopped(provider(value)), false);
+  }
+  assert.deepEqual(migrateProviderBudget({ monthlyUsd: 5, stop: true }), { version: 1, budget: { monthlyUsd: 5, stop: true } });
+  assert.throws(() => migrateProviderBudget({ monthlyUsd: 0, unexpected: true }));
+  assert.throws(() => validateProviderBudget({ monthlyUsd: 0 }), "new controls still require removal rather than a hidden zero setting");
+});
+
 test("invalid injected accounting cannot lower source spend or silently permit a stop budget", () => {
   for (const bad of [entry({ at: "invalid" }), entry({ costUsd: -100 }), entry({ costUsd: Infinity }), entry({ costUsd: NaN }), { ...entry(), providerId: 7 }, { ...entry(), costUsd: "2" }, { ...entry(), costNote: "unknown" }, null, []]) {
     const budget = new ProviderBudgetController({ now: () => NOW, readEntries: () => [entry({ costUsd: 8 }), bad] as GatewayLogEntry[] });
@@ -172,9 +191,11 @@ test("invalid injected accounting cannot lower source spend or silently permit a
   assert.equal(missing.isBudgetStopped(provider({ monthlyUsd: 10, stop: true })), true);
 });
 
-test("unattributable known costs and overflow fail closed with JSON-safe status numbers", () => {
+test("unattributable legacy costs are disclosed without stopping unrelated sources; overflow still fails closed", () => {
   const unattributable = new ProviderBudgetController({ now: () => NOW, readEntries: () => [entry({ providerId: undefined, model: "unattributable", costUsd: 1 })] });
-  assert.equal(unattributable.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!.blocked, true);
+  const legacy = unattributable.budgetStatus(provider({ monthlyUsd: 10, stop: true }))!;
+  assert.equal(legacy.blocked, false); assert.equal(legacy.unattributedCalls, 1); assert.equal(legacy.unattributedCostUsd, 1);
+  assert.match(legacy.warning!, /无法确定来源/);
   const overflow = new ProviderBudgetController({ now: () => NOW, readEntries: () => [entry({ costUsd: Number.MAX_VALUE }), entry({ costUsd: Number.MAX_VALUE })] });
   const s = overflow.budgetStatus(provider({ monthlyUsd: Number.MIN_VALUE, stop: true }))!;
   assert.equal(s.accountingUnavailable, true); assert.equal(s.blocked, true);

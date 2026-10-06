@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayLogEntry } from "./types.ts";
+import { emptyBudgetSummary, summarizeBudgetEntries, type BudgetSummaryReader } from "./ledger.ts";
 
 export interface BudgetSettings {
   enabled: boolean;
@@ -27,6 +28,7 @@ export interface BudgetStatus {
   /** Union of unpriced and unmetered non-subscription calls, not their sum. */
   unknownCostCalls: number;
   accountingUnavailable: boolean;
+  pendingPartialLine: boolean;
   configurationInvalid: boolean;
   exceeded: boolean;
   blocked: boolean;
@@ -77,76 +79,113 @@ export class BudgetExceededError extends Error {
  */
 export class BudgetController {
   #file: string;
+  #controlFile: string;
   #settings: BudgetSettings = { ...DEFAULT_BUDGET };
   #configurationInvalid = false;
-  #readEntries: (since: Date) => GatewayLogEntry[];
+  #readEntries?: (since: Date) => GatewayLogEntry[];
+  #readSummary?: BudgetSummaryReader;
+  #knownDisabled = false;
   #now: () => Date;
 
-  constructor(dir: string, options: { readEntries: (since: Date) => GatewayLogEntry[]; now?: () => Date }) {
+  constructor(dir: string, options: { readEntries?: (since: Date) => GatewayLogEntry[]; readSummary?: BudgetSummaryReader; now?: () => Date }) {
     mkdirSync(dir, { recursive: true });
     this.#file = join(dir, "budget.json");
+    this.#controlFile = join(dir, "budget-control.json");
     this.#readEntries = options.readEntries;
+    this.#readSummary = options.readSummary;
     this.#now = options.now ?? (() => new Date());
     if (existsSync(this.#file)) {
       try {
         const raw = readFileSync(this.#file, "utf8");
         if (raw.length > 65_536) throw new Error("Oversized budget settings");
-        this.#settings = validateBudgetSettings(JSON.parse(raw));
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid budget settings");
+        const legacy = parsed.version === undefined;
+        if (!legacy && parsed.version !== 1) throw new Error("Unsupported budget settings version");
+        const value = legacy ? parsed : parsed.settings;
+        // An explicit disabled control remains disabled even if unused amount/
+        // period fields are damaged. Do not infer disabled from a parse failure.
+        this.#knownDisabled = Boolean(value && typeof value === "object" && (value as Record<string, unknown>).enabled === false);
+        this.#settings = validateBudgetSettings(value);
+        if (legacy) {
+          // Preserve the exact old bytes before any versioned rewrite. A failed
+          // migration leaves the valid legacy settings in force and retries later.
+          const backup = join(dir, `budget.v0.${createHash("sha256").update(raw).digest("hex").slice(0, 16)}.json`);
+          try {
+            try { writeFileSync(backup, raw, { flag: "wx", mode: 0o600 }); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+            this.persist(this.#settings);
+          } catch { /* Valid old controls still apply; never reset a saved limit. */ }
+        }
       } catch { this.#configurationInvalid = true; }
+    } else if (existsSync(this.#controlFile)) this.#configurationInvalid = true;
+    else {
+      // Remember the initial off state too. Otherwise corruption before the
+      // first settings edit would turn a never-enabled budget into a hard stop.
+      this.#knownDisabled = true;
+      try { this.persist(this.#settings); } catch { /* Default off remains the in-memory state. */ }
     }
+    if (this.#configurationInvalid && !this.#knownDisabled) {
+      try {
+        const control = JSON.parse(readFileSync(this.#controlFile, "utf8")) as Record<string, unknown>;
+        this.#knownDisabled = control.version === 1 && control.enabled === false && typeof control.revision === "string" && /^[a-f0-9-]{36}$/.test(control.revision);
+      } catch { /* Without trustworthy disabled state, corruption remains fail-closed. */ }
+    }
+    if (this.#configurationInvalid && this.#knownDisabled) this.#settings = { ...DEFAULT_BUDGET, enabled: false };
   }
 
   settings(): BudgetSettings { return { ...this.#settings }; }
 
   setSettings(value: unknown): BudgetSettings {
     const settings = validateBudgetSettings(value);
-    const temp = `${this.#file}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temp, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-      renameSync(temp, this.#file);
-    } finally { rmSync(temp, { force: true }); }
+    this.persist(settings);
     this.#settings = settings;
     this.#configurationInvalid = false;
+    this.#knownDisabled = !settings.enabled;
     return this.settings();
+  }
+
+  private atomic(file: string, value: unknown): void {
+    const temp = `${file}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      renameSync(temp, file);
+    } finally { rmSync(temp, { force: true }); }
+  }
+
+  private persist(settings: BudgetSettings): void {
+    const revision = randomUUID();
+    // Clear an old disabled marker before an enabled configuration can land.
+    // Disabling is the opposite order: a marker never prematurely disables a limit.
+    if (settings.enabled) this.atomic(this.#controlFile, { version: 1, revision, enabled: true });
+    this.atomic(this.#file, { version: 1, revision, settings });
+    if (!settings.enabled) this.atomic(this.#controlFile, { version: 1, revision, enabled: false });
   }
 
   status(): BudgetStatus {
     const settings = this.settings();
     const now = this.#now();
     const { start, end } = budgetWindow(settings.period, now);
-    let entries: GatewayLogEntry[] = [], accountingUnavailable = false;
+    let summary = emptyBudgetSummary();
     try {
-      entries = this.#readEntries(start);
-      if (!Array.isArray(entries)) throw new Error("Invalid ledger");
-    } catch { accountingUnavailable = true; }
-    let estimatedCostUsd = 0, calls = 0, unpricedCalls = 0, unmeteredCalls = 0, subscriptionCalls = 0, unknownCostCalls = 0;
-    for (const entry of entries) {
-      if (!entry || typeof entry !== "object" || !Number.isFinite(Date.parse(entry.at))) { accountingUnavailable = true; continue; }
-      const at = Date.parse(entry.at);
-      if (at < start.getTime() || at >= end.getTime() || at > now.getTime()) continue;
-      calls++;
-      // A flat subscription's tokens are useful, but its monthly fee is not a per-call expense.
-      if (entry.costNote === "subscription") { subscriptionCalls++; continue; }
-      const metered = [entry.inputTokens, entry.outputTokens].some(n => typeof n === "number" && Number.isFinite(n) && n >= 0);
-      const priced = typeof entry.costUsd === "number" && Number.isFinite(entry.costUsd) && entry.costUsd >= 0 && entry.costNote !== "unpriced";
-      if (priced) estimatedCostUsd += entry.costUsd!;
-      else unpricedCalls++;
-      if (!metered) unmeteredCalls++;
-      if (!priced || !metered) unknownCostCalls++;
-    }
-    if (!Number.isFinite(estimatedCostUsd)) { estimatedCostUsd = Number.MAX_VALUE; accountingUnavailable = true; }
+      if (this.#readSummary) summary = this.#readSummary(start, end, now);
+      else if (this.#readEntries) summary = summarizeBudgetEntries(this.#readEntries(start), start, end, now);
+      else throw new Error("No budget accounting reader");
+    } catch { summary.accountingUnavailable = true; }
+    const { estimatedCostUsd, calls, unpricedCalls, unmeteredCalls, subscriptionCalls, unknownCostCalls, accountingUnavailable, pendingPartialLine } = summary;
     const exceeded = settings.enabled && estimatedCostUsd >= settings.limitUsd;
-    const blocked = this.#configurationInvalid || (settings.enabled && settings.action === "stop" && (exceeded || accountingUnavailable));
+    const blocked = (this.#configurationInvalid && !this.#knownDisabled) || (settings.enabled && settings.action === "stop" && (exceeded || accountingUnavailable));
     let warning: string | undefined;
-    if (this.#configurationInvalid) warning = "预算设置无法读取；新推理请求已暂停，请在控制台重新保存预算设置";
+    if (this.#configurationInvalid) warning = this.#knownDisabled ? "预算仍为关闭；保存的预算设置损坏，请在控制台重新保存" : "预算设置无法读取；新推理请求已暂停，请在控制台重新保存预算设置";
     else if (settings.enabled && accountingUnavailable) warning = settings.action === "stop" ? "用量记录无法完整读取；新推理请求已暂停" : "用量记录无法完整读取，预算估算可能不完整";
     else if (exceeded) warning = settings.action === "stop" ? "已达到估算预算，新推理请求已暂停" : "已达到估算预算；当前为仅提醒，仍会继续请求";
     else if (settings.enabled && estimatedCostUsd >= settings.limitUsd * settings.warnAt) warning = "已接近估算预算";
     else if (settings.enabled && unknownCostCalls) warning = "有请求缺少价格或用量，实际费用可能高于当前估算";
+    else if (settings.enabled && pendingPartialLine) warning = "账本末尾有一条尚未写完整的记录；当前估算等待补齐";
     return {
       settings, timezone: "UTC", startsAt: start.toISOString(), resetsAt: end.toISOString(), estimatedCostUsd,
       remainingUsd: Math.max(0, settings.limitUsd - estimatedCostUsd), calls, unpricedCalls, unmeteredCalls,
-      subscriptionCalls, unknownCostCalls, accountingUnavailable, configurationInvalid: this.#configurationInvalid,
+      subscriptionCalls, unknownCostCalls, accountingUnavailable, pendingPartialLine, configurationInvalid: this.#configurationInvalid,
       exceeded, blocked, ...(warning ? { warning } : {}), limitations: LIMITATIONS,
     };
   }

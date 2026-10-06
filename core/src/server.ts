@@ -185,8 +185,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const { store, secrets, port } = deps;
   const ledger = deps.ledger ?? new Ledger(store.dir);
   const auth = deps.gatewayAuth ?? gatewayTokens;
-  const budget = new BudgetController(store.dir, { readEntries: since => ledger.readForBudget(since) });
-  const providerBudgets = new ProviderBudgetController({ readEntries: since => ledger.readForBudget(since) });
+  const budget = new BudgetController(store.dir, { readSummary: (start, end, now) => ledger.budgetSummary(start, end, now) });
+  const providerBudgets = new ProviderBudgetController({ readSummary: (start, end, now) => ledger.budgetSummary(start, end, now) });
   store.setProviderBudgetChecker(p => providerBudgets.isBudgetStopped(p));
   const publicProvider = (p: Provider, hasKey: boolean, usedBy: Harness[] = []) => {
     const status = providerBudgets.budgetStatus(p);

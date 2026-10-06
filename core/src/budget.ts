@@ -1,4 +1,5 @@
 import type { GatewayLogEntry, Provider } from "./types.ts";
+import { emptyBudgetSummary, summarizeBudgetEntries, type BudgetSummaryReader } from "./ledger.ts";
 
 /** Per-source budgets use the server's local calendar month; global budgets use their own UTC window. */
 export type ProviderBudgetSettings = NonNullable<Provider["budget"]>;
@@ -17,6 +18,9 @@ export interface ProviderBudgetStatus {
   accountingUnavailable: boolean;
   configurationInvalid: boolean;
   unknownCostCalls: number;
+  unattributedCalls: number;
+  unattributedCostUsd: number;
+  pendingPartialLine: boolean;
   startsAt: string;
   resetsAt: string;
   /** The server's local timezone, whose calendar defines this monthly budget. */
@@ -39,6 +43,16 @@ export function validateProviderBudget(value: unknown): ProviderBudgetSettings {
   return { monthlyUsd: input.monthlyUsd, ...(input.stop !== undefined ? { stop: input.stop } : {}) };
 }
 
+/** v0 used monthlyUsd:0 to mean unset. Normalize only that exact, valid legacy shape. */
+export function migrateProviderBudget(value: unknown): { version: 1; budget?: ProviderBudgetSettings } {
+  if (value === undefined) return { version: 1 };
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const old = value as Record<string, unknown>;
+    if (old.monthlyUsd === 0 && Object.keys(old).every(key => key === "monthlyUsd" || key === "stop") && (old.stop === undefined || typeof old.stop === "boolean")) return { version: 1 };
+  }
+  return { version: 1, budget: validateProviderBudget(value) };
+}
+
 export function monthStart(now: Date = new Date()): Date {
   return new Date(now.getFullYear(), now.getMonth(), 1);
 }
@@ -51,20 +65,11 @@ interface MonthAccounting {
   spent: Map<string, number>;
   unknownCostCalls: Map<string, number>;
   unavailable: boolean;
+  unattributedCalls: number;
+  unattributedCostUsd: number;
+  pendingPartialLine: boolean;
   start: Date;
   end: Date;
-}
-
-/** Also validate injected readers: invalid values must never reduce the budget total. */
-function validEntry(entry: GatewayLogEntry): boolean {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.at !== "string" || !Number.isFinite(Date.parse(entry.at))) return false;
-  if (typeof entry.model !== "string" || typeof entry.route !== "string" || !Number.isInteger(entry.status) || !Number.isFinite(entry.ms)) return false;
-  if (entry.providerId !== undefined && (typeof entry.providerId !== "string" || !entry.providerId)) return false;
-  for (const field of ["costUsd", "inputTokens", "outputTokens", "cachedTokens"] as const) {
-    const value = entry[field];
-    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) return false;
-  }
-  return entry.costNote === undefined || entry.costNote === "subscription" || entry.costNote === "unpriced";
 }
 
 /**
@@ -73,45 +78,30 @@ function validEntry(entry: GatewayLogEntry): boolean {
  * durable entries, including append failures. This module never probes a source or reads a key.
  */
 export class ProviderBudgetController {
-  #readEntries: (since: Date) => GatewayLogEntry[];
+  #readEntries?: (since: Date) => GatewayLogEntry[];
+  #readSummary?: BudgetSummaryReader;
   #now: () => Date;
 
-  constructor(options: { readEntries: (since: Date) => GatewayLogEntry[]; now?: () => Date }) {
+  constructor(options: { readEntries?: (since: Date) => GatewayLogEntry[]; readSummary?: BudgetSummaryReader; now?: () => Date }) {
     this.#readEntries = options.readEntries;
+    this.#readSummary = options.readSummary;
     this.#now = options.now ?? (() => new Date());
   }
 
   #month(now: Date): MonthAccounting {
     const { start, end } = monthWindow(now);
-    const result: MonthAccounting = { spent: new Map(), unknownCostCalls: new Map(), unavailable: false, start, end };
-    let entries: GatewayLogEntry[];
+    let summary = emptyBudgetSummary();
     try {
-      entries = this.#readEntries(start);
-      if (!Array.isArray(entries)) throw new Error("Invalid usage ledger");
-    } catch { result.unavailable = true; return result; }
-    for (const entry of entries) {
-      if (!validEntry(entry)) { result.unavailable = true; continue; }
-      const at = Date.parse(entry.at);
-      if (at < start.getTime() || at >= end.getTime() || at > now.getTime()) continue;
-      // A flat subscription's fee must never become per-call spend.
-      if (entry.costNote === "subscription") continue;
-      // Legacy entries may omit providerId; their exposed model still identifies the source.
-      const slash = entry.model.indexOf("/");
-      const id = entry.providerId ?? (slash > 0 ? entry.model.slice(0, slash) : undefined);
-      if (!id) {
-        if (entry.costUsd !== undefined && entry.costUsd > 0) result.unavailable = true;
-        continue;
-      }
-      const priced = entry.costUsd !== undefined && entry.costNote !== "unpriced";
-      const metered = entry.inputTokens !== undefined && entry.outputTokens !== undefined;
-      if (priced) {
-        const total = (result.spent.get(id) ?? 0) + entry.costUsd!;
-        if (!Number.isFinite(total)) result.unavailable = true;
-        result.spent.set(id, Number.isFinite(total) ? total : Number.MAX_VALUE);
-      }
-      if (!priced || !metered) result.unknownCostCalls.set(id, (result.unknownCostCalls.get(id) ?? 0) + 1);
-    }
-    return result;
+      if (this.#readSummary) summary = this.#readSummary(start, end, now);
+      else if (this.#readEntries) summary = summarizeBudgetEntries(this.#readEntries(start), start, end, now);
+      else throw new Error("No source budget accounting reader");
+    } catch { summary.accountingUnavailable = true; }
+    return {
+      spent: new Map(Object.entries(summary.byProvider).map(([id, totals]) => [id, totals.estimatedCostUsd])),
+      unknownCostCalls: new Map(Object.entries(summary.byProvider).map(([id, totals]) => [id, totals.unknownCostCalls])),
+      unavailable: summary.accountingUnavailable, unattributedCalls: summary.unattributedCalls,
+      unattributedCostUsd: summary.unattributedCostUsd, pendingPartialLine: summary.pendingPartialLine, start, end,
+    };
   }
 
   /** Convenience read for callers that need a total; never returns a falsely complete total. */
@@ -124,7 +114,10 @@ export class ProviderBudgetController {
   budgetStatus(provider: BudgetProvider): ProviderBudgetStatus | undefined {
     if (provider.budget === undefined) return undefined;
     let settings: ProviderBudgetSettings | undefined;
-    try { settings = validateProviderBudget(provider.budget); } catch { /* Invalid persisted controls fail closed. */ }
+    try {
+      settings = migrateProviderBudget(provider.budget).budget;
+      if (!settings) return undefined;
+    } catch { /* Invalid persisted controls fail closed. */ }
     const configurationInvalid = settings === undefined;
     const month = this.#month(this.#now());
     const spent = month.spent.get(provider.id) ?? 0;
@@ -141,9 +134,12 @@ export class ProviderBudgetController {
     else if (level === "over") warning = stop ? "来源每月估算预算已用完，这个来源已停用到下个月" : "来源每月估算预算已用完；当前为仅提醒，仍会继续请求";
     else if (level === "near") warning = "来源每月估算预算快用完了";
     else if (unknownCostCalls) warning = "这个来源有请求缺少价格或用量，实际费用可能高于当前估算";
+    else if (month.unattributedCalls) warning = "旧用量记录中有无法确定来源的费用，已计入全局预算，未分摊给这个来源";
+    else if (month.pendingPartialLine) warning = "账本末尾有一条尚未写完整的记录；当前来源估算等待补齐";
     return {
       spent, limit, ratio, level, stop, blocked, accountingUnavailable: month.unavailable, configurationInvalid,
-      unknownCostCalls, startsAt: month.start.toISOString(), resetsAt: month.end.toISOString(),
+      unknownCostCalls, unattributedCalls: month.unattributedCalls, unattributedCostUsd: month.unattributedCostUsd,
+      pendingPartialLine: month.pendingPartialLine, startsAt: month.start.toISOString(), resetsAt: month.end.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(warning ? { warning } : {}), limitations: LIMITATIONS,
     };
