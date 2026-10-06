@@ -7,6 +7,9 @@ import { after, before, test } from "node:test";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
+import { clearQuota } from "../src/quota.ts";
+import { clearRest } from "../src/pools.ts";
+import { startMockRelay } from "./mock-relay.ts";
 import { startFakeOpenAI, type FakeOpenAI } from "./fake-openai.ts";
 
 process.env.EASYSWITCH_SECRETS = "memory";
@@ -148,6 +151,54 @@ test("when the plan's usage limit is reached the agent gets a plain 429, and not
   });
   assert.equal(res.status, 429);
   assert.match(await res.text(), /limit/);
+});
+
+// ---- quota awareness
+
+const planChat = (model: string, extra: Json = {}) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+  method: "POST", headers: { "content-type": "application/json", authorization: "Bearer es-session-aider-x" },
+  body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with exactly the word: pong" }], ...extra }),
+});
+const planInfo = async () => ((await (await api("GET", "/api/plan")).json()) as Json).accounts[0] as Json;
+
+test("what a plan's answers say about its usage is remembered and shown on its card", async () => {
+  clearQuota(); fake.responsesHeaders = undefined;
+  assert.equal((await planInfo()).quota, undefined, "nothing is known before the first answer");
+  fake.responsesHeaders = { "x-codex-primary-used-percent": "62", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600) };
+  assert.equal((await planChat(`${pid}/gpt-fake`)).status, 200);
+  const quota = (await planInfo()).quota as { text: string; exhaustedUntil?: number };
+  assert.match(quota.text, /已用 62%（5 小时窗口），\d\d:\d\d 恢复/);
+  assert.equal(quota.exhaustedUntil, undefined);
+  fake.responsesHeaders = undefined;
+});
+
+test("a plan that is used up is skipped by the pool until it is back, and the next member answers", async () => {
+  clearQuota(); clearRest(); fake.responsesHeaders = undefined;
+  const relay = await startMockRelay(0, { apiKey: "k1" });
+  try {
+    const add = (await (await api("POST", "/api/providers", { name: "backup-relay", baseUrl: relay.baseUrl, apiKey: "k1" })).json()) as { id: string };
+    const made = await api("POST", "/api/pools", { name: "plan-then-relay", members: [`${pid}/gpt-fake`, `${add.id}/mock-coder`] });
+    assert.equal(made.status, 200, await made.clone().text());
+    const pool = "pool/" + ((await made.json()) as { id: string }).id;
+    // The plan says it is used up (and when it is back).
+    fake.responsesHeaders = { "x-codex-primary-used-percent": "100", "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600) };
+    fake.responsesStatus = { status: 429, body: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit reached" } } };
+    const before = fake.responsesRequests.length;
+    const first = await planChat(pool);
+    assert.equal(first.status, 200, "the agent never notices: the next member answered");
+    assert.equal(fake.responsesRequests.length, before + 1, "the plan was tried once and refused");
+    // The next request does not even go to the plan.
+    const second = await planChat(pool);
+    assert.equal(second.status, 200);
+    assert.equal(fake.responsesRequests.length, before + 1, "a plan that is used up is not asked again until it is back");
+    const card = (await planInfo()).quota as { text: string; exhaustedUntil?: number };
+    assert.match(card.text, /^已用完，\d\d:\d\d 恢复$/);
+    assert.ok(card.exhaustedUntil! > Date.now());
+    // Once it is back (its quota state forgotten, as after the reset), it is used again.
+    clearQuota(); clearRest(); fake.responsesHeaders = undefined;
+    assert.equal((await planChat(pool)).status, 200);
+    assert.equal(fake.responsesRequests.length, before + 2, "back in use once the plan is back");
+  } finally { relay.server.closeAllConnections(); relay.server.close(); fake.responsesHeaders = undefined; }
 });
 
 test("signing out revokes the login, forgets the account and removes its model source", async () => {

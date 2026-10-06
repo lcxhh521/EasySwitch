@@ -19,6 +19,8 @@ export interface FakeOpenAI {
   failRefresh: boolean;
   /** Replies for the next /v1/responses call: an HTTP status to return instead of a stream. */
   responsesStatus?: { status: number; body: Json };
+  /** Headers every Responses answer carries, such as the plan's usage (`x-codex-primary-used-percent`). */
+  responsesHeaders?: Record<string, string>;
   tokenLifetimeSeconds: number;
   /** Codex client: how many device-code polls answer "not yet" before the user has finished. */
   devicePending: number;
@@ -160,13 +162,13 @@ export async function startFakeOpenAI(): Promise<FakeOpenAI> {
         const body = JSON.parse(raw || "{}") as Json;
         fake.responsesRequests.push({ authorization: req.headers.authorization, body });
         if (req.headers.authorization !== `Bearer ${accessToken}`) return send(401, { detail: "unauthorized" });
-        if (fake.responsesStatus) { const r = fake.responsesStatus; fake.responsesStatus = undefined; return send(r.status, r.body); }
+        if (fake.responsesStatus) { const r = fake.responsesStatus; fake.responsesStatus = undefined; return send(r.status, r.body, fake.responsesHeaders ?? {}); }
         // The preview's rules: these are refused, so the fake refuses them too.
         const banned = ["background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs", "top_p", "truncation", "user", "previous_response_id"].find(k => k in body);
         if (banned) return send(400, { error: { code: "subscription_sharing_unsupported_capability", param: banned, message: `${banned} is not supported` } });
         if (body.store !== false || body.stream !== true) return send(400, { error: { code: "subscription_sharing_unsupported_capability", param: "store/stream", message: "store must be false and stream true" } });
         if (JSON.stringify(body.input).includes('"role":"system"')) return send(400, { error: { code: "invalid_request", message: "system items are rejected" } });
-        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.writeHead(200, { "content-type": "text/event-stream", ...(fake.responsesHeaders ?? {}) });
         for (const [event, data] of fake.events(body)) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
         return void res.end();
       }

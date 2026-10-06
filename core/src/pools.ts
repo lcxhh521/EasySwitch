@@ -4,6 +4,7 @@ import { fromClaudeModelId } from "./catalog.ts";
 import { modelEfforts } from "./model-efforts.ts";
 import type { Store } from "./store.ts";
 import type { Pool } from "./types.ts";
+import { exhaustedUntil } from "./quota.ts";
 
 /**
  * Model pools: one name, several places to get the model from. A request for `pool/<id>` goes to a
@@ -47,8 +48,10 @@ export function poolMembers(store: Store, name: string): string[] | undefined {
     members = [...members.slice(at), ...members.slice(0, at)];
   }
   const now = Date.now();
-  const fresh = members.filter(m => (resting.get(m) ?? 0) <= now);
-  return [...fresh, ...members.filter(m => (resting.get(m) ?? 0) > now)];
+  // A member rests for a minute after a failure, and a member whose plan is used up rests until the plan is back.
+  const restUntil = (m: string) => Math.max(resting.get(m) ?? 0, exhaustedUntil(m.slice(0, m.indexOf("/")), now) ?? 0);
+  const fresh = members.filter(m => restUntil(m) <= now);
+  return [...fresh, ...members.filter(m => restUntil(m) > now)];
 }
 
 /** Forget which members are resting (tests, and a "try everything again" for the future). */

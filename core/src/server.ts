@@ -24,6 +24,7 @@ import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn
 import { setPlanToken } from "./keypool.ts";
 import { nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
+import { describeQuota, exhaustedUntil, quotaOf } from "./quota.ts";
 import { AUTO_AGENT, describeWhen, matchingRules, parseRule, type TaskFacts } from "./dispatch.ts";
 import { isMimoFree } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
@@ -248,6 +249,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
   // ---- ChatGPT plan ("Continue with ChatGPT"): accounts, sign-in in progress, the provider each account becomes
   const siwcStore = store.siwcStorage();
+  /** What the plan behind this account has said about its quota (see quota.ts), for the subscription card. */
+  const planQuota = (accountId: string): { quota?: { text: string; exhaustedUntil?: number } } => {
+    const providerIds = store.providers().filter(p => p.plan?.accountId === accountId).map(p => p.id);
+    for (const id of providerIds) {
+      const text = describeQuota(quotaOf(id));
+      if (text) return { quota: { text, ...(exhaustedUntil(id) ? { exhaustedUntil: exhaustedUntil(id)! } : {}) } };
+    }
+    return {};
+  };
   setPlanToken(async provider => {
     try {
       return await accessToken({ storage: siwcStore, secrets }, provider.plan!.accountId);
@@ -480,7 +490,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- ChatGPT plan: Continue with ChatGPT --------------------------------
     if (path === "/api/plan" && method === "GET") {
       json(res, 200, {
-        accounts: siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true })),
+        accounts: siwcStore.accounts().map(a => ({ id: a.id, kind: a.kind ?? "open", label: a.label, email: a.email, planUsage: a.planUsage, needsSignIn: a.needsSignIn === true, ...planQuota(a.id) })),
         signIn: planSignIn ? { status: planSignIn.status, url: planSignIn.url, ...(planSignIn.userCode ? { userCode: planSignIn.userCode } : {}), ...(planSignIn.message ? { message: planSignIn.message } : {}) } : null,
       });
       return;

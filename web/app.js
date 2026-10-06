@@ -829,8 +829,8 @@ function planCard() {
     <div class="row">
       ${icon(a.kind === "copilot" ? "github-copilot-color" : "openai", "lg")}
       <div class="grow"><div class="title">${esc(a.kind === "copilot" ? "GitHub Copilot · " : "")}${esc(a.label)}${a.email && a.email !== a.label ? ` <span class="hint">${esc(a.email)}</span>` : ""}</div>
-        <div class="sub">${a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : "已接入：它的模型出现在下面的来源里，所有 agent 都能选"}</div></div>
-      ${a.needsSignIn || !a.planUsage ? `<span class="chip warn">${a.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : `<span class="chip ok"><span class="dot"></span>可用</span>`}
+        <div class="sub">${a.needsSignIn ? "登录失效了，需要重新登录" : !a.planUsage ? "已登录，但还没有允许使用订阅额度" : "已接入：它的模型出现在下面的来源里，所有 agent 都能选"}${a.quota && !a.needsSignIn && a.planUsage ? `<br><span class="${a.quota.exhaustedUntil ? "quota-out" : "quota"}">额度：${esc(a.quota.text)}</span>` : ""}</div></div>
+      ${a.needsSignIn || !a.planUsage ? `<span class="chip warn">${a.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : a.quota?.exhaustedUntil ? `<span class="chip warn">额度用完了</span>` : `<span class="chip ok"><span class="dot"></span>可用</span>`}
       <button class="btn secondary" data-plan-signin-again="${esc(a.id)}" data-plan-kind="${esc(a.kind ?? "open")}">${a.needsSignIn || !a.planUsage ? "重新登录" : "重新登录一次"}</button>
       ${a.planUsage && !a.needsSignIn ? `<button class="btn secondary" data-plan-models="${esc(a.id)}">刷新模型</button>` : ""}
       <button class="btn secondary" data-plan-signout="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>

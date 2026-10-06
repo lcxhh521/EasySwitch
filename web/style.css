@@ -248,3 +248,6 @@ body.panel .panel-foot button:hover { color: var(--fg); background: var(--pill);
 .chip.cap-no { background: var(--pill); color: var(--muted); }
 .chip.cap-todo { background: var(--amber-soft); color: var(--amber); }
 .chip.cap-na { background: none; color: var(--faint); }
+
+.quota { color: var(--muted); }
+.quota-out { color: var(--amber); font-weight: 500; }

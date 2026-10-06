@@ -6,6 +6,7 @@ import { dataDir } from "./paths.ts";
 import type { ChatRequest } from "./translate.ts";
 import type { Provider } from "./types.ts";
 import { endpointUrl, upstreamHeaders } from "./upstream.ts";
+import { isUsageLimit, recordLimitReached, recordQuotaHeaders } from "./quota.ts";
 
 const mimoStateDir = (): string => join(dataDir(), "mimo");
 
@@ -42,7 +43,7 @@ export async function sendChat(provider: Provider, apiKey: string | undefined, p
       headers: { "content-type": "application/json", accept: "text/event-stream", ...target.headers },
       body: JSON.stringify(body),
       signal,
-    }).then(upstream => (upstream.ok ? responsesToChatResponse(upstream, { stream: chat.stream, model: chat.model }) : upstream)).catch((error: Error) => error);
+    }).then(upstream => observePlan(provider.id, upstream)).then(upstream => (upstream.ok ? responsesToChatResponse(upstream, { stream: chat.stream, model: chat.model }) : upstream)).catch((error: Error) => error);
   }
   return fetch(endpointUrl(provider, "chat"), {
     method: "POST",
@@ -50,6 +51,20 @@ export async function sendChat(provider: Provider, apiKey: string | undefined, p
     body: JSON.stringify(payload),
     signal,
   }).catch((error: Error) => error);
+}
+
+/**
+ * What a plan's answer says about its quota is remembered (see quota.ts): the usage headers on every
+ * answer, and a "used up" refusal, which marks the plan as unavailable until it is back. The answer
+ * itself passes on untouched.
+ */
+async function observePlan(providerId: string, upstream: Response): Promise<Response> {
+  recordQuotaHeaders(providerId, upstream.headers);
+  if (upstream.status === 429) {
+    const text = await upstream.clone().text().catch(() => "");
+    if (isUsageLimit(429, text)) recordLimitReached(providerId);
+  }
+  return upstream;
 }
 
 /** A Responses request forwarded as it is, to a provider that speaks Responses (the ChatGPT plan, or a relay). */
@@ -62,7 +77,7 @@ export function sendResponses(provider: Provider, apiKey: string | undefined, bo
       headers: { "content-type": "application/json", accept, ...target.headers },
       body: JSON.stringify(shaped),
       signal,
-    }).catch((error: Error) => error);
+    }).then(upstream => observePlan(provider.id, upstream)).catch((error: Error) => error);
   }
   return fetch(endpointUrl(provider, "responses"), {
     method: "POST",
