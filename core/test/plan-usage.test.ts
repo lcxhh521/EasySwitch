@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { hasPlanUsage, refreshPlanUsage } from "../src/plan-usage.ts";
+import { clearQuota, describeQuota, exhaustedUntil, isExhausted, quotaOf } from "../src/quota.ts";
+import type { Provider } from "../src/types.ts";
+
+const provider = (id: string, baseUrl: string, extra: Partial<Provider> = {}): Provider => ({ id, name: id, baseUrl, models: [], route: "chat-translate", streamUsage: false, ...extra }) as Provider;
+const answering = (body: unknown, seen: Array<{ url: string; auth: string | null }> = []): typeof fetch =>
+  (async (url: string | URL | Request, init?: RequestInit) => { seen.push({ url: String(url), auth: new Headers(init?.headers).get("authorization") }); return Response.json(body); }) as typeof fetch;
+
+const NOW = Date.UTC(2026, 9, 6, 12, 0, 0);
+
+test("Kimi's plan: the shorter window and the weekly total are read, and the key goes only to Kimi's own host", async () => {
+  clearQuota();
+  const seen: Array<{ url: string; auth: string | null }> = [];
+  const body = {
+    usage: { limit: "1000", remaining: "400", resetTime: new Date(NOW + 3 * 86400_000).toISOString() },
+    limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "100", remaining: "85", resetTime: new Date(NOW + 3600_000).toISOString() } }],
+  };
+  const windows = await refreshPlanUsage(provider("kimi", "https://api.kimi.com/coding/v1"), "sk-kimi", NOW, answering(body, seen));
+  assert.deepEqual(seen, [{ url: "https://api.kimi.com/coding/v1/usages", auth: "Bearer sk-kimi" }]);
+  assert.equal(windows!.length, 2);
+  assert.equal(Math.round(windows![0]!.usedPercent), 15);
+  assert.equal(windows![0]!.windowMinutes, 300);
+  assert.equal(Math.round(windows![1]!.usedPercent), 60);
+  assert.match(describeQuota(quotaOf("kimi"), NOW)!, /已用 60%/);
+  assert.equal(isExhausted("kimi", NOW), false);
+  // Anything that is not the vendor's own host is never asked, whatever the key.
+  const lookalike = provider("evil", "https://api.kimi.com.evil.example/coding/v1");
+  assert.equal(hasPlanUsage(lookalike), false);
+  assert.equal(await refreshPlanUsage(lookalike, "sk-kimi", NOW, answering(body, seen)), undefined);
+  assert.equal(seen.length, 1);
+});
+
+test("MiniMax's plan: remaining percents become used percents, and a full window marks the plan used up until it resets", async () => {
+  clearQuota();
+  const reset = NOW + 2 * 3600_000;
+  const body = { base_resp: { status_code: 0 }, model_remains: [
+    { model_name: "other", current_interval_remaining_percent: 5 },
+    { model_name: "general", current_interval_remaining_percent: 0, end_time: reset, current_weekly_status: 1, current_weekly_remaining_percent: 70, weekly_end_time: NOW + 5 * 86400_000 },
+  ] };
+  const seen: Array<{ url: string; auth: string | null }> = [];
+  const windows = await refreshPlanUsage(provider("mm", "https://api.minimax.io/v1"), "sk-mm", NOW, answering(body, seen));
+  assert.equal(seen[0]!.url, "https://api.minimax.io/v1/api/openplatform/coding_plan/remains");
+  assert.deepEqual(windows!.map(w => [w.id, Math.round(w.usedPercent), w.windowMinutes]), [["primary", 100, 300], ["secondary", 30, 10080]]);
+  assert.equal(isExhausted("mm", NOW), true, "the pools skip it");
+  assert.equal(exhaustedUntil("mm", NOW), reset);
+  assert.match(describeQuota(quotaOf("mm"), NOW)!, /已用完/);
+  // Back in the clear once the vendor says there is room again.
+  await refreshPlanUsage(provider("mm", "https://api.minimaxi.com/v1"), "sk-mm", NOW + 1, answering({ base_resp: { status_code: 0 }, model_remains: [{ model_name: "general", current_interval_remaining_percent: 80 }] }));
+  assert.equal(isExhausted("mm", NOW + 1), false);
+});
+
+test("a vendor that answers with something unrecognised, an error, or no key shows nothing and breaks nothing; subscriptions with their own channels are left alone", async () => {
+  clearQuota();
+  const p = provider("kimi2", "https://api.kimi.ai/coding/v1");
+  assert.equal(await refreshPlanUsage(p, "k", NOW, answering({ hello: "world" })), undefined);
+  assert.equal(await refreshPlanUsage(p, "k", NOW, (async () => new Response("no", { status: 500 })) as typeof fetch), undefined);
+  assert.equal(await refreshPlanUsage(p, "k", NOW, (async () => { throw new Error("offline"); }) as typeof fetch), undefined);
+  assert.equal(await refreshPlanUsage(p, undefined, NOW, answering({})), undefined);
+  assert.equal(quotaOf("kimi2"), undefined);
+  assert.equal(hasPlanUsage(provider("c", "https://api.kimi.com/coding/v1", { cursor: { accountId: "x" } })), false);
+  assert.equal(hasPlanUsage(provider("o", "https://api.openai.com/v1")), false);
+});

@@ -40,7 +40,7 @@
 - [~] B60 · 每个 agent 启动后要能在它自己的模型菜单里选模型，不是都在 EasySwitch 界面里选死：把所有可用的模型写进每个 agent 的私有配置（EasySwitch 里选的只是默认），并把「能在它自己的界面里选模型」做成能力矩阵的一列，逐个 agent 定状态 — 来源：「我记得我们说过你要能在每个harness里面选模型的，而不是都在我们easyswitch界面选好」（10-06）· 备注：Codex 和 Claude Code 早就有（目录 / /model 并排）；今天写的 13 个新启动器和已有的 Hermes、OpenCode、dsh 只写了一个主模型，是漏的 · 进展：已做——启动器拿到全部可用模型（已关闭的订阅除外），Hermes、OpenCode、dsh 和 12 个新启动器都把它们全写进 agent 自己的私有配置，EasySwitch 里选的只是默认；能力矩阵新增一列，Codex 和 Claude Code 为已实测；真实 dsh 带两个模型跑通。未做/未知——Gemini CLI、Qwen Code、Copilot CLI 只能用环境变量指定一个模型，还没查它们的 /model 能不能列出；Aider 只能手动输入模型名；这 12 个新启动器的菜单是否真的列出来，要在真实程序上确认（B57 的命令里要加这一项）
 - [ ] B71 · Cursor 的工具调用：现在它要执行工具就报错；要支持就得实现它的 exec 一族消息（读文件、改文件、跑命令的各种请求和结果字段），再映射成 Chat 的 tool_calls — 来源：B20 第一版的限制（10-06）
 - [ ] B66 · Kimi 订阅「登录即用」：设备码登录（auth.kimi.com，要带 KimiCLI 的 X-Msh-* 头），令牌存钥匙串，开关默认关，额度读 /coding/v1/usages — 来源：B7 调研结论（Kimi 明确允许会员在第三方工具里用）
-- [ ] B67 · Kimi、MiniMax 编程套餐、Grok 的额度显示：读各自的用量接口（Kimi /coding/v1/usages，MiniMax coding_plan/remains，Grok /v1/billing），显示在来源卡片上，用完时池子跳过 — 来源：B7 调研、B48 的延伸
+- [x] B67 · Kimi、MiniMax 编程套餐的额度显示：向厂商的用量接口问还剩多少，显示在来源卡片上，用完时池子跳过 — 来源：B7 调研、B48 的延伸 · 验证：plan-usage.test.ts 3 个用例（假的响应；key 只发给厂商自己的域名，长得像的域名不发；用完标记、恢复、认不出格式时什么都不显示）；每 5 分钟后台问一次、也有手动接口 POST /api/providers/:id/usage · 备注：返回格式是照 opencodex 的写法宽松读的，没有用真账号核对；Grok 的额度归 B68（它的来源还没做）
 - [ ] B68 · Grok 订阅：只读 Grok CLI 本机的登录文件，转发到它的 cli-chat-proxy；令牌过期时让 Grok 自己刷新，不自己刷；开关默认关；风险是仿客户端标识，要在界面写明 — 来源：B7 调研结论
 - [ ] B69 · Qoder 订阅：用户建个人访问令牌，通过 qodercli 子进程当桥（只有文字）— 来源：B7 调研结论
 - [ ] B70 · WorkBuddy / CodeBuddy / Droid 订阅：WorkBuddy 要自己走腾讯登录和 /v2/chat/completions（会拒绝 Codex、Claude Code 的系统提示）；Droid 用 droid exec 做本地桥；两者条款都要先查清再做 — 来源：B7 调研结论

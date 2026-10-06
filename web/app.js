@@ -845,7 +845,7 @@ function providerRow(p) {
   return `
     <div class="row clickable ${open ? "open" : ""}" data-toggle="${esc(p.id)}">
       ${icon(p.icon, "lg")}
-      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}</div></div>
+      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}${p.quota ? ` · <span class="${p.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(p.quota.text)}</span>` : ""}</div></div>
       ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
       <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
       <span class="chev">›</span>

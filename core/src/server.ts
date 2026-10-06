@@ -47,7 +47,8 @@ import { sessionToken } from "./gateway-chat.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
 import { costOf, ratesFor } from "./pricing/cost.ts";
 import { accountCommandLine, clearResting, createAccount, isResting, markResting, pickAccount, touch as touchAccount } from "./accounts.ts";
-import { keySecretId, newKeyId } from "./keypool.ts";
+import { keySecretId, newKeyId, pickKey } from "./keypool.ts";
+import { hasPlanUsage, refreshPlanUsage } from "./plan-usage.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
@@ -133,6 +134,7 @@ function publicProvider(p: Provider, hasKey: boolean, usedBy: Harness[] = []) {
   return {
     ...p, hasKey, ...(keys.length ? { keys } : {}), icon: p.icon ?? iconForBaseUrl(p.baseUrl, p.name), usedBy,
     ...(budgetStatus(p) ? { budgetStatus: budgetStatus(p) } : {}),
+    ...(describeQuota(quotaOf(p.id)) ? { quota: { text: describeQuota(quotaOf(p.id))!, ...(exhaustedUntil(p.id) ? { exhaustedUntil: exhaustedUntil(p.id)! } : {}) } } : {}),
     ...(sample ? { priceSample: { model: sample, ...(priced ? { rates: priced.rates, source: priced.source } : {}) } } : {}),
   };
 }
@@ -1226,6 +1228,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { budget: provider.budget ?? null, status: budgetStatus(provider) ?? null });
       return;
     }
+    const usageMatch = /^\/api\/providers\/([a-z0-9-]+)\/usage$/.exec(path);
+    if (usageMatch && method === "POST") {
+      // Asks the vendor how much of a coding plan used with a key is left (Kimi, MiniMax).
+      const provider = store.provider(usageMatch[1] ?? "");
+      if (!provider) { json(res, 404, { error: "没有这个模型来源" }); return; }
+      if (!hasPlanUsage(provider)) { json(res, 404, { error: "这个来源的厂商没有公开查额度的办法" }); return; }
+      const windows = await refreshPlanUsage(provider, (await pickKey(secrets, provider)).apiKey);
+      if (!windows) { json(res, 502, { error: "没能读到额度（厂商没有回答，或返回的格式不认识）" }); return; }
+      json(res, 200, { quota: { text: describeQuota(quotaOf(provider.id)) ?? "", ...(exhaustedUntil(provider.id) ? { exhaustedUntil: exhaustedUntil(provider.id)! } : {}) } });
+      return;
+    }
     const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route))?$/.exec(path);
     if (providerMatch) {
       const provider = store.provider(providerMatch[1] ?? "");
@@ -1494,5 +1507,16 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     handleChatgptUpgrade(req, socket as import("node:net").Socket, head);
   });
+  // Coding plans used with a key are asked how much is left now and then, so a used-up one is skipped by the pools and the cards show it.
+  const pollUsage = async () => {
+    for (const p of store.providers()) {
+      if (p.off || !hasPlanUsage(p)) continue;
+      try { await refreshPlanUsage(p, (await pickKey(secrets, p)).apiKey); } catch { /* the next round tries again */ }
+    }
+  };
+  const first = setTimeout(() => void pollUsage(), 5_000);
+  const every = setInterval(() => void pollUsage(), 5 * 60_000);
+  first.unref(); every.unref();
+  server.on("close", () => { clearTimeout(first); clearInterval(every); });
   return server;
 }

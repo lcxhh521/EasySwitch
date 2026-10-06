@@ -59,17 +59,20 @@ export function parseQuotaHeaders(headers: Headers, now = Date.now()): QuotaWind
   return windows;
 }
 
-/** Remembers what an answer from this provider said about its quota (any status). */
-export function recordQuotaHeaders(providerId: string, headers: Headers, now = Date.now()): void {
-  const windows = parseQuotaHeaders(headers, now);
+/** Remembers the windows a plan reported; a full one means it will refuse until that window resets. */
+export function recordWindows(providerId: string, windows: QuotaWindow[], now = Date.now()): void {
   if (!windows.length) return;
   const before = states.get(providerId);
   const state: QuotaState = { windows, updatedAt: now, ...(before?.exhaustedUntil && before.exhaustedUntil > now ? { exhaustedUntil: before.exhaustedUntil } : {}) };
-  // A window that is full means the plan will refuse until that window resets.
   const full = windows.filter(w => w.usedPercent >= FULL_PERCENT && w.resetAt && w.resetAt > now);
   if (full.length) state.exhaustedUntil = Math.max(...full.map(w => w.resetAt!));
   else if (state.exhaustedUntil && windows.every(w => w.usedPercent < FULL_PERCENT)) delete state.exhaustedUntil;
   states.set(providerId, state);
+}
+
+/** Remembers what an answer from this provider said about its quota (any status). */
+export function recordQuotaHeaders(providerId: string, headers: Headers, now = Date.now()): void {
+  recordWindows(providerId, parseQuotaHeaders(headers, now), now);
 }
 
 /** Does this refusal mean "the plan is used up" (and not "slow down a moment" or a bad key)? */
