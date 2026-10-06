@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
@@ -10,11 +10,19 @@ import type { GatewayLogEntry } from "./types.ts";
  * usage over days without a database.
  */
 interface PendingUsage { entry: GatewayLogEntry; line: Buffer; attempt?: { identity: string; offset: number } }
+interface TailRecovery { version: 1; offset: number; sha256: string; tailBase64: string; entry: GatewayLogEntry }
 const pendingLine = (entry: GatewayLogEntry, id: string): Buffer => Buffer.from(`${JSON.stringify({ ledgerVersion: 1, ledgerId: id, ...entry })}\n`);
 
 export class Ledger {
   private readonly file: string;
   private readonly pendingDir: string;
+  private readonly recoveryDir: string;
+  private readonly startupIdentity: string;
+  private readonly startupEnd: number;
+  private readonly startupTail: Buffer | undefined;
+  private recoveries = new Map<string, TailRecovery>();
+  private pendingRecoveries = new Map<string, TailRecovery>();
+  private recoveryUnavailable = false;
   private pending = new Map<string, PendingUsage>();
   private entries: Array<{ entry: GatewayLogEntry; at: number }> = [];
   private ids = new Map<string, string>();
@@ -34,11 +42,31 @@ export class Ledger {
     mkdirSync(dir, { recursive: true });
     this.file = join(dir, "usage.jsonl");
     this.pendingDir = join(dir, "usage-pending");
+    this.recoveryDir = join(dir, "usage-recovered");
     // The strict budget reader can distinguish a new empty ledger from a file
     // that disappears after startup. Never truncate an existing usage history.
     try { writeFileSync(this.file, "", { flag: "ax", mode: 0o600 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") this.unavailable = true; }
     try { mkdirSync(this.pendingDir, { recursive: true, mode: 0o700 }); } catch { this.journalUnavailable = true; }
+    try { mkdirSync(this.recoveryDir, { recursive: true, mode: 0o700 }); } catch { this.recoveryUnavailable = true; }
+    let initial: ReturnType<typeof statSync> | undefined;
+    try { initial = statSync(this.file); } catch { /* Unavailable accounting stays fail-closed. */ }
+    this.startupIdentity = initial ? `${initial.dev}/${initial.ino}` : "";
+    this.startupEnd = Number(initial?.size ?? 0);
+    let initialTail: Buffer | undefined;
+    if (initial?.isFile() && this.startupEnd) {
+      let fd: number | undefined;
+      try {
+        fd = openSync(this.file, "r");
+        const size = Math.min(this.startupEnd, 1_048_577), bytes = Buffer.alloc(size);
+        if (readSync(fd, bytes, 0, size, this.startupEnd - size) === size) {
+          const newline = bytes.lastIndexOf(10);
+          if (newline >= 0 || size === this.startupEnd) initialTail = Buffer.from(bytes.subarray(newline + 1));
+        }
+      } catch { /* Without a complete startup tail, never claim ownership of one later. */ }
+      finally { if (fd !== undefined) closeSync(fd); }
+    }
+    this.startupTail = initialTail;
   }
 
   append(entry: GatewayLogEntry): void {
@@ -84,7 +112,7 @@ export class Ledger {
   readForBudget(since?: Date): GatewayLogEntry[] {
     this.refresh();
     if (this.corrupt) throw this.corrupt;
-    if (this.unavailable || this.journalUnavailable || this.pending.size || this.lostEntry) throw new Error("Usage accounting is incomplete");
+    if (this.unavailable || this.journalUnavailable || this.recoveryUnavailable || this.pending.size || this.lostEntry) throw new Error("Usage accounting is incomplete");
     return this.entries.filter(row => !since || row.at >= since.getTime()).map(row => ({ ...row.entry }));
   }
 
@@ -109,7 +137,7 @@ export class Ledger {
     return {
       ...window.summary,
       byProvider: Object.fromEntries(Object.entries(window.summary.byProvider).map(([id, totals]) => [id, { ...totals }])),
-      accountingUnavailable: window.summary.accountingUnavailable || this.unavailable || this.journalUnavailable || Boolean(this.corrupt) || this.pending.size > 0 || this.lostEntry,
+      accountingUnavailable: window.summary.accountingUnavailable || this.unavailable || this.journalUnavailable || this.recoveryUnavailable || Boolean(this.corrupt) || this.pending.size > 0 || this.lostEntry,
       pendingPartialLine: this.tail.length > 0,
     };
   }
@@ -156,12 +184,14 @@ export class Ledger {
 
   private refresh(): void {
     this.loadPending();
+    this.loadRecoveries();
     try {
       this.sync();
       if (!this.corrupt) {
         // Recover the row that owns an interrupted tail before appending later rows.
         const queued = [...this.pending];
         if (this.tail.length) queued.sort((a, b) => Number(this.ownsTail(b[0], b[1])) - Number(this.ownsTail(a[0], a[1])));
+        if (queued.length && this.tail.length && !queued.some(([id, item]) => this.ownsTail(id, item))) this.recoverOrphanTail();
         for (const [id, item] of queued) {
           if (!this.ids.has(id)) {
             if (this.tail.length && !this.ownsTail(id, item)) break;
@@ -180,6 +210,63 @@ export class Ledger {
       }
       this.unavailable = false;
     } catch { this.unavailable = true; }
+  }
+
+  private recoveryKey(offset: number, bytes: Buffer): string {
+    return `${offset}-${createHash("sha256").update(bytes).digest("hex")}`;
+  }
+
+  private loadRecoveries(): void {
+    this.recoveryUnavailable = false;
+    try {
+      for (const name of readdirSync(this.recoveryDir)) {
+        if (!/^\d+-[a-f0-9]{64}\.json(?:\.tmp)?$/.test(name)) { this.recoveryUnavailable = true; continue; }
+        const key = name.replace(/\.json(?:\.tmp)?$/, "");
+        if (name.endsWith(".tmp") && this.pendingRecoveries.has(key)) continue;
+        if (this.recoveries.has(key)) continue;
+        try {
+          const raw = readFileSync(join(this.recoveryDir, name), "utf8");
+          if (Buffer.byteLength(raw) > 2_097_152) throw new Error();
+          const saved = JSON.parse(raw) as TailRecovery;
+          if (saved.version !== 1 || !Number.isSafeInteger(saved.offset) || saved.offset < 0 || typeof saved.tailBase64 !== "string" || typeof saved.sha256 !== "string" || !validBudgetEntry(saved.entry) || saved.entry.costNote !== "unpriced" || saved.entry.costUsd !== undefined || saved.entry.providerId !== undefined) throw new Error();
+          const tail = Buffer.from(saved.tailBase64, "base64");
+          if (tail.toString("base64") !== saved.tailBase64 || !tail.length || tail.length > 1_048_576 || this.recoveryKey(saved.offset, tail) !== key || !key.endsWith(`-${saved.sha256}`)) throw new Error();
+          this.recoveries.set(key, saved);
+          if (name.endsWith(".tmp")) renameSync(join(this.recoveryDir, name), join(this.recoveryDir, `${key}.json`));
+        } catch { this.recoveryUnavailable = true; }
+      }
+    } catch { this.recoveryUnavailable = true; }
+  }
+
+  private recoverOrphanTail(): void {
+    // Only a tail already present when this Ledger started can be crash debris.
+    // A concurrent writer's newly started row is never sealed behind its back.
+    if (this.identity !== this.startupIdentity || this.offset !== this.startupEnd || !this.tail.length || !this.startupTail?.equals(this.tail) || this.corrupt || this.recoveryUnavailable || this.journalUnavailable) return;
+    try {
+      const parsed = JSON.parse(this.tail.toString("utf8"));
+      // Fully formed but invalid data is corruption, not a truncated request.
+      const version = parsed?.ledgerVersion;
+      if (!validBudgetEntry(parsed) || (version !== undefined && version !== 1)) return;
+    } catch {
+      const offset = this.offset - this.tail.length;
+      const key = this.recoveryKey(offset, this.tail);
+      if (!this.recoveries.has(key)) {
+        // Preserve the exact bytes BEFORE sealing the row. This intent survives
+        // a crash immediately before/after the newline and is itself retryable.
+        const recovery: TailRecovery = this.pendingRecoveries.get(key) ?? {
+          version: 1, offset, sha256: key.slice(key.indexOf("-") + 1), tailBase64: this.tail.toString("base64"),
+          entry: { at: new Date().toISOString(), model: "unattributed", route: "chat-translate", status: 499, ms: 0, costNote: "unpriced", note: "账本末尾残缺记录已保留；费用未知" },
+        };
+        this.pendingRecoveries.set(key, recovery);
+        const path = join(this.recoveryDir, `${key}.json`), temp = `${path}.tmp`;
+        writeFileSync(temp, JSON.stringify(recovery), { mode: 0o600 });
+        renameSync(temp, path);
+        this.recoveries.set(key, recovery);
+        this.pendingRecoveries.delete(key);
+      }
+    }
+    appendFileSync(this.file, "\n");
+    this.sync();
   }
 
   private ownsTail(id: string, item: PendingUsage): boolean {
@@ -209,10 +296,12 @@ export class Ledger {
         const count = readSync(fd, chunk, 0, Math.min(chunk.length, size - this.offset), this.offset);
         if (!count) throw new Error("Usage accounting changed during read");
         this.offset += count; this.bytesRead += count;
+        const base = this.offset - count - this.tail.length;
         const data = Buffer.concat([this.tail, chunk.subarray(0, count)]);
         let start = 0, newline: number;
         while ((newline = data.indexOf(10, start)) >= 0) {
-          const line = data.subarray(start, newline).toString("utf8"); start = newline + 1;
+          const lineBytes = data.subarray(start, newline), lineOffset = base + start;
+          const line = lineBytes.toString("utf8"); start = newline + 1;
           if (!line.trim()) continue;
           this.parsedLines++;
           try {
@@ -230,7 +319,11 @@ export class Ledger {
               this.ids.set(ledgerId, serialized);
             }
             this.entries.push({ entry, at: Date.parse(entry.at) });
-          } catch { this.corrupt ??= new Error("Usage accounting contains an invalid entry or amount"); }
+          } catch {
+            const recovery = this.recoveries.get(this.recoveryKey(lineOffset, lineBytes));
+            if (recovery) this.entries.push({ entry: recovery.entry, at: Date.parse(recovery.entry.at) });
+            else this.corrupt ??= new Error("Usage accounting contains an invalid entry or amount");
+          }
         }
         this.tail = Buffer.from(data.subarray(start));
         if (this.tail.length > 1_048_576) {

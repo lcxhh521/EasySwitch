@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -189,4 +191,105 @@ test("oversized partial corruption stays fail-closed on unchanged subsequent rea
   writeFileSync(file, `${JSON.stringify(entry())}\n`);
   assert.equal(summary().accountingUnavailable, false);
   assert.equal(summary().calls, 1);
+});
+
+test("a pre-journal crash-torn legacy tail preserves its bytes and permits new durable calls after restart", t => {
+  const { dir, file } = fixture(t);
+  const original = `${JSON.stringify(entry({ costUsd: 1 }))}\n{"at":"torn`;
+  writeFileSync(file, original);
+  const restarted = new Ledger(dir);
+  assert.equal(restarted.budgetSummary(START, END, NOW).pendingPartialLine, true);
+  restarted.append(entry({ costUsd: 2 }));
+  const now = new Date(Math.max(Date.now() + 1000, NOW.getTime()));
+  let summary = restarted.budgetSummary(new Date(0), new Date("2100-01-01Z"), now);
+  assert.equal(summary.accountingUnavailable, false);
+  assert.equal(summary.estimatedCostUsd, 3);
+  assert.equal(summary.unknownCostCalls, 1);
+  assert.equal(summary.calls, 3);
+  assert.ok(readFileSync(file, "utf8").startsWith(`${original}\n`), "not one byte of the legacy file was replaced");
+  const recoveryFiles = readdirSync(join(dir, "usage-recovered"));
+  assert.equal(recoveryFiles.length, 1);
+  const recovery = JSON.parse(readFileSync(join(dir, "usage-recovered", recoveryFiles[0]!), "utf8"));
+  assert.equal(Buffer.from(recovery.tailBase64, "base64").toString(), '{"at":"torn');
+  const again = new Ledger(dir);
+  again.append(entry({ costUsd: 4 }));
+  summary = again.budgetSummary(new Date(0), new Date("2100-01-01Z"), now);
+  assert.equal(summary.accountingUnavailable, false); assert.equal(summary.estimatedCostUsd, 7); assert.equal(summary.unknownCostCalls, 1);
+});
+
+test("a recorded tail-recovery intent survives a crash before sealing and does not mask unrelated corruption", t => {
+  const { dir, file } = fixture(t);
+  const tail = Buffer.from('{"at":"torn');
+  writeFileSync(file, tail);
+  const sha256 = createHash("sha256").update(tail).digest("hex");
+  const record = { version: 1, offset: 0, sha256, tailBase64: tail.toString("base64"), entry: entry({ providerId: undefined, model: "unattributed", costUsd: undefined, costNote: "unpriced" }) };
+  const path = join(dir, "usage-recovered", `0-${sha256}.json`);
+  writeFileSync(path, JSON.stringify(record));
+  const restarted = new Ledger(dir);
+  restarted.append(entry({ costUsd: 2 }));
+  assert.equal(restarted.budgetSummary(START, END, NOW).accountingUnavailable, false);
+  assert.equal(restarted.budgetSummary(START, END, NOW).estimatedCostUsd, 2);
+  assert.equal(restarted.budgetSummary(START, END, NOW).unknownCostCalls, 1);
+  appendFileSync(file, "different complete corrupt row\n");
+  assert.equal(restarted.budgetSummary(START, END, NOW).accountingUnavailable, true);
+});
+
+test("corrupt recovery intent and complete invalid JSON schema cannot be silently converted to unknown cost", t => {
+  const { dir, file } = fixture(t);
+  const tail = Buffer.from('{"at":"torn');
+  const sha256 = createHash("sha256").update(tail).digest("hex");
+  const path = join(dir, "usage-recovered", `0-${sha256}.json.tmp`);
+  writeFileSync(file, tail); writeFileSync(path, "partial recovery intent");
+  const restarted = new Ledger(dir);
+  restarted.append(entry());
+  assert.equal(restarted.budgetSummary(START, END, NOW).accountingUnavailable, true);
+  assert.equal(restarted.budgetSummary(START, END, NOW).accountingUnavailable, true);
+  assert.deepEqual(readFileSync(file), tail);
+  rmSync(path);
+  writeFileSync(file, JSON.stringify(entry({ costUsd: -1 })));
+  const bad = new Ledger(dir); bad.append(entry());
+  assert.equal(bad.budgetSummary(START, END, NOW).accountingUnavailable, true);
+  assert.deepEqual(readdirSync(join(dir, "usage-recovered")), []);
+});
+
+test("a transient partial recovery-intent write retries from its owned in-memory intent", t => {
+  const { dir, file } = fixture(t);
+  const originalTail = '{"at":"torn';
+  writeFileSync(file, originalTail);
+  const restarted = new Ledger(dir);
+  const originalWrite = fs.writeFileSync;
+  let injected = false;
+  t.mock.method(fs, "writeFileSync", ((path, data, options) => {
+    if (!injected && typeof path === "string" && path.includes("usage-recovered") && path.endsWith(".tmp")) {
+      injected = true;
+      originalWrite(path, '{"version":', options);
+      throw Object.assign(new Error("fixture disk full"), { code: "ENOSPC" });
+    }
+    return originalWrite(path, data, options);
+  }) as typeof fs.writeFileSync);
+  syncBuiltinESMExports();
+  try {
+    restarted.append(entry({ costUsd: 2 }));
+    assert.equal(injected, true);
+    assert.equal(readFileSync(file, "utf8"), originalTail);
+    assert.equal(restarted.budgetDiagnostics().pendingWrites, 1);
+    const recovered = restarted.budgetSummary(new Date(0), new Date("2100-01-01Z"), new Date(Date.now() + 1000));
+    assert.equal(recovered.accountingUnavailable, false);
+    assert.equal(recovered.estimatedCostUsd, 2);
+    assert.equal(recovered.unknownCostCalls, 1);
+    assert.equal(restarted.budgetDiagnostics().pendingWrites, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("matching inode and EOF cannot authorize sealing a different tail written after construction", t => {
+  const { dir, file } = fixture(t);
+  const original = "          \n", later = '{"at":"torn';
+  assert.equal(original.length, later.length);
+  writeFileSync(file, original);
+  const ledger = new Ledger(dir);
+  writeFileSync(file, later);
+  ledger.append(entry());
+  assert.equal(readFileSync(file, "utf8"), later);
+  assert.equal(ledger.budgetSummary(START, END, NOW).accountingUnavailable, true);
+  assert.deepEqual(readdirSync(join(dir, "usage-recovered")), []);
 });

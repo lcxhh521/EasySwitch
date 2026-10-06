@@ -172,6 +172,8 @@ test("damaged disabled settings warn without stopping inference, but active or u
   assert.equal(restored.status().configurationInvalid, true);
   assert.equal(restored.assertAllowed().blocked, false);
   assert.match(restored.status().warning!, /仍为关闭/);
+  writeFileSync(join(dir, "budget.json"), JSON.stringify({ version: 99, settings: DEFAULT_BUDGET }));
+  assert.throws(() => new BudgetController(dir, { readEntries: () => [] }).assertAllowed(), BudgetExceededError, "an unsupported schema cannot use the ordinary corrupt-disabled exemption");
   restored.setSettings({ ...DEFAULT_BUDGET, enabled: true, action: "stop" });
   writeFileSync(join(dir, "budget.json"), "broken again");
   restored = new BudgetController(dir, { readEntries: () => [] });

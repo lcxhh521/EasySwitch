@@ -85,6 +85,7 @@ export class BudgetController {
   #readEntries?: (since: Date) => GatewayLogEntry[];
   #readSummary?: BudgetSummaryReader;
   #knownDisabled = false;
+  #unsupportedVersion = false;
   #now: () => Date;
 
   constructor(dir: string, options: { readEntries?: (since: Date) => GatewayLogEntry[]; readSummary?: BudgetSummaryReader; now?: () => Date }) {
@@ -101,7 +102,7 @@ export class BudgetController {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid budget settings");
         const legacy = parsed.version === undefined;
-        if (!legacy && parsed.version !== 1) throw new Error("Unsupported budget settings version");
+        if (!legacy && parsed.version !== 1) { this.#unsupportedVersion = true; throw new Error("Unsupported budget settings version"); }
         const value = legacy ? parsed : parsed.settings;
         // An explicit disabled control remains disabled even if unused amount/
         // period fields are damaged. Do not infer disabled from a parse failure.
@@ -125,7 +126,7 @@ export class BudgetController {
       this.#knownDisabled = true;
       try { this.persist(this.#settings); } catch { /* Default off remains the in-memory state. */ }
     }
-    if (this.#configurationInvalid && !this.#knownDisabled) {
+    if (this.#configurationInvalid && !this.#knownDisabled && !this.#unsupportedVersion) {
       try {
         const control = JSON.parse(readFileSync(this.#controlFile, "utf8")) as Record<string, unknown>;
         this.#knownDisabled = control.version === 1 && control.enabled === false && typeof control.revision === "string" && /^[a-f0-9-]{36}$/.test(control.revision);
