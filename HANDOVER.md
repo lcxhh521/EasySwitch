@@ -40,6 +40,10 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 
 **需要你警惕的地方**：现在的 4 页界面和菜单栏面板是照 Magpie / opencodex 的样子做的（B41 要评审）。新做的任何界面和交互，先想清楚我们的差异点再动手，不要顺手抄它们的布局、命名和流程。
 
+## 1.6 便捷是设计原则（用户拍板）
+
+典型用户有两类：同时养着好几个 agent 的重度开发者，和普通用户。用户的判断：**现在阻碍普通用户用多个 agent 的本质是不便捷，足够便捷他们就会用。** 所以新功能先问“普通用户一键能不能做到、要不要看懂术语”；界面写人话。远期想法（先不做）：并行派活 + 交叉审查（B49）、规则建议（B50）、拿得出手的第一个场景（B51）。要做的下一个产品功能：额度感知派活（B48）。
+
 ## 2. 不可违反的规则
 
 用户明确定下的，违反就是事故：
@@ -79,7 +83,7 @@ EasySwitch：**把从各处找来的模型来源（中转站、官方 API、订�
 - **B7 其余 agent 的订阅当来源**：逐个调研，能接就接，不能接写明原因。
 - **B10 Vertex**、**B11 MiMo**（免 key 版已做；官方 API 预设在不在要核对）、**B12 DeepSeek/Kimi 的档位界面**、**B13 花费预算**、**B30 网关鉴权令牌**、**B31 原生 Keychain API**（现在用 `security` 命令）、**B32 README 刷新**（还有借鉴描述，要写成面向用户的）。
 - **B33 公开前清单**：见第 7 节。
-- **这两项原本是本地 GPT 的，用户 2026-10-06 改给你（Dot）**：**B20** Cursor、Kiro、Antigravity 的订阅适配；**B21** 协议层重构（按出站来源选适配器）。**注意：本地 GPT 在用户 Mac 的 `main` 工作区里已经做了一部分，没有提交**（B44 已经把快照推到云端 `gpt-wip`）。你仍然在 `dev` 上开发；云端已经有 **`gpt-wip` 分支（提交 8303a37）**，是本地 GPT 在 main 工作区里未提交进展的快照（Kiro 适配器 `kiro*.ts` / `aws-eventstream.ts`、新的协议层 `protocol.ts` / `inbound.ts` / `outbound*.ts` / `downstream.ts` / `gateway-route.ts` / `upstream-events.ts`、`docs/outbound-adapters.md`、两个新测试，以及对 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`、`server.ts`、`web/app.js` 的改动）。它**可能编译不过或测试不过**，是某一时刻的样子，GPT 之后的改动不在里面。它只是**参考**（可以按需把里面的文件或思路取过来，注意它改了 `gateway*.ts`、`types.ts`、`server.ts` 等，和 `dev` 会有冲突，不要整支合并）；没有就问用户，别从零重做已经有的东西。这两项会改 `gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层。**你改动前先看这些文件在 `dev` 上是否被动过，避免冲突。**
+- **B20（Cursor、Kiro、Antigravity 的订阅适配）原本是本地 GPT 的，后来说给你，但你说不做，2026-10-06 用户改回由 Claude 做，你不要碰。** **B21（协议层重构，按出站来源选适配器）仍是你的**，不过 B20 要用到它，做之前和用户确认接口，别让两边撞车。**注意：本地 GPT 在用户 Mac 的 `main` 工作区里已经做了一部分，没有提交**（B44 已经把快照推到云端 `gpt-wip`）。你仍然在 `dev` 上开发；云端已经有 **`gpt-wip` 分支（提交 8303a37）**，是本地 GPT 在 main 工作区里未提交进展的快照（Kiro 适配器 `kiro*.ts` / `aws-eventstream.ts`、新的协议层 `protocol.ts` / `inbound.ts` / `outbound*.ts` / `downstream.ts` / `gateway-route.ts` / `upstream-events.ts`、`docs/outbound-adapters.md`、两个新测试，以及对 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`、`server.ts`、`web/app.js` 的改动）。它**可能编译不过或测试不过**，是某一时刻的样子，GPT 之后的改动不在里面。它只是**参考**（可以按需把里面的文件或思路取过来，注意它改了 `gateway*.ts`、`types.ts`、`server.ts` 等，和 `dev` 会有冲突，不要整支合并）；没有就问用户，别从零重做已经有的东西。这两项会改 `gateway*.ts`、`types.ts`、`upstream.ts`、`model-efforts.ts` 和新的协议层。**你改动前先看这些文件在 `dev` 上是否被动过，避免冲突。**
 
 ## 5. 借鉴别人代码的规矩
 
