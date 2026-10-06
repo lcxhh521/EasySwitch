@@ -41,7 +41,7 @@
 - [ ] B45 · Claude 桌面端（B38）的测试和实现交给 Dot — 来源：「claude桌面端那个也让dot做测试」（10-06）· 备注：用户建议 Dot 在自己的云电脑上下载 Claude 桌面端来测（Claude 桌面端只有 macOS / Windows 版，Linux 云电脑测不了，要说明）；测通后仍要在用户的 Mac 上跑一次短确认（macOS 路径）；详细步骤在 HANDOVER.md 的 B38 段
 - [ ] B58 · 把 Antigravity 的客户端密钥从写死改成运行时读取，并从仓库里移除（公开前必做，B33 的一部分）— 来源：B56 的「后续再迭代」（10-06）
 - [~] B60 · 每个 agent 启动后要能在它自己的模型菜单里选模型，不是都在 EasySwitch 界面里选死：把所有可用的模型写进每个 agent 的私有配置（EasySwitch 里选的只是默认），并把「能在它自己的界面里选模型」做成能力矩阵的一列，逐个 agent 定状态 — 来源：「我记得我们说过你要能在每个harness里面选模型的，而不是都在我们easyswitch界面选好」（10-06）· 备注：Codex 和 Claude Code 早就有（目录 / /model 并排）；今天写的 13 个新启动器和已有的 Hermes、OpenCode、dsh 只写了一个主模型，是漏的 · 进展：已做——启动器拿到全部可用模型（已关闭的订阅除外），Hermes、OpenCode、dsh 和 12 个新启动器都把它们全写进 agent 自己的私有配置，EasySwitch 里选的只是默认；能力矩阵新增一列，Codex 和 Claude Code 为已实测；真实 dsh 带两个模型跑通。未做/未知——Gemini CLI、Qwen Code、Copilot CLI 只能用环境变量指定一个模型，还没查它们的 /model 能不能列出；Aider 只能手动输入模型名；这 12 个新启动器的菜单是否真的列出来，要在真实程序上确认（B57 的命令里要加这一项）
-- [ ] B64 · MiMo 的「工具调用以文字形式回显」修复：经 Chat 接口时 MiMo V2 的模型有时把工具调用写成一段带 <parameter= 的文字而不是真正的工具调用，opencodex 有恢复逻辑（见它的 providers 文档 MiMo tool-call echoes 一节），我们的 quirks.ts 里没有 — 来源：B11 核对时发现（10-06）
+- [-] B64 · MiMo 的「工具调用以文字形式回显」修复（经 Chat 接口时 MiMo V2 把工具调用写成带 <parameter= 的文字）— 来源：B11 核对时发现（10-06）· 原因：这是 opencodex 记录的、只在特定路径（Codex 的自由格式工具 + MiMo V2 经 Chat 接口）上出现的问题；我没有 MiMo 账号，没法复现，凭文字描述写恢复逻辑是猜；等真用 MiMo 遇到再做，到时有真实的响应可以对着写
 
 ## 产品方向（2026-10-06 讨论，用户拍板）
 
@@ -52,6 +52,5 @@
 
 ## 加固与发布
 
-- [ ] B31 · 原生 Keychain API（现在用 `security` 命令）— 来源：同上（10-05）
 - [ ] B33 · 公开前清单：按 PROVENANCE.md 逐项重写、换第三方图标，`make-public-snapshot.sh` 检查到 0 发现，再作为新仓库首次提交发布 — 来源：「等公开的时候一次性重写」「同意」（10-06）· 备注：当前基线 63 条
 - [ ] B34 · dev 合入 main：等本地 GPT 到停点（或它的进展已推到云端），先处理 main 里未跟踪的 AGENTS.md / CLAUDE.md / PROVENANCE.md — 来源：分支分工（10-06）
