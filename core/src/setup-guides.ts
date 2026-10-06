@@ -1,3 +1,5 @@
+import { stableToken } from "./gateway-auth.ts";
+
 /**
  * The manual-setup helper: for an app that has no per-launch override but does have a place to type a custom model
  * provider, EasySwitch gives what to type (the address, the token, the models, each ready to copy) and the steps.
@@ -39,7 +41,7 @@ export interface GuideInput {
 }
 
 /** A token that stays valid between runs, and still says which app is asking. */
-export const manualToken = (id: string): string => `es-session-${id.replace(/[^a-z0-9]/g, "")}-manual`;
+export const manualToken = (id: string): string => stableToken(id);
 
 const base = (i: GuideInput) => `http://127.0.0.1:${i.port}`;
 

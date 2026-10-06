@@ -27,6 +27,7 @@ import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSession
 import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setAntigravityToken, setPlanToken, setVertexToken } from "./keypool.ts";
+import { isGatewayPath, loadGatewayKey, requestHasValidToken } from "./gateway-auth.ts";
 import { DEFAULT_VERTEX_MODELS, forgetServiceAccount, mintAccessToken, parseServiceAccount, storeServiceAccount, VertexError, vertexAccessToken, vertexBaseUrl } from "./vertex.ts";
 import { nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
@@ -64,6 +65,8 @@ export interface ServerDeps {
   port: number;
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
+  /** Only requests that carry a token EasySwitch signed may use the gateway (see gateway-auth.ts). The real service turns it on. */
+  gatewayAuth?: boolean;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -1295,6 +1298,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
   }
 
+  // The key that signs the launch tokens is made (or read) before the first request is answered.
+  const gatewayKeyReady = deps.gatewayAuth ? loadGatewayKey(secrets) : Promise.resolve();
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://placeholder");
     const path = url.pathname;
@@ -1304,6 +1310,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 421, { error: "unexpected host" });
         return;
       }
+      await gatewayKeyReady;
       if (path === "/health") {
         json(res, 200, { ok: true, service: "easyswitch", version: VERSION, port });
         return;
@@ -1311,6 +1318,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (isChatgptPath(path)) {
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
         await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog });
+        return;
+      }
+      // The gateway spends the person's keys and subscriptions: only a launch EasySwitch itself made may use it.
+      if (deps.gatewayAuth && isGatewayPath(path) && !requestHasValidToken(req.headers, url.search)) {
+        json(res, 401, { type: "error", error: { type: "authentication_error", message: "EasySwitch 的网关只接受它自己启动的 agent：请用 EasySwitch 启动（es <名字> 或控制台里的「启动」），或照「配置向导」里的令牌填。" } });
         return;
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {

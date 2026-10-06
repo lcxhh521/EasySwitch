@@ -19,7 +19,7 @@
 5. 新功能尽量放新文件，共享文件里只留最少的接线。
 
 正在改（谁 · 哪些文件 · 做什么 · 登记时间）：
-- Claude · `core/src/gateway-auth.ts`（新）、`gateway-chat.ts`（只改 sessionToken）、`server.ts`（只加鉴权那一处）、`launch.ts`（codexArgs 加令牌）、`agent-launch.ts`（Hermes 令牌）、`setup-guides.ts`、`main.ts` · B30 网关鉴权 · 10-06
+- Claude · （没有，B30 已推完）
 - Dot · （还没登记；B21 会碰 `gateway*.ts`、`types.ts`、`upstream*.ts`、`model-efforts.ts`，B45 是新文件为主）
 
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
@@ -55,7 +55,6 @@
 
 ## 加固与发布
 
-- [ ] B30 · 网关鉴权令牌 — 来源：第一版 demo 后我列的公开前加固项（10-05）
 - [ ] B31 · 原生 Keychain API（现在用 `security` 命令）— 来源：同上（10-05）
 - [ ] B32 · README 刷新（还有借鉴描述）— 来源：同上（10-06）
 - [ ] B33 · 公开前清单：按 PROVENANCE.md 逐项重写、换第三方图标，`make-public-snapshot.sh` 检查到 0 发现，再作为新仓库首次提交发布 — 来源：「等公开的时候一次性重写」「同意」（10-06）· 备注：当前基线 63 条

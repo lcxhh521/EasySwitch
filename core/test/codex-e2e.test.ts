@@ -7,6 +7,7 @@
  * Codex runs with a throwaway CODEX_HOME, and the user's real
  * ~/.codex/config.toml is fingerprinted before and after.
  */
+import { sessionToken } from "../src/gateway-chat.ts";
 import { withoutProjectPaths } from "../src/native.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -66,7 +67,7 @@ before(async () => {
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
   store = new Store(mkdtempSync(join(tmpdir(), "es-home-")));
-  server = createEasySwitchServer({ store, secrets: createSecretStore(), port });
+  server = createEasySwitchServer({ store, secrets: createSecretStore(), port, gatewayAuth: true });
   await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
 });
 
@@ -137,7 +138,8 @@ test("the real Codex binary completes a tool round trip through the gateway", as
   const catalog = await writeCodexCatalog(codex, store.dir, store.providers());
   const pending = run(codex, [
     "exec", "--skip-git-repo-check",
-    ...codexArgs(port, "mock-relay/mock-coder", catalog),
+    // As a real launch has it: with the launch's own token, which the gateway requires.
+    ...codexArgs(port, "mock-relay/mock-coder", catalog, undefined, sessionToken("codex")),
     "Run the shell command you are given and report what it printed.",
   ], { cwd: work, env: { ...process.env, HOME: codexHome, CODEX_HOME: codexHome, OPENAI_API_KEY: "" }, timeout: 120_000 });
   // `codex exec` waits for more prompt text on an open stdin pipe.

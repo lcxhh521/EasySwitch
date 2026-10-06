@@ -47,3 +47,7 @@
 ## 归档 2026-10-06
 
 - [x] B63 · 防撞车：Claude 和 Dot 都在 dev 上开发，要有开工前 fetch、小步提交、共享文件先登记的规矩 — 来源：「注意不要跟dot撞了」（10-06）· 验证：规矩和「正在改」登记表写在 BACKLOG.md 开头，已推到云端；开工前 origin/dev 与本地一致（Dot 还没推过东西）
+
+## 归档 2026-10-06
+
+- [x] B30 · 网关鉴权令牌：网关只接受 EasySwitch 自己签发的令牌 — 来源：第一版 demo 后我列的公开前加固项（10-05）· 验证：令牌 = es-session-<agent>-<随机>-<用本机密钥算的签名>，密钥首次生成后存钥匙串；网关路由（/v1、/v1beta、/mcp、/responses、/chat/completions）不带有效令牌回 401，/health 和控制台接口不受影响；令牌认 Authorization、x-api-key、x-easyswitch-session（保留登录的 Claude Code）、x-goog-api-key 和 ?key=；Codex 现在带 x-easyswitch-session 头；Hermes 配置里和配置向导里的是稳定令牌；gateway-auth.test.ts 6 个用例；真 Claude Code、真 Codex、真 Hermes、真 dsh 的测试都改成在开着鉴权的网关上跑并通过 · 备注：ChatGPT 桌面端那条路径（带它自己的登录）不在这个门里；测试默认不开鉴权（现有测试用的是假令牌），入口 main.ts 默认开；升级前启动、还在跑的旧会话用的是未签名令牌，会被拒，重启一次就好

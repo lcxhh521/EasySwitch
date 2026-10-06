@@ -1,3 +1,4 @@
+import { signToken } from "./gateway-auth.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withKey } from "./keypool.ts";
@@ -162,5 +163,5 @@ export async function handleChatCompletions(req: IncomingMessage, res: ServerRes
 
 /** A fresh per-launch gateway token for an agent: the agent id rides in it so the ledger can tell who called. */
 export function sessionToken(agentId: string): string {
-  return `es-session-${agentId.replace(/[^a-z0-9]/g, "")}-${randomUUID()}`;
+  return signToken(agentId);
 }

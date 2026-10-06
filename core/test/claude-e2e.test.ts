@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 import { claudeModelId, fromClaudeModelId } from "../src/catalog.ts";
+import { sessionToken } from "../src/gateway-chat.ts";
 import { claudeArgs, claudeEnv, findClaude } from "../src/launch.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
@@ -49,7 +50,7 @@ before(async () => {
   relay = await startMockRelay(0);
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-home-"))), secrets: createSecretStore(), port });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-home-"))), secrets: createSecretStore(), port, gatewayAuth: true });
   await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
   await api("POST", "/api/providers", { name: "Mock Relay", baseUrl: relay.baseUrl });
 });
@@ -78,7 +79,7 @@ test("the launch command passes everything per process: env plus a --settings la
 test("count_tokens answers locally", async () => {
   const response = await fetch(`${base}/v1/messages/count_tokens`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-easyswitch-session": sessionToken("claude") },
     body: JSON.stringify({ model: "mock-relay/mock-coder", messages: [{ role: "user", content: "hello there" }] }),
   });
   const json = (await response.json()) as Json;
@@ -93,7 +94,8 @@ test("the real Claude Code binary completes a Bash round trip through the gatewa
   }
   const home = mkdtempSync(join(tmpdir(), "es-claude-home-"));
   const work = mkdtempSync(join(tmpdir(), "es-claude-work-"));
-  const env = claudeEnv(port, "mock-relay/mock-coder", "es-session-test");
+  const launchToken = sessionToken("claude");
+  const env = claudeEnv(port, "mock-relay/mock-coder", launchToken);
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env, HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") };
   for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) delete childEnv[key];
   const before = relay.requests.length;
@@ -129,7 +131,7 @@ test("picker ids survive any model name and route back to their provider", async
   const before = relay.requests.length;
   const response = await fetch(`${base}/v1/messages`, {
     method: "POST",
-    headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: "Bearer es-session-test" },
+    headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", authorization: `Bearer ${sessionToken("claude")}` },
     body: JSON.stringify({ model: claudeModelId("mock-relay", "mock-mini"), max_tokens: 100, messages: [{ role: "user", content: "Reply with exactly the word: pong" }] }),
   });
   assert.equal(response.status, 200);

@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { sessionToken } from "./gateway-chat.ts";
+import { stableToken } from "./gateway-auth.ts";
 import { claudeArgs, claudeEnv, codexArgs, type McpAttach } from "./launch.ts";
 import { mcpEndpoint } from "./mcp.ts";
 import { knownEfforts } from "./efforts.ts";
@@ -154,8 +155,8 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
     verified: true,
     efforts: ["minimal", "low", "medium", "high", "xhigh"],
     tiers: [{ id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" }],
-    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp), ...codexExtras(i)], env: {} }),
-    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, i.catalog, i.mcp), ...codexExtras(i), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
+    interactive: i => ({ command: i.bin, args: [...codexArgs(i.port, i.model, i.catalog, i.mcp, i.token), ...codexExtras(i)], env: {} }),
+    headless: i => ({ command: i.bin, args: ["exec", "--skip-git-repo-check", ...codexArgs(i.port, i.model, i.catalog, i.mcp, i.token), ...codexExtras(i), i.task ?? ""], env: { OPENAI_API_KEY: "" } }),
   },
   claude: {
     verified: true,
@@ -280,7 +281,7 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       "  - name: easyswitch",
       `    base_url: ${q(`${gateway(i)}/v1`)}`,
       // The gateway reads only the agent id from this, so one fixed value keeps the file stable between runs.
-      `    api_key: ${q("es-session-hermes-private")}`,
+      `    api_key: ${q(stableToken("hermes"))}`,
       "    api_mode: chat_completions",
       "    discover_models: false",
       "    models:",
@@ -288,7 +289,7 @@ function hermesFiles(i: LaunchInput): Record<string, string> {
       // Hermes runs these side jobs on models of their own; each is pointed at the same private provider.
       ...(aux.length ? ["auxiliary:"] : []),
       ...aux.flatMap(([k, m]) => [`  ${k}:`, "    provider: custom:easyswitch", `    model: ${q(m)}`]),
-      ...(i.tiers?.subagent ? ["delegation:", `  model: ${q(i.tiers.subagent)}`, `  base_url: ${q(`${gateway(i)}/v1`)}`, `  api_key: ${q("es-session-hermes-private")}`] : []),
+      ...(i.tiers?.subagent ? ["delegation:", `  model: ${q(i.tiers.subagent)}`, `  base_url: ${q(`${gateway(i)}/v1`)}`, `  api_key: ${q(stableToken("hermes"))}`] : []),
       ...(i.mcp ? ["mcp_servers:", "  easyswitch:", `    url: ${q(i.mcp.url)}`, "    enabled: true", "    headers:", ...Object.entries(i.mcp.headers).map(([k, v]) => `      ${q(k)}: ${k.toLowerCase() === "authorization" ? q("Bearer ${EASYSWITCH_MCP_TOKEN}") : q(v)}`)] : []),
       "",
     ].join("\n"),

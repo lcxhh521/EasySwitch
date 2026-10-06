@@ -5,7 +5,7 @@ import { createEasySwitchServer } from "./server.ts";
 import { Store } from "./store.ts";
 
 const port = gatewayPort();
-const server = createEasySwitchServer({ store: new Store(), secrets: createSecretStore(), port, ledger: new Ledger() });
+const server = createEasySwitchServer({ store: new Store(), secrets: createSecretStore(), port, ledger: new Ledger(), gatewayAuth: true });
 
 server.on("error", (error: NodeJS.ErrnoException) => {
   console.error(error.code === "EADDRINUSE" ? `port ${port} is already in use; is EasySwitch already running?` : error);

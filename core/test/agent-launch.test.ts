@@ -28,7 +28,7 @@ before(async () => {
       probe.close(() => resolve(p));
     });
   });
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-agent-store-"))), secrets: createSecretStore(), port });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-agent-store-"))), secrets: createSecretStore(), port, gatewayAuth: true });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
   const created = (await fetch(`http://127.0.0.1:${port}/api/providers`, {
     method: "POST", headers: { "content-type": "application/json", "x-easyswitch": "1" },

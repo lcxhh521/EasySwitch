@@ -1,3 +1,4 @@
+import { sessionToken } from "../src/gateway-chat.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -56,7 +57,7 @@ before(async () => {
 
   relay = await startMockRelay(0, { apiKey: "relay-key" });
   port = await freePort();
-  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-native-"))), secrets: createSecretStore(), port });
+  server = createEasySwitchServer({ store: new Store(mkdtempSync(join(tmpdir(), "es-native-"))), secrets: createSecretStore(), port, gatewayAuth: true });
   await new Promise<void>(r => server.listen(port, "127.0.0.1", r));
   pid = ((await fetch(`http://127.0.0.1:${port}/api/providers`, {
     method: "POST", headers: { "content-type": "application/json", "x-easyswitch": "1" },
@@ -67,7 +68,7 @@ before(async () => {
 after(() => { server.closeAllConnections(); server.close(); anthropic.closeAllConnections(); anthropic.close(); relay.server.closeAllConnections(); relay.server.close(); });
 
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
-  fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: LOGIN, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20", "x-easyswitch-session": "es-session-claude-x", ...headers }, body: JSON.stringify(body) });
+  fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: LOGIN, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20", "x-easyswitch-session": sessionToken("claude"), ...headers }, body: JSON.stringify(body) });
 
 test("a request for a Claude model goes to Anthropic unchanged, with the caller's own headers", async () => {
   seen.length = 0;
@@ -99,7 +100,7 @@ test("a request for a third-party model is answered by its provider and the Clau
 });
 
 test("the model menu shows Claude's own models first and EasySwitch's after them", async () => {
-  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: LOGIN, "anthropic-version": "2023-06-01" } });
+  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: LOGIN, "x-easyswitch-session": sessionToken("claude"), "anthropic-version": "2023-06-01" } });
   const ids = ((await res.json()) as { data: Array<{ id: string }> }).data.map(m => m.id);
   assert.equal(ids[0], "claude-sonnet-fake");
   assert.ok(ids.some(id => id.startsWith("es-claude-")), "ours are there too");
@@ -107,17 +108,17 @@ test("the model menu shows Claude's own models first and EasySwitch's after them
 });
 
 test("with the setting off, or without a login, the menu is only EasySwitch's", async () => {
-  const none = (await (await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { "anthropic-version": "2023-06-01" } })).json()) as { data: Array<{ id: string }> };
+  const none = (await (await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { "x-easyswitch-session": sessionToken("claude"), "anthropic-version": "2023-06-01" } })).json()) as { data: Array<{ id: string }> };
   assert.ok(none.data.every(m => m.id.startsWith("es-claude-")), "no login, nothing to ask Anthropic with");
   await fetch(`http://127.0.0.1:${port}/api/settings`, { method: "PUT", headers: { "content-type": "application/json", "x-easyswitch": "1" }, body: JSON.stringify({ claudeNative: false }) });
-  const off = (await (await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: "Bearer sk-ant-oat-other", "anthropic-version": "2023-06-01" } })).json()) as { data: Array<{ id: string }> };
+  const off = (await (await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: "Bearer sk-ant-oat-other", "x-easyswitch-session": sessionToken("claude"), "anthropic-version": "2023-06-01" } })).json()) as { data: Array<{ id: string }> };
   assert.ok(off.data.every(m => m.id.startsWith("es-claude-")));
   await fetch(`http://127.0.0.1:${port}/api/settings`, { method: "PUT", headers: { "content-type": "application/json", "x-easyswitch": "1" }, body: JSON.stringify({ claudeNative: true }) });
 });
 
 test("a session on EasySwitch's own placeholder token never asks Anthropic anything", async () => {
   seen.length = 0;
-  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: "Bearer es-session-claude-abc", "anthropic-version": "2023-06-01" } });
+  const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers: { authorization: `Bearer ${sessionToken("claude")}`, "anthropic-version": "2023-06-01" } });
   const ids = ((await res.json()) as { data: Array<{ id: string }> }).data.map(m => m.id);
   assert.ok(ids.every(id => id.startsWith("es-claude-")));
   assert.equal(seen.length, 0, "no request reached Anthropic's side");
@@ -143,7 +144,7 @@ test("a REAL Claude Code with its own login kept sends that login to the gateway
   const claude = await findClaude();
   if (!claude) { t.skip("claude not installed"); return; }
   seen.length = 0;
-  const env = claudeEnv(port, undefined, "es-session-claude-real", {}, true);
+  const env = claudeEnv(port, undefined, sessionToken("claude"), {}, true);
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env, ANTHROPIC_API_KEY: "", CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN };
   const p = run(claude, ["-p", "hi", ...claudeArgs(env)], { cwd: mkdtempSync(join(tmpdir(), "es-native-work-")), env: childEnv, timeout: 90_000 });
   p.child.stdin?.end();
