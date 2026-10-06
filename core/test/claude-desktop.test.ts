@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -25,7 +25,7 @@ after(() => { globalThis.fetch = realFetch; });
 // ONLY these local fixtures are spawned. No installed agent, vendor app, model,
 // credential, or network host is used, even if one is installed on the machine.
 function fixture(source: string): { dir: string; executable: string; dispose(): void } {
-  const dir = mkdtempSync(join(tmpdir(), "es-desktop-fixture-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "es-desktop-fixture-"));
   const script = join(dir, "mock.mjs");
   writeFileSync(script, source);
   const executable = join(dir, "claude-desktop");

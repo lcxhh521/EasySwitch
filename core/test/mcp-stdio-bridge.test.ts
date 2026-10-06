@@ -94,3 +94,23 @@ test("oversized and timed-out server responses are bounded and notifications nev
     assert.ok(replies.every(x => x.error.code === -32000));
   } finally { await server.close(); }
 });
+
+test("requests are served side by side: a slow tool call does not hold up a ping, and an event-stream answer with progress notes before it is read by its id", async () => {
+  const server = await fixture((_req, res, msg) => {
+    const answer = () => ({ jsonrpc: "2.0", id: msg.id, result: { ok: msg.method } });
+    if (msg.method === "tools/call") {
+      setTimeout(() => { res.setHeader("content-type", "text/event-stream"); res.end(`data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} })}\n\ndata: ${JSON.stringify(answer())}\n\n`); }, 400);
+    } else { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(answer())); }
+  });
+  try {
+    const started = Date.now();
+    const answers = await bridge([
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }) + "\n",
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }) + "\n",
+      JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: {} }) + "\n",
+    ], { url: server.url, headers: {} });
+    assert.deepEqual(answers.map(a => a.id), [2, 1, 3].sort((a, b) => (a === 2 ? -1 : b === 2 ? 1 : a - b)), "the ping is answered first");
+    assert.ok(answers.every(a => a.result?.ok), JSON.stringify(answers));
+    assert.ok(Date.now() - started < 750, "the two slow calls ran together, not one after the other");
+  } finally { await server.close(); }
+});

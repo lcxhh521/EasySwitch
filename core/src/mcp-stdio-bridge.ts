@@ -47,7 +47,7 @@ async function boundedBody(response: Response, max: number): Promise<string> {
 }
 
 /** Accept a finite SSE reply as well as JSON; both are already bounded by the same body limit. */
-function responseMessage(body: string, contentType: string | null): unknown {
+function responseMessage(body: string, contentType: string | null, id?: unknown): unknown {
   if (!contentType?.toLowerCase().includes("text/event-stream")) return JSON.parse(body);
   const messages: unknown[] = [];
   for (const event of body.split(/\r?\n\r?\n/)) {
@@ -56,18 +56,26 @@ function responseMessage(body: string, contentType: string | null): unknown {
     if (!data || data === "[DONE]") continue;
     messages.push(JSON.parse(data));
   }
-  if (messages.length !== 1) throw new Error("Expected one MCP reply");
-  return messages[0];
+  // Progress notifications may come before the answer: take the message that answers this request.
+  const answer = messages.filter(m => m && typeof m === "object" && (m as Rpc).id === id && ("result" in (m as Rpc) || "error" in (m as Rpc)));
+  if (answer.length !== 1) throw new Error("Expected one MCP reply");
+  return answer[0];
 }
 
 /** JSON-RPC output only, one object per line. Diagnostics never expose the endpoint or headers. */
 export async function runMcpStdioBridge(input: Readable, output: Writable, options: McpBridgeOptions): Promise<void> {
   validateBridgeOptions(options);
   const max = options.maxBytes ?? 4_000_000;
-  const write = async (value: unknown) => {
+  // Requests run side by side (a long run_agent must not hold up a ping or a cancel); only the writing is one at a time.
+  let writing: Promise<void> = Promise.resolve();
+  const write = (value: unknown): Promise<void> => {
     const line = JSON.stringify(value) + "\n";
-    await new Promise<void>((done, reject) => output.write(line, error => error ? reject(error) : done()));
+    const next = writing.then(() => new Promise<void>((done, reject) => output.write(line, error => error ? reject(error) : done())));
+    writing = next.catch(() => undefined);
+    return next;
   };
+  const running = new Set<Promise<void>>();
+  const start = (line: string) => { const job: Promise<void> = handle(line).finally(() => running.delete(job)); running.add(job); };
   const handle = async (line: string) => {
     if (!line.trim()) return;
     let msg: Rpc;
@@ -89,7 +97,7 @@ export async function runMcpStdioBridge(input: Readable, output: Writable, optio
       const body = await boundedBody(response, max);
       if (notification) return;
       if (!body) throw new Error("Missing MCP response");
-      const answer = responseMessage(body, response.headers.get("content-type"));
+      const answer = responseMessage(body, response.headers.get("content-type"), msg.id);
       if (!answer || typeof answer !== "object" || Array.isArray(answer)) throw new Error("Invalid MCP response");
       const rpc = answer as Rpc;
       if (rpc.jsonrpc !== "2.0" || rpc.id !== msg.id || (("result" in rpc) === ("error" in rpc))) throw new Error("Invalid MCP response");
@@ -112,13 +120,14 @@ export async function runMcpStdioBridge(input: Readable, output: Writable, optio
         } else buffer += part;
       }
       if (ended) {
-        if (!discarding) await handle(buffer.trimEnd());
+        if (!discarding) start(buffer.trimEnd());
         buffer = ""; discarding = false;
       }
     }
   }
   // A final non-newline JSON message is accepted when the client closes its input.
-  if (buffer && !discarding) await handle(buffer);
+  if (buffer && !discarding) start(buffer);
+  await Promise.all(running);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

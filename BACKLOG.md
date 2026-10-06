@@ -24,7 +24,7 @@
 ## 当前主线：把每个功能做到每个 agent（不能只做一两个）
 
 - [~] B2 · CLI 启动与后台任务：代码补齐，真实程序验收未完成 — 来源：同上（10-06） · 进展：Kimi TS/旧CLI、OMP、AtomCode、CodeBuddy Code私有启动已补，保留B60全模型菜单；CodeBuddy的Messages地址覆盖已有官方依据，不再沿用不能重定向的旧猜测。新增实现仅经云端纯/假服务验证，真实参数和会话行为待验收；见 docs/agent-gaps-validation.md
-- [~] B3 · 每个支持“按次指定 MCP”的 agent 都挂上 EasySwitch 的 MCP（现在只有 Codex、Claude Code），不支持的写明原因 — 来源：「agents calling agents」产品定义 + 同上（10-06） · 2026-10-06 云端进展：dsh 的已安装插件私有挂载、Kimi/OMP/AtomCode/CodeBuddy MCP 及 Trae stdio→HTTP 桥已实现，18 个 agent-config-gaps/mcp-stdio-bridge 纯/假服务测试通过；能力矩阵保持 documented，真实客户端和项目级配置覆盖行为未验收
+- [~] B3 · 每个支持“按次指定 MCP”的 agent 都挂上 EasySwitch 的 MCP（已挂：Codex、Claude Code、Hermes、OpenCode、Gemini、Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw、dsh、Trae Agent 等，逐个见各启动器的 mcpCaveat），不支持的写明原因 — 来源：「agents calling agents」产品定义 + 同上（10-06） · 2026-10-06 云端进展：dsh 的已安装插件私有挂载、Kimi/OMP/AtomCode/CodeBuddy MCP 及 Trae stdio→HTTP 桥已实现，18 个 agent-config-gaps/mcp-stdio-bridge 纯/假服务测试通过；能力矩阵保持 documented，真实客户端和项目级配置覆盖行为未验收
 - [ ] B5 · 把「按文档写的、没实测」的 Gemini CLI、Qwen Code、OpenCode、Copilot CLI、Aider 逐个实测（用独立目录临时安装，不动系统环境）；与 B57 的本机验证命令合并做 — 来源：盘点发现 Gemini CLI 被多报为已接入（10-06）
 
 ## 产品功能
@@ -44,6 +44,22 @@
 - [-] B64 · MiMo 的「工具调用以文字形式回显」修复（经 Chat 接口时 MiMo V2 把工具调用写成带 <parameter= 的文字）— 来源：B11 核对时发现（10-06）· 原因：这是 opencodex 记录的、只在特定路径（Codex 的自由格式工具 + MiMo V2 经 Chat 接口）上出现的问题；我没有 MiMo 账号，没法复现，凭文字描述写恢复逻辑是猜；等真用 MiMo 遇到再做，到时有真实的响应可以对着写
 
 - [x] B73 · Claude 的新角色：负责产品定义、代码检查（评审 Dot 的提交）和完善，以及 Dot 做不了的事（需要用户 Mac 的真机验证：跑真实的 agent、验证启动器、界面截图、钥匙串、真账号核对）；不再自己接清单上的开发项，除非用户点名 — 来源：「后续我觉得你就负责产品定义和代码检查以及完善，然后做dot不能做的事情」（10-06）· 验证：HANDOVER.md 第 0.5 节、AGENTS.md「分工与分支」、本文件登记表已按此改写；修正 B72 里「Claude 不再开发」的说法（开发归 Dot，Claude 做定义、检查、完善和真机验证）
+
+## Claude 评审 Dot 的 01577f2 后派给 Dot 的新活（2026-10-06；Claude 已直接修了测试里暴露的回归）
+
+- [x] B86 · Claude 评审 01577f2 并直接修了回归：ChatGPT 桌面端的 /backend-api/codex 和 WebSocket 不该要我们的会话令牌（桌面端带的是它自己的登录），已恢复并重开增强启动；Codex 的 web_search 等厂商自带工具跨协议改回「丢弃并记录」而不是整个请求 400；system/developer 指令合并成开头一条；工具结果的内容块转文字；parallel_tool_calls 只在 false 时发给 Chat；有 chat 和 messages 两种来源时优先 chat、Messages 默认 token 上限 4096 改 16384；Claude 专属字段和账号标识不发给第三方 Messages 中转站；上游 4xx 的原因文字转给 agent；MCP 桥恢复并发；钥匙串小程序启动时自动编译、/api/state 不再因读 Key 失败而整页 500；测试运行时默认用内存密钥库（之前会在用户 Mac 上弹钥匙串窗口）；两个旧的 GET 启动测试改成 POST；macOS 的 /private 路径测试；公开快照排除 docs/；界面里的开发话术改成人话 — 来源：用户「有错误就直接改，然后给 dot 派新活」（10-06）· 验证：本次提交；新增 core/test/outbound-shape.test.ts 5 例和 mcp-stdio-bridge 并发例；真实 Claude Code、Codex、dsh 的端到端测试在这台 Mac 上恢复通过
+- [ ] B74 · 【Dot】订阅适配器（Kiro、Antigravity、Cursor、Kimi）直接吃中立的 Conversation，去掉 subscription-compat.ts 里「先转 Chat 再交给适配器」的中转（硬性原则 5）；顺带补回丢掉的：孤儿 tool_use 修复（repairToolPairs）、Kimi 流式用量（include_usage）、Messages 入站的缓存键、已保存的档位、developer 角色处理 — 来源：Claude 评审 B21 的发现
+- [ ] B75 · 【Dot】Messages 和 Gemini 入站的流式输出：上游先输出 thinking 再输出文本时，现在几乎全部缓冲到结束才一次给出（downstream.ts 只即时流出 index 0 的文本块），Claude Code 和 Gemini CLI 看不到实时进展；改成按块即时流出 thinking、text、tool_use，签名在块末补发 — 来源：Claude 评审 B21 的发现
+- [ ] B76 · 【Dot】小项一批：Chat→Chat 直通也做 repairToolPairs 与 null 转空串的修复；agent 自带的 effort 在没保存档位时不应开启 DeepSeek/GLM/Qwen 的 thinking；流中途失败也要把已用的 token 写进账本；dsh 缺插件时派活降级成不挂 MCP 并说明原因，而不是整次失败；vertex-gemini 的 thinkingLevel 按模型代际映射（2.5 用 thinkingBudget，不认识的档位不发）；launchers-extra 里 --api-key 的 argv 冗余参数删掉 — 来源：Claude 评审
+- [ ] B77 · 【Dot】删死代码并更新文档：sendChat、sendResponses、translate.ts 的 responsesToChat 和 ResponsesStream、anthropic.ts 的 messagesToChat、AnthropicStream、chatToMessage、gemini.ts 的 geminiToChat 和 GeminiStream、gateway.ts 的 applyThinking（现在没有生产调用，却有测试给人覆盖的错觉）；这些测试要改成测真实路径（reasoning 优先的流式、tool_result 数组、web_search 和 developer 发往 Chat、Messages 中转字段清理、跨协议错误文字、孤儿 tool_use）；AGENTS.md 代码地图里 sendChat「唯一出口」改成现状 — 来源：Claude 评审
+- [ ] B78 · 【Dot】钥匙串：helper 用稳定身份签名；既有条目（旧版 security 命令创建的）读写和更新是否会弹授权、launchd 后台无人点击会不会 15 秒超时，用一次性测试条目在 macOS 上验证（EASYSWITCH_TEST_KEYCHAIN=1，不碰真 key），并把回退路径写进文档；helper 缺失要在 /health 报告；native-keychain.test 的「不回退 argv」要扫 native-keychain.ts 而不只是 secrets.ts；helper 在没有默认钥匙串的环境（用户 Mac 上曾弹「找不到用于储存的钥匙串」）要有可读的失败，而不是弹窗循环 — 来源：Claude 评审与用户 Mac 上的弹窗
+- [ ] B79 · 【Dot】预算性能与可靠：global-budget 每次请求都全量解析账本（20 万行约 376 毫秒，会阻塞事件循环），改成内存累计加文件偏移增量读取；账本末尾半行要容忍，accountingFailed 一次短暂写盘失败就永久置位要能自愈；没有 providerId 的旧账本条目不应把本月所有 stop 来源一起封掉；monthlyUsd 为 0 的旧语义（等于没有预算）要迁移而不是 fail-closed；budget.json 损坏且预算关着时不应阻断推理 — 来源：Claude 评审
+- [ ] B80 · 【Dot】会话令牌只在内存、24 小时：任何重启（崩溃、launchd、部署）会让所有运行中的 agent 会话永久 401，交互窗口超过 24 小时会中途失效；把令牌的 sha256 和过期时间存进权限 0600 的文件使重启后仍有效；手动签发的令牌设数量上限和每 agent 限频（现在能占满 2048 个会话让正常启动失败）；revoke 找不到时回 404 的 body 别写 ok:true — 来源：Claude 评审
+- [ ] B81 · 【Dot】文字桥（Qoder、CodeBuddy）：加全局并发上限（2 到 3 个）；孙进程握着管道时 close 不触发的兜底超时；stderr 与 stdout 分开计字节；控制台创建时 binary 要限制 basename、存在、可执行且不是所有人可写；子进程要带代理环境变量；首次真机验证要在无网或假上游下确认「让它读文件，它读不了」；Qoder 用的 --config-dir 与 research 里记的 QODER_CONFIG_DIR 对账 — 来源：Claude 评审
+- [ ] B82 · 【Dot】docs/ 改成面向用户的公开文档：去掉 B 编号、提交号、人名和「用户明确批准」这类内部话，differentiation-review.md 挪进 research/；README 里指向 docs 的链接要保持有效（公开快照现在整体排除 docs/，要么发布脚本把清理后的 docs 带上，要么 README 去掉这些链接）；release-check 加一条：公开内容里不得出现 B 编号、dot、gpt-wip — 来源：Claude 评审
+- [ ] B83 · 【Dot】界面：协议多选默认折叠并写「通常不用动」，加「检测一下」；Claude 桌面端永久禁用的卡片折叠进「实验功能」；controls.js 里 b.unknownCostCalls 转义；native-keychain.md 与 gateway-budget-keychain.md 重复的合并 — 来源：Claude 评审
+- [ ] B84 · 【Dot】`npm test` 和 `test:local` 白名单的关系写清楚；白名单漏掉的文件（chatgpt-e2e、claude-e2e、codex-e2e、es-cli、agent-launch 等）这次在 macOS 上暴露了 16 个失败，今后改了 gateway-auth、路径、启动接口就要同步改这些测试（Claude 会在 macOS 上定期跑完整 `npm test`）；mac 路径敏感的新测试用 realpathSync(tmpdir()) — 来源：Claude 评审与测试结果
+- [ ] B85 · 【Claude】需要用户 Mac 的验收：B2/B5/B57/B60 的真机核对、B38 在 macOS 上验证 --user-data-dir 开关和文件系统审计（HANDOVER 第 9 节）、ChatGPT 桌面端增强启动回归验证、各订阅的真账号核对（要用户在场）；Dot 不做 — 来源：用户 10-06「做dot不能做的事情」
 
 ## 产品方向（2026-10-06 讨论，用户拍板）
 

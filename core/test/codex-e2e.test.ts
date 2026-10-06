@@ -100,7 +100,7 @@ test("the management API refuses requests without the local header", async () =>
 
 test("a binding yields a Codex command that touches nothing but this one process", async () => {
   await api("PUT", "/api/bindings/codex", { providerId: "mock-relay", model: "mock-coder" });
-  const { json } = await api("GET", "/api/launch/codex");
+  const { json } = await api("POST", "/api/launch/codex", {});
   assert.equal(json.model, "mock-relay/mock-coder");
   assert.match(String(json.command), new RegExp(SESSION_MARKER.replace(".", "\\.")));
   if (await findCodex()) assert.ok(String(json.command).includes(join(store.dir, "codex-catalog.json")), "the catalog lives in EasySwitch's own data dir");

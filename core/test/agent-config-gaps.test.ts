@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -39,7 +39,7 @@ test("dsh declares every tier and preserves required replaced plugin settings", 
 });
 
 test("dsh MCP patch preserves depth and prepares only an already-installed plugin link", () => {
-  const root = mkdtempSync(join(tmpdir(), "es-dsh-fixture-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "es-dsh-fixture-"));
   try {
     const source = join(root, "install", "node_modules", "@deepseek-ai", "dsh-mcp-client");
     mkdirSync(source, { recursive: true });
@@ -63,7 +63,7 @@ test("dsh MCP patch preserves depth and prepares only an already-installed plugi
 });
 
 test("dsh plugin preparation fails closed on missing packages and linked destination ancestors", () => {
-  const root = mkdtempSync(join(tmpdir(), "es-dsh-fixture-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "es-dsh-fixture-"));
   try {
     const session = join(root, "session"); mkdirSync(session);
     assert.throws(() => prepareDshMcpPlugin("/never-run", session, join(root, "missing")), /找不到已安装/);
@@ -79,7 +79,7 @@ test("dsh plugin preparation fails closed on missing packages and linked destina
 });
 
 test("dsh's explicit plugin override validates its package and never falls back on an invalid path", () => {
-  const root = mkdtempSync(join(tmpdir(), "es-dsh-override-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "es-dsh-override-"));
   const previous = process.env.EASYSWITCH_DSH_MCP_PLUGIN;
   try {
     const valid = join(root, "valid"); mkdirSync(valid);

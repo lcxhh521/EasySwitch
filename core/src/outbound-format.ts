@@ -2,6 +2,10 @@ import type { ApiProtocol } from "./types.ts";
 import { ProtocolError, unpackState, type Conversation, type InboundRequest, type Json, type Part } from "./protocol.ts";
 
 const stringify = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value ?? "");
+/** A tool's result as text for a Chat tool message: a list of content blocks becomes its text, not its JSON. */
+const resultText = (value: unknown): string => Array.isArray(value) && value.length && value.every(b => b && typeof b === "object" && typeof (b as Json).type === "string")
+  ? (value as Json[]).map(b => (["text", "input_text", "output_text"].includes(String(b.type)) ? String(b.text ?? "") : `[${b.type}]`)).join("\n")
+  : stringify(value);
 function toolArgs(value: string): Json {
   try { return JSON.parse(value || "{}"); }
   catch { throw new ProtocolError("工具调用参数不是合法 JSON。"); }
@@ -91,7 +95,7 @@ export function encodeRequest(c: Conversation, request: InboundRequest, protocol
         if (p.type === "text") parts.push({ type: "text", text: p.text });
         else if (p.type === "image") parts.push({ type: "image_url", image_url: { url: p.url } });
         else if (p.type === "call") calls.push({ id: p.id, type: "function", function: { name: p.name, arguments: p.arguments } });
-        else if (p.type === "result") messages.push({ role: "tool", tool_call_id: p.id, content: `${p.error ? "Error: " : ""}${stringify(p.content)}` });
+        else if (p.type === "result") messages.push({ role: "tool", tool_call_id: p.id, content: `${p.error ? "Error: " : ""}${resultText(p.content)}` });
         else if (p.type === "reasoning") {
           const saved = state(p); thought += p.text ?? saved?.text ?? "";
           if (saved?.signature) continuation.reasoning_signature = saved.signature;
@@ -100,9 +104,13 @@ export function encodeRequest(c: Conversation, request: InboundRequest, protocol
       }
       if (parts.length || calls.length || thought || Object.keys(continuation).length) messages.push({ role: t.role, content: parts.every(p => p.type === "text") ? parts.map(p => p.text).join("\n\n") || null : parts, ...(calls.length ? { tool_calls: calls } : {}), ...(thought ? { reasoning_content: thought } : {}), ...continuation });
     }
-    body.messages = messages;
+    // Chat providers expect instructions first: every system turn, wherever the caller put it (Claude Code adds some after the user's message), becomes one leading message.
+    const instructionText = (m: Json): string => (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((x: Json) => (x.type === "text" ? x.text : "")).filter(Boolean).join("\n\n") : "");
+    const isInstruction = (m: Json) => m.role === "system" || m.role === "developer";
+    const instructions = messages.filter(isInstruction).map(instructionText).filter(Boolean);
+    body.messages = [...(instructions.length ? [{ role: "system", content: instructions.join("\n\n") }] : []), ...messages.filter(m => !isInstruction(m))];
     if (c.tools.length) body.tools = c.tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
-    if (c.choice) body.tool_choice = typeof c.choice === "object" ? { type: "function", function: { name: c.choice.name } } : c.choice;
+    if (c.choice && c.tools.length) body.tool_choice = typeof c.choice === "object" ? { type: "function", function: { name: c.choice.name } } : c.choice;
     if (c.maxTokens !== undefined) body.max_tokens = c.maxTokens;
     if (c.effort) body.reasoning_effort = c.effort;
     if (c.stop) body.stop = c.stop;
@@ -153,7 +161,7 @@ export function encodeRequest(c: Conversation, request: InboundRequest, protocol
       }
     }
     body.messages = messages; if (system.length) body.system = system;
-    body.max_tokens = c.maxTokens ?? 4096;
+    body.max_tokens = c.maxTokens ?? 16384;
     if (c.tools.length) body.tools = c.tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
     if (c.choice) body.tool_choice = typeof c.choice === "object" ? { type: "tool", name: c.choice.name } : { type: c.choice === "required" ? "any" : c.choice };
     if (c.parallelTools === false && c.tools.length) body.tool_choice = { ...(body.tool_choice ?? { type: "auto" }), disable_parallel_tool_use: true };
@@ -199,7 +207,8 @@ export function encodeRequest(c: Conversation, request: InboundRequest, protocol
   if (protocol !== "gemini") {
     if (c.temperature !== undefined) body.temperature = c.temperature;
     if (c.topP !== undefined) body.top_p = c.topP;
-    if ((protocol === "chat" || protocol === "responses") && c.parallelTools !== undefined) body.parallel_tool_calls = c.parallelTools;
+    // Chat relays such as Kimi and NIM refuse `parallel_tool_calls: true`; only an explicit false is said to them.
+    if (c.tools.length && ((protocol === "chat" && c.parallelTools === false) || (protocol === "responses" && c.parallelTools !== undefined))) body.parallel_tool_calls = c.parallelTools;
   }
   return body;
 }

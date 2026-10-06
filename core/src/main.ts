@@ -1,10 +1,12 @@
 import { gatewayPort } from "./paths.ts";
 import { Ledger } from "./ledger.ts";
+import { ensureKeychainHelper } from "./native-keychain.ts";
 import { createSecretStore } from "./secrets.ts";
 import { createEasySwitchServer, stopClaudeDesktopSessions } from "./server.ts";
 import { Store } from "./store.ts";
 
 const port = gatewayPort();
+if (process.env.EASYSWITCH_SECRETS !== "memory" && !ensureKeychainHelper()) console.error("[easyswitch] 钥匙串小程序没有编译成功（需要 Xcode 命令行工具）：读不到已保存的 Key。可手动运行 scripts/build-keychain.sh 看原因。");
 const server = createEasySwitchServer({ store: new Store(), secrets: createSecretStore(), port, ledger: new Ledger() });
 
 server.on("error", (error: NodeJS.ErrnoException) => {

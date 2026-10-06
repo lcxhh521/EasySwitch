@@ -51,5 +51,7 @@ class MemoryStore implements SecretStore {
 }
 
 export function createSecretStore(): SecretStore {
-  return process.env.EASYSWITCH_SECRETS === "memory" ? new MemoryStore() : new EncodedSecretStore(new NativeKeychainStore());
+  // A test run never reaches the person's real Keychain (which can raise system prompts and leave entries behind) unless that test says so with EASYSWITCH_TEST_KEYCHAIN=1.
+  const underTest = process.env.NODE_TEST_CONTEXT !== undefined && process.env.EASYSWITCH_TEST_KEYCHAIN !== "1";
+  return process.env.EASYSWITCH_SECRETS === "memory" || underTest ? new MemoryStore() : new EncodedSecretStore(new NativeKeychainStore());
 }

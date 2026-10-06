@@ -114,9 +114,10 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     }
     if (!upstream.ok || !upstream.body) {
       const status = upstream.ok ? 502 : upstream.status;
-      await upstream.body?.cancel();
-      // Upstream bodies can contain echoed request data or credentials. Keep them out of logs.
-      gatewayError(res, input.protocol, status, status === 429 ? "upstream rate limit (HTTP 429)" : "upstream HTTP " + status); finish(status, "upstream HTTP " + status); return;
+      const reason = upstream.ok ? "" : await upstreamReason(upstream);
+      await upstream.body?.cancel().catch(() => undefined);
+      // The reason is shown to the agent (it needs "prompt too long" or "model not found" to react) but not logged: upstream bodies can echo request data.
+      gatewayError(res, input.protocol, status, (status === 429 ? "upstream rate limit (HTTP 429)" : "upstream HTTP " + status) + (reason ? `: ${reason}` : "")); finish(status, "upstream HTTP " + status); return;
     }
     downstream = new Downstream(input.protocol, upstreamModelId(model), provider.id, prepared.protocol, prepared.tools, input.stream ? chunk => res.write(chunk) : undefined);
     if (input.stream) {
@@ -138,4 +139,15 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     else { downstream?.fail(message); res.end(); }
     finish(status, message);
   }
+}
+
+
+/** The short message inside an upstream error body, with anything that looks like a credential removed, or "". */
+async function upstreamReason(upstream: Response): Promise<string> {
+  try {
+    const text = (await upstream.clone().text()).slice(0, 4000);
+    let message = text;
+    try { const j = JSON.parse(text) as Record<string, any>; message = String(j.error?.message ?? j.message ?? j.error ?? ""); } catch { /* not JSON: use the text */ }
+    return message.replace(/\s+/g, " ").replace(/(Bearer\s+)?\b(sk|es-session|key|tok|ya29|gh[pousr])[-_][\w.-]{8,}/gi, "[hidden]").trim().slice(0, 300);
+  } catch { return ""; }
 }

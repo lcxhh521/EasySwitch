@@ -38,10 +38,11 @@ export function sourceProtocols(p: Provider, model: string): ApiProtocol[] {
   if (set?.length) return set;
   const result: ApiProtocol[] = [];
   if (p.route === "responses-native") result.push("responses");
-  if (p.messagesRoute === "anthropic-native") result.push("messages");
   // A failed Chat probe must not turn a Responses-only source into a Chat source.
   const chat = p.probe?.checks.find(c => c.id === "chat" && c.status !== "skip");
-  if (chat?.status === "pass" || (!chat && !result.length) || (p.routePinned && p.route === "chat-translate")) result.push("chat");
+  // Chat comes before Messages: a request that cannot go through unchanged prefers the protocol every source takes without a token ceiling.
+  if (chat?.status === "pass" || (!chat && !(result.length || p.messagesRoute === "anthropic-native")) || (p.routePinned && p.route === "chat-translate")) result.push("chat");
+  if (p.messagesRoute === "anthropic-native") result.push("messages");
   return result;
 }
 
@@ -89,6 +90,12 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
   let body = conversation ? encodeRequest(conversation, request, target) : structuredClone(input.body);
   const dropped = conversation?.dropped ?? [];
   if (!conversation) restoreNativeState(body, request, dropped);
+  // A Messages request meant for Anthropic carries Claude-only fields and the account's identifier in `metadata`; they go to Anthropic itself (and to a relay on this machine), not to a third party.
+  const keepClaudeFields = (() => { try { const host = new URL(provider.anthropicBaseUrl ?? provider.baseUrl).hostname; return /(^|\.)anthropic\.com$/i.test(host) || ["127.0.0.1", "localhost", "[::1]", "::1"].includes(host); } catch { return false; } })();
+  if (target === "messages" && !conversation && !keepClaudeFields) {
+    for (const key of ["metadata", "context_management", "safeguards", "output_config"]) if (key in body) { delete body[key]; dropped.push(`field:${key}`); }
+    if (body.thinking && body.thinking.type !== "enabled") { delete body.thinking; dropped.push("field:thinking"); }
+  }
   if (target !== "gemini") { body.model = request.model; if (conversation) body.stream = request.stream; }
   if (target === "chat") {
     const quirks = quirksFor(provider.baseUrl, request.model);
@@ -133,7 +140,7 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
           headers = { ...(key && !provider.wire?.authHeader ? { "x-goog-api-key": key } : {}), ...upstreamHeaders(provider, provider.wire?.authHeader ? key : undefined) };
         } else {
           url = endpointUrl(provider, target);
-          headers = target === "messages" ? { ...anthropicHeaders(key, provider), ...request.headers } : upstreamHeaders(provider, key);
+          headers = target === "messages" ? { ...anthropicHeaders(key, provider), ...(keepClaudeFields ? request.headers : Object.fromEntries(Object.entries(request.headers ?? {}).filter(([name]) => name.toLowerCase() !== "anthropic-beta"))) } : upstreamHeaders(provider, key);
         }
         const init: RequestInit = { method: "POST", redirect: "error", signal, headers: { "content-type": "application/json", accept: plan || request.stream ? "text/event-stream" : "application/json", ...headers } };
         const response = await fetch(url, { ...init, body: JSON.stringify(payload) });

@@ -902,7 +902,7 @@ function providerRow(p) {
       <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}${p.quota ? ` · <span class="${p.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(p.quota.text)}</span>` : ""}</div></div>
       ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
       <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
-      ${p.cliTextBridge ? `<button class="switch ${p.off ? "" : "on"}" data-cli-source-switch="${esc(p.id)}" data-on="${p.off ? "0" : "1"}" ${p.cliTextBridge.kind === "qoder" ? "" : "disabled"}>${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button><span class="chip warn">实验性 · 仅文字</span>` : ""}
+      ${p.cliTextBridge ? `<button class="switch ${p.off ? "" : "on"}" data-cli-source-switch="${esc(p.id)}" data-on="${p.off ? "0" : "1"}" ${p.cliTextBridge.kind === "droid" ? "disabled" : ""}>${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button><span class="chip warn">实验性 · 仅文字</span>` : ""}
       <span class="chev">›</span>
     </div>${detail}`;
 }
@@ -1315,7 +1315,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof cliTextBusy !== "undefined" && cliTextBusy) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {

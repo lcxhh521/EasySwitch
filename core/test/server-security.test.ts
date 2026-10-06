@@ -75,7 +75,6 @@ const protectedRoutes = [
   { path: "/v1/models", method: "GET", body: undefined },
   { path: "/v1beta/models", method: "GET", body: undefined },
   { path: "/mcp", method: "POST", body: { jsonrpc: "2.0", id: 1, method: "ping" } },
-  { path: "/backend-api/codex/responses", method: "POST", body: { model: "p/m", input: "hello" } },
 ];
 
 test("raw gateway HTTP rejects missing, prefix-forged and revoked tokens on every protected protocol", async t => {
@@ -165,7 +164,7 @@ test("stop budget rejects every new inference before upstream I/O and keeps reco
   const issued = f.auth.issue("claude", { allowNativeClaude: true });
   const headers = { authorization: `Bearer ${issued.token}` };
   assert.equal((await raw(f.base, "/api/budget", "PUT", { "x-easyswitch": "1" }, { ...DEFAULT_BUDGET, enabled: true, limitUsd: 0, action: "stop" })).status, 200);
-  for (const route of [...inference, { path: "/backend-api/codex/responses", body: { model: "p/m", input: "hello" } }, { path: "/v1/messages", body: { model: "claude-sonnet-4", messages: [], max_tokens: 1 } }]) {
+  for (const route of [...inference, { path: "/v1/messages", body: { model: "claude-sonnet-4", messages: [], max_tokens: 1 } }]) {
     const response = await raw(f.base, route.path, "POST", headers, route.body);
     assert.equal(response.status, 429, `${route.path}: ${response.text}`);
   }

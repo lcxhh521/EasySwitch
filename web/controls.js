@@ -50,7 +50,7 @@ function subscriptionSupportCard() {
   if (!rows.length) return "";
   const states = { "official-api-key": "已有专用 Key 通道", "not-implemented": "官方接法未实现", "not-verified": "通用模型接口未核实", "blocked-terms": "个人条款限制" };
   const link = url => /^https:\/\//.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">官方说明</a>` : "";
-  return `<details class="card" style="padding:16px;margin-top:12px"><summary>订阅与官方 agent 接入核对（${rows.length} 家）</summary><p class="hint">这里说明官方支持依据。已有 B20 适配器单独保留，新增订阅默认关闭；文档核对和假服务测试不等于真实账号验收。</p>
+  return `<details class="card" style="padding:16px;margin-top:12px"><summary>订阅与官方 agent 接入核对（${rows.length} 家）</summary><p class="hint">这里说明各家官方支持的依据。新增订阅默认关闭；只对照过文档、用假服务测过的，不等于用真账号确认过。</p>
     ${rows.map(row => `<div class="row"><div class="grow"><div class="title">${esc(row.label)} <span class="chip">${esc(states[row.modelSource.state] ?? row.modelSource.state)}</span></div><p class="sub">${esc(row.modelSource.reason)}</p>${(row.apiRoutes ?? []).map(route => `<p class="hint">${esc(route.label)}：${esc(route.auth)}；${esc(route.billing)}</p>`).join("")}<div class="sub">${row.sources.map(link).filter(Boolean).join(" · ")}</div></div></div>`).join("")}</details>`;
 }
 
@@ -59,8 +59,8 @@ let cliTextKind = "qoder";
 let cliTextBusy = false;
 function cliTextSourceNotice(p) {
   return ["qoder", "codebuddy"].includes(p.cliTextBridge?.kind)
-    ? `${p.cliTextBridge.kind === "codebuddy" ? "CodeBuddy" : "Qoder"}纯文字桥：拒绝工具定义、工具历史和图片；普通编码agent通常附带工具，不能直接当完整模型API用。多角色仅作文字transcript，流式请求等待完整结果，没有已核验的token用量。真实CLI未验收，开启后显式调用可能消耗所选厂商额度。`
-    : "Droid生产来源尚未接通已验证的隔离传输，保持501；假控制器测试不代表可用。";
+    ? `${p.cliTextBridge.kind === "codebuddy" ? "CodeBuddy" : "Qoder"}纯文字桥：拒绝工具定义、工具历史和图片；普通编码agent通常附带工具，不能直接当完整模型API用。多轮对话只会当成一段文字发过去，流式请求要等完整结果出来才返回，也拿不到准确的用量。真实CLI未验收（还没有在真实命令行上验证过），开启后调用会消耗你所选厂商的额度。`
+    : "Droid 暂时还不能用：隔离方式没有验证过，所以先不接通；测试里的模拟程序不代表真能用。";
 }
 function cliTextSourcesCard() {
   const label = cliTextKind === "codebuddy" ? "CodeBuddy" : "Qoder";
@@ -71,7 +71,7 @@ function cliTextSourcesCard() {
       <div class="field"><label>已安装${label} CLI绝对路径（不自动安装或检测）</label><input name="binary" required placeholder="/absolute/path/to/${cliTextKind === "codebuddy" ? "codebuddy" : "qoder"}"></div>
       ${cliTextKind === "codebuddy" ? `<div class="field"><label>凭据所属区域（必须明确选择，不自动切换）</label><select name="edition" required><option value="">请选择</option><option value="international">国际版</option><option value="china">国内版</option></select></div><p class="hint">这是让CodeBuddy提供纯文字结果的来源，不是把EasySwitch模型接入CodeBuddy的启动器；不继承本地网关地址。</p>` : ""}
       <div class="field"><label>你已确认可用的模型ID（不自动查询）</label><input name="model" required></div>
-      <div class="field"><label>用户自行提供的${cliTextKind === "codebuddy" ? "CodeBuddy API Key" : "Qoder PAT"}</label><input name="apiKey" type="password" autocomplete="off" required></div>
+      <div class="field"><label>用户自行提供的${cliTextKind === "codebuddy" ? "CodeBuddy API Key" : "Qoder 个人访问令牌"}</label><input name="apiKey" type="password" autocomplete="off" required></div>
       <label><input name="experimental" type="checkbox" required> 我了解纯文字限制与真实CLI尚未验收，添加后仍需明确开启</label>
       <div class="controls"><button class="btn" type="submit" ${cliTextBusy ? "disabled" : ""}>${cliTextBusy ? "保存中…" : "添加，保持关闭"}</button><button type="button" class="btn secondary" data-cli-text-close ${cliTextBusy ? "disabled" : ""}>取消</button></div>
     </form>` : `<button class="btn secondary" data-cli-text-open="qoder">添加Qoder纯文字来源</button> <button class="btn secondary" data-cli-text-open="codebuddy">添加CodeBuddy纯文字来源</button>`}

@@ -30,7 +30,7 @@ export function chatToTurn(chat: ChatRequest): TurnInput {
     if (last?.role === role) last.text += `\n\n${text}`; else turns.push({ role, text });
   };
   for (const m of chat.messages) {
-    if (m.role === "system") { const t = textOf(m.content); if (t) system.push(t); }
+    if (m.role === "system" || (m.role as string) === "developer") { const t = textOf(m.content); if (t) system.push(t); }
     else if (m.role === "user") add("user", textOf(m.content));
     else if (m.role === "assistant") {
       const calls = (m.tool_calls ?? []).map(c => `[调用了工具 ${c.function.name}，参数 ${c.function.arguments}]`).join("\n");

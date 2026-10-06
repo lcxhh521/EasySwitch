@@ -131,5 +131,6 @@ test("a REAL Codex, launched on the gateway with the MCP attached, sees and call
   const toolNames = turns.flatMap(r => (r.tools ?? []).map((x: Json) => x.function?.name));
   assert.ok(toolNames.some((n: string) => /list_agents$/.test(n)), `Codex offered the MCP tool to the model: ${toolNames.join(",").slice(0, 400)} | ${String(result.stderr).slice(-300)}`);
   const answered = turns.some(r => (r.messages as Json[]).some(m => m.role === "tool" && /- (claude|codex|dsh)/.test(String(m.content))));
-  assert.ok(answered, "the tool result from EasySwitch came back to the model");
+  const seenTools = turns.flatMap(r => (r.messages as Json[]).filter(m => m.role === "tool").map(m => String(m.content).slice(0, 200)));
+  assert.ok(answered, `the tool result from EasySwitch came back to the model: ${JSON.stringify(seenTools)} | roles ${JSON.stringify(turns.map(r => (r.messages as Json[]).map(m => m.role)))} | ${String(result.stderr).slice(-400)}`);
 });

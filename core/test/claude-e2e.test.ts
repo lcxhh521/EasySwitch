@@ -69,7 +69,7 @@ test("a chat-only relay is routed through Messages translation", async () => {
 
 test("the launch command passes everything per process: env plus a --settings layer", async () => {
   await api("PUT", "/api/bindings/claude", { providerId: "mock-relay", model: "mock-coder" });
-  const { command, model } = await api("GET", "/api/launch/claude");
+  const { command, model } = await api("POST", "/api/launch/claude", {});
   assert.equal(model, "mock-relay/mock-coder");
   assert.match(String(command), /--settings/);
   assert.match(String(command), /ANTHROPIC_BASE_URL=/);

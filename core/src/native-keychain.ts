@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SecretStore } from "./secrets.ts";
@@ -10,6 +11,19 @@ export type KeychainSpawn = (file: string, args: string[], options: { stdio: ["p
 
 const MAX_MESSAGE_BYTES = 1_048_576;
 const bundledHelper = fileURLToPath(new URL("../native/build/easyswitch-keychain", import.meta.url));
+
+/**
+ * The helper is built from source on the person's Mac (it is not committed). If it is missing, build it once at start-up
+ * instead of letting every key lookup fail: returns whether a helper is there afterwards. Reads nothing from the Keychain.
+ */
+export function ensureKeychainHelper(helper = bundledHelper): boolean {
+  if (existsSync(helper)) return true;
+  if (process.platform !== "darwin") return false;
+  try {
+    execFileSync("sh", [fileURLToPath(new URL("../../scripts/build-keychain.sh", import.meta.url))], { stdio: "ignore", timeout: 180_000 });
+  } catch { /* reported below by the missing file */ }
+  return existsSync(helper);
+}
 
 /**
  * The native helper receives one bounded JSON message on stdin. Secrets never go

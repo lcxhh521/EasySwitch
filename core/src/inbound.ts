@@ -76,7 +76,7 @@ export function decodeRequest(request: InboundRequest): Conversation {
       push(m.role, parts);
     }
     for (const t of b.tools ?? []) {
-      if (t.type !== "function") throw new ProtocolError(`跨协议暂不支持 Chat 工具：${t.type}`);
+      if (t.type !== "function") { out.dropped.push(`tool:${t.type}`); continue; }
       out.tools.push(functionTool(t.function));
     }
     out.choice = typeof b.tool_choice === "object" ? { name: b.tool_choice.function.name } : b.tool_choice;
@@ -98,14 +98,14 @@ export function decodeRequest(request: InboundRequest): Conversation {
     for (const t of b.tools ?? []) {
       if (t.type === "namespace") {
         for (const inner of t.tools ?? []) {
-          if (inner.type !== "function") throw new ProtocolError(`跨协议暂不支持 namespace 工具：${inner.type}`);
+          if (inner.type !== "function") { out.dropped.push(`tool:${inner.type}`); continue; }
           out.tools.push(functionTool(inner, inner.name, t.name));
         }
       } else if (t.type === "function") out.tools.push(functionTool(t));
       else if (t.type === "custom") {
         const grammar = t.format?.definition ? `\nInput grammar (${t.format.syntax ?? ""}):\n${t.format.definition}` : "";
         out.tools.push({ name: t.name, description: (t.description ?? "") + grammar, custom: true, parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] } });
-      } else throw new ProtocolError(`跨协议暂不支持 Responses 工具：${t.type}`);
+      } else out.dropped.push(`tool:${t.type}`); // a tool the vendor runs itself (web_search...): nothing to translate it to; it is dropped and recorded
     }
     out.choice = typeof b.tool_choice === "object" ? { name: flat(b.tool_choice.namespace, b.tool_choice.name) } : b.tool_choice;
     out.maxTokens = b.max_output_tokens;
@@ -115,7 +115,7 @@ export function decodeRequest(request: InboundRequest): Conversation {
     if (b.system) push("system", content(b.system, p));
     for (const m of b.messages ?? []) push(m.role, content(m.content, p));
     for (const t of b.tools ?? []) {
-      if (!t.input_schema) throw new ProtocolError(`跨协议暂不支持 Messages 工具：${t.type ?? t.name}`);
+      if (!t.input_schema) { out.dropped.push(`tool:${t.type ?? t.name}`); continue; }
       out.tools.push(functionTool(t));
     }
     const c = b.tool_choice;
@@ -154,7 +154,7 @@ export function decodeRequest(request: InboundRequest): Conversation {
       push(m.role === "model" ? "assistant" : "user", parts);
     }
     for (const t of b.tools ?? []) {
-      if (!t.functionDeclarations) throw new ProtocolError(`跨协议暂不支持 Gemini 工具：${Object.keys(t)[0]}`);
+      if (!t.functionDeclarations) { out.dropped.push(`tool:${Object.keys(t)[0]}`); continue; }
       for (const f of t.functionDeclarations) out.tools.push(functionTool({ ...f, parameters: lowerSchema(f.parametersJsonSchema ?? f.parameters) }));
     }
     const config = b.toolConfig?.functionCallingConfig;

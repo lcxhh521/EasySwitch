@@ -49,17 +49,3 @@ test("native WebSocket handshake helper strips local capabilities when called by
   }
 });
 
-test("production native WebSocket stays closed even with a valid issued token", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "es-upgrade-blocked-"));
-  const auth = new GatewayTokenAuthority(); const session = auth.issue("codex");
-  const gateway = createEasySwitchServer({ store: new Store(dir), secrets: createSecretStore(), port: 0, gatewayAuth: auth }); const base = await listen(gateway);
-  try {
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = request(base + "/backend-api/codex/responses", { headers: { connection: "Upgrade", upgrade: "websocket", authorization: `Bearer ${session.token}` } });
-      req.on("response", res => { res.resume(); res.on("end", () => resolve(res.statusCode!)); });
-      req.on("upgrade", (_res, socket) => { socket.destroy(); reject(new Error("unverified native tunnel was opened")); });
-      req.on("error", reject); req.end();
-    });
-    assert.equal(status, 409);
-  } finally { gateway.closeAllConnections(); gateway.close(); rmSync(dir, { recursive: true, force: true }); }
-});

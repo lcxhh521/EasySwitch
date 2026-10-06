@@ -189,7 +189,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const status = providerBudgets.budgetStatus(p);
     return { ...basePublicProvider(p, hasKey, usedBy), ...(status ? { budgetStatus: status } : {}) };
   };
-  const providerHasKey = async (p: Provider): Promise<boolean> => Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id));
+  const providerHasKey = async (p: Provider): Promise<boolean> => { try { return Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id)); } catch { return false; } };
   const desktopSessions = new Map<string, ClaudeDesktopSession>();
   const pendingVertexIds = new Set<string>();
   let desktopClosing = false;
@@ -1078,11 +1078,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
     // --- ChatGPT desktop app: start it on this gateway, or plainly ------------
     if (path === "/api/chatgpt" && method === "GET") {
-      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port), launchBlocked: true, note: "桌面端暂缺已核实的本地会话鉴权传递方式，增强启动已暂停；普通启动不受影响" });
+      json(res, 200, { ...(await chatgptStatus(port)), gateway: gatewayBase(port) });
       return;
     }
-    if (path === "/api/chatgpt/enhance" && method === "POST") { json(res, 409, { code: "desktop_gateway_auth_unverified", error: "桌面增强启动缺少已核实的本地会话鉴权传递方式，暂不启动" }); return; }
-    if (path === "/api/chatgpt/native" && method === "POST") {
+    if ((path === "/api/chatgpt/enhance" || path === "/api/chatgpt/native") && method === "POST") {
+      // The app keeps its own ChatGPT login and talks to this gateway on /backend-api/codex, which does not need our session token (see protectedRoute).
       const status = await chatgptStatus(port);
       if (!status.installed) {
         json(res, 404, { error: "没有找到 ChatGPT 桌面端" });
@@ -1093,8 +1093,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 409, { error: "ChatGPT 正在运行，需要重启才能切换", needsRestart: true });
         return;
       }
-      const result = await restartChatgpt(undefined);
-      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: false, staticCatalog: status.staticCatalog } : { error: result.error });
+      let launcher: string | undefined;
+      if (path === "/api/chatgpt/enhance") {
+        if (!store.providers().length) { json(res, 409, { error: "还没有模型来源，先添加一个再增强" }); return; }
+        launcher = (await prepareLauncher(store.dir, port, store.providers()))?.launcher;
+        if (!launcher) { json(res, 500, { error: "生成启动器失败：找不到 ChatGPT 自带的 Codex 程序" }); return; }
+      }
+      const result = await restartChatgpt(launcher);
+      json(res, result.ok ? 200 : 500, result.ok ? { ok: true, enhanced: Boolean(launcher), staticCatalog: status.staticCatalog } : { error: result.error });
       return;
     }
 
@@ -1694,7 +1700,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const isModels = req.method === "GET" && ["/v1/models", "/models", "/v1beta/models", "/v1beta/openai/models"].includes(path);
       const isMcp = path === "/mcp";
       const regularPost = req.method === "POST" && (["/v1/responses", "/responses", "/v1/chat/completions", "/chat/completions", "/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"].includes(path) || Boolean(gemini));
-      const protectedRoute = isModels || isMcp || regularPost || isChatgptPath(path);
+      // The ChatGPT desktop app and Codex app-server send their own ChatGPT login to /backend-api/codex and cannot be given our token,
+      // so those paths are not behind the session token (as before); a stop budget still applies to what they send.
+      const protectedRoute = isModels || isMcp || regularPost;
       const protocol: ApiProtocol = gemini || path.startsWith("/v1beta/") ? "gemini" : path.includes("messages") ? "messages" : path.includes("responses") ? "responses" : "chat";
       if (protectedRoute) {
         if (repeatedGatewayCredential(req)) { gatewayError(res, protocol, 401, "重复的鉴权字段无效", "invalid_gateway_session"); return; }
@@ -1708,6 +1716,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         }
       }
       if (isChatgptPath(path)) {
+        if (req.method !== "GET") {
+          try { budget.assertAllowed(); }
+          catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
+        }
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
         await handleChatgpt(req, res, path, url.search, { store, secrets, log: pushLog });
         return;
@@ -1819,11 +1831,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       socket.destroy();
       return;
     }
-    if (repeatedGatewayCredential(req) || !auth.authenticate(req.headers, new URL(req.url ?? "/", "http://placeholder"))) { socket.destroy(); return; }
+    // The app's WebSocket carries its own ChatGPT login, not our token (see the note on protectedRoute); a stop budget refuses it up front.
+    // Frames are opaque, so a budget reached mid-connection is only noticed on the next one.
     try { budget.assertAllowed(); } catch { socket.destroy(); return; }
-    // Native frames are opaque: per-message budgets and revoked/expired session teardown
-    // are not verified. Do not open a tunnel merely because the upgrade was authenticated.
-    socket.end("HTTP/1.1 409 Conflict\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    handleChatgptUpgrade(req, socket as import("node:net").Socket, head);
   });
   // Coding plans used with a key are asked how much is left now and then, so a used-up one is skipped by the pools and the cards show it.
   const pollUsage = async () => {
