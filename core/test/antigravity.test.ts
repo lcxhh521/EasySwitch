@@ -1,11 +1,11 @@
 import { fixtureToken } from "./gateway-client.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { ANTIGRAVITY_CLIENT_ID } from "../src/antigravity-client.ts";
+const FIXTURE_CLIENT_ID = "fixture-antigravity-client";
 import { clearAntigravityCache } from "../src/antigravity.ts";
 import { conversationToGemini, geminiSchema, geminiToChatResponse, THOUGHT_SIGNATURE_BYPASS } from "../src/gemini-upstream.ts";
 import { clearQuota, isExhausted } from "../src/quota.ts";
@@ -114,6 +114,9 @@ const hello = () => ({ events: [{ response: { candidates: [{ content: { role: "m
 
 before(async () => {
   google = await startFakeGoogle();
+  process.env.EASYSWITCH_TEST_ANTIGRAVITY_FIXTURES = "1";
+  process.env.EASYSWITCH_ANTIGRAVITY_CLIENT_CONFIG = join(dir, "client.json");
+  writeFileSync(process.env.EASYSWITCH_ANTIGRAVITY_CLIENT_CONFIG, JSON.stringify({ version: 1, clientId: FIXTURE_CLIENT_ID, clientSecret: "fixture-client-secret" }), { mode: 0o600 });
   process.env.EASYSWITCH_ANTIGRAVITY_AUTH = `${google.base}/auth`;
   process.env.EASYSWITCH_ANTIGRAVITY_TOKEN = `${google.base}/token`;
   process.env.EASYSWITCH_ANTIGRAVITY_USERINFO = `${google.base}/userinfo`;
@@ -137,15 +140,16 @@ before(async () => {
 });
 
 after(() => {
+  delete process.env.EASYSWITCH_TEST_ANTIGRAVITY_FIXTURES;
   server.closeAllConnections(); server.close(); google.close(); rmSync(dir, { recursive: true, force: true });
-  for (const k of ["AUTH", "TOKEN", "USERINFO", "API", "POLL_MS"]) delete process.env[`EASYSWITCH_ANTIGRAVITY_${k}`];
+  for (const k of ["AUTH", "TOKEN", "USERINFO", "API", "POLL_MS", "CLIENT_CONFIG"]) delete process.env[`EASYSWITCH_ANTIGRAVITY_${k}`];
 });
 
 async function signIn(): Promise<Json> {
   const start = await api("POST", "/api/antigravity/signin", {});
   assert.equal(start.status, 200, await start.clone().text());
   const started = (await start.json()) as Json;
-  assert.equal(new URL(started.url).searchParams.get("client_id"), ANTIGRAVITY_CLIENT_ID);
+  assert.equal(new URL(started.url).searchParams.get("client_id"), FIXTURE_CLIENT_ID);
   assert.equal(new URL(started.url).searchParams.get("code_challenge_method"), "S256");
   let state: Json = {};
   for (let i = 0; i < 100 && !["done", "error"].includes(state.signIn?.status); i++) {
@@ -194,7 +198,7 @@ test("while it is off Google is asked for nothing; on, an agent's request goes o
   const call = google.api.at(-1)!;
   assert.match(call.path, /^\/v1internal:streamGenerateContent\?alt=sse$/);
   assert.match(call.authorization!, /^Bearer ya29\.fake-access-\d+$/);
-  assert.match(call.userAgent!, /^antigravity\/ide\//, "the client family the backend expects");
+  assert.equal(call.userAgent, "EasySwitch/0.0.1", "does not invent an installed IDE identity");
   assert.equal(call.body.model, "gemini-fake-pro");
   assert.equal(call.body.project, "proj-fake");
   assert.equal(call.body.userAgent, "antigravity");

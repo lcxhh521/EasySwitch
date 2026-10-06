@@ -1,49 +1,83 @@
-// The OAuth client identifiers of Google Antigravity's desktop app, as published in opencodex
-// (src/oauth/google-antigravity.ts, MIT), commit 5841269073b3898e5dd3ac9dcd956c7e56c1bb34.
-// Copyright (c) 2026 opencodex contributors. See third_party/opencodex/LICENSE.
-//
-// TEMPORARY, BY THE OWNER'S DECISION (BACKLOG B56): these two values are written here so that the sign-in
-// works at all; the plan is to read them at run time from where the user's own machine has them.
-// They are the only secret-looking strings the repository may hold, they live in this one file, and they
-// must be removed before any public release: the release check reports them on purpose and nothing
-// whitelists them (see PROVENANCE.md).
+/** Runtime client metadata only. This module contains no bundled OAuth client identity. */
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
-export const ANTIGRAVITY_CLIENT_ID = process.env.EASYSWITCH_ANTIGRAVITY_CLIENT_ID
-  || "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-export const ANTIGRAVITY_CLIENT_SECRET = process.env.EASYSWITCH_ANTIGRAVITY_CLIENT_SECRET
-  || "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";
-
-/** The endpoints; tests point these at a fake Google. */
-export const antigravityEndpoints = () => ({
-  auth: process.env.EASYSWITCH_ANTIGRAVITY_AUTH ?? "https://accounts.google.com/o/oauth2/v2/auth",
-  token: process.env.EASYSWITCH_ANTIGRAVITY_TOKEN ?? "https://oauth2.googleapis.com/token",
-  userinfo: process.env.EASYSWITCH_ANTIGRAVITY_USERINFO ?? "https://www.googleapis.com/oauth2/v2/userinfo",
-  api: (process.env.EASYSWITCH_ANTIGRAVITY_API ?? "https://cloudcode-pa.googleapis.com").replace(/\/+$/, ""),
-  onboardApi: (process.env.EASYSWITCH_ANTIGRAVITY_API ?? "https://daily-cloudcode-pa.googleapis.com").replace(/\/+$/, ""),
-});
-
-export const ANTIGRAVITY_SCOPES = [
-  "https://www.googleapis.com/auth/cloud-platform",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/cclog",
-  "https://www.googleapis.com/auth/experimentsandconfigs",
-];
-
-/** The port Google's client allows for the loopback redirect (a free one is used when it is taken). */
-export const ANTIGRAVITY_CALLBACK_PORT = 51121;
-export const ANTIGRAVITY_API_VERSION = "v1internal";
-
-const IDE_VERSION = "2.5.5";
-
-/**
- * The backend answers requests by the client family in the User-Agent: the IDE family is the one that is let
- * through to the newer agent models. The platform tokens are this machine's own.
- */
-export function antigravityUserAgent(): string {
-  const override = process.env.EASYSWITCH_ANTIGRAVITY_USER_AGENT?.trim();
-  if (override) return override;
-  const os = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "windows" : "linux";
-  const arch = process.arch === "arm64" ? "arm64" : "amd64";
-  return `antigravity/ide/${IDE_VERSION} (os_type=${os}; arch=${arch}; aidev_client; auth_method=oauth)`;
+export class AntigravityClientError extends Error {
+  status = 503;
+  code = "antigravity_client_unavailable";
+  constructor() { super("Antigravity 客户端配置尚未就绪，请先检查明确指定的本机私有配置文件。"); }
 }
+export interface AntigravityClientCredentials { readonly clientId: string; readonly clientSecret: string }
+export interface AntigravityClientOptions { env?: NodeJS.ProcessEnv; read?: (path: string) => string }
+const CONFIG_ENV = "EASYSWITCH_ANTIGRAVITY_CLIENT_CONFIG";
+const MAX_BYTES = 16 * 1024;
+
+/** No directory discovery, native-app inspection, import-time I/O or credential persistence. */
+function readPrivateConfig(path: string): string {
+  let fd: number | undefined;
+  try {
+    const before = lstatSync(path);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_BYTES || (before.mode & 0o077) !== 0
+      || (typeof process.getuid === "function" && before.uid !== process.getuid())) throw new AntigravityClientError();
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino || stat.size > MAX_BYTES || (stat.mode & 0o077) !== 0) throw new AntigravityClientError();
+    const bytes = Buffer.alloc(MAX_BYTES + 1);
+    let used = 0;
+    while (used < bytes.length) { const count = readSync(fd, bytes, used, bytes.length - used, null); if (!count) break; used += count; }
+    const after = fstatSync(fd);
+    if (used > MAX_BYTES || after.size !== used || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) throw new AntigravityClientError();
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, used));
+  } catch { throw new AntigravityClientError(); }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+
+/** Caller supplies the path explicitly. Missing/invalid configuration is never replaced by a built-in secret. */
+export function antigravityClientCredentials(options: AntigravityClientOptions = {}): AntigravityClientCredentials {
+  try {
+    const path = (options.env ?? process.env)[CONFIG_ENV];
+    if (!path || !isAbsolute(path) || /[\x00-\x1f\x7f]/.test(path)) throw new AntigravityClientError();
+    const raw = (options.read ?? readPrivateConfig)(path);
+    if (typeof raw !== "string" || Buffer.byteLength(raw) > MAX_BYTES) throw new AntigravityClientError();
+    const value = JSON.parse(raw);
+    if (!value || Array.isArray(value) || typeof value !== "object" || value.version !== 1
+      || Object.keys(value).sort().join(",") !== "clientId,clientSecret,version") throw new AntigravityClientError();
+    for (const key of ["clientId", "clientSecret"]) {
+      if (typeof value[key] !== "string" || !/^[\x21-\x7e]{1,2048}$/.test(value[key])) throw new AntigravityClientError();
+    }
+    return Object.freeze({ clientId: value.clientId, clientSecret: value.clientSecret });
+  } catch { throw new AntigravityClientError(); }
+}
+
+export const ANTIGRAVITY_API_VERSION = "v1internal";
+export const ANTIGRAVITY_CALLBACK_PORT = 0;
+export const ANTIGRAVITY_SCOPES = Object.freeze(["openid", "email", "profile", "https://www.googleapis.com/auth/cloud-platform"]);
+const DESTINATIONS = Object.freeze({
+  auth: "https://accounts.google.com/o/oauth2/v2/auth",
+  token: "https://oauth2.googleapis.com/token",
+  userinfo: "https://openidconnect.googleapis.com/v1/userinfo",
+  api: "https://cloudcode-pa.googleapis.com",
+  onboardApi: "https://cloudcode-pa.googleapis.com",
+});
+const OVERRIDES = { auth: "AUTH", token: "TOKEN", userinfo: "USERINFO", api: "API", onboardApi: "ONBOARD_API" } as const;
+
+/** Fixed Google destinations. Overrides are possible only inside explicit Node loopback fixtures. */
+export function antigravityEndpoints(env: NodeJS.ProcessEnv = process.env): typeof DESTINATIONS {
+  const out: Record<string, string> = { ...DESTINATIONS };
+  const fixture = !!process.env.NODE_TEST_CONTEXT && env.EASYSWITCH_TEST_ANTIGRAVITY_FIXTURES === "1";
+  for (const [key, suffix] of Object.entries(OVERRIDES)) {
+    const raw = env[`EASYSWITCH_ANTIGRAVITY_${suffix}`];
+    if (raw === undefined) continue;
+    if (!fixture) throw new AntigravityClientError();
+    let url: URL;
+    try { url = new URL(raw); } catch { throw new AntigravityClientError(); }
+    if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new AntigravityClientError();
+    if ((key === "api" || key === "onboardApi") && url.pathname !== "/") throw new AntigravityClientError();
+    out[key] = raw.replace(/\/$/, "");
+  }
+  if (fixture && env.EASYSWITCH_ANTIGRAVITY_API && !env.EASYSWITCH_ANTIGRAVITY_ONBOARD_API) out.onboardApi = out.api!;
+  return Object.freeze(out) as typeof DESTINATIONS;
+}
+
+/** Identifies this integration honestly rather than inventing an installed IDE version. */
+export function antigravityUserAgent(): string { return "EasySwitch/0.0.1"; }

@@ -42,7 +42,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 | `responses-upstream.ts` | 保留订阅Responses请求整形；生产输出解析走upstream-events |
 | `mimo-free.ts` | 小米 MiMo Free 免 key 适配（bootstrap JWT + 系统标记） |
 | `kiro.ts` + `kiro-login.ts` / `kiro-schema.ts` / `aws-eventstream.ts` | Kiro 订阅：每次请求只读 Kiro CLI 的本机登录库，Chat → Kiro 对话状态，AWS 事件流 → Chat 分片；新来源默认关 |
-| `antigravity.ts` + `antigravity-client.ts` + `gemini-upstream.ts` | Antigravity 订阅：浏览器里 Google 登录（刷新令牌存钥匙串）、Cloud Code Assist 信封、Chat ↔ Gemini 互转；客户端密钥暂时写在 `antigravity-client.ts`（见私有段） |
+| `antigravity.ts` + `antigravity-client.ts` + `gemini-upstream.ts` | Antigravity 订阅：浏览器里 Google 登录（刷新令牌存钥匙串）、Cloud Code Assist 信封、Chat ↔ Gemini 互转；客户端身份仅在登录/刷新时从显式私有配置读取；没有内置后备（见 docs/antigravity-runtime.md） |
 | `cursor/*.ts` | Cursor 订阅（纯文字）：`proto.ts` 手写 protobuf、`connect.ts` 帧、`messages.ts` 一轮对话的消息和字段号、`transport.ts` HTTP/2 流（心跳、服务端追问）、`auth.ts` 浏览器登录轮询和续期、`models.ts`、`adapter.ts` Chat ↔ Cursor；新来源默认关 |
 | `kimi.ts` | Kimi 会员：设备码登录、令牌续期（刷新令牌在钥匙串）、模型列表；用的是 Kimi 的 OpenAI 兼容编码端点，走普通 Chat 通道；新来源默认关 |
 | `plan-usage.ts` | Kimi、MiniMax 编程套餐的额度：向厂商的用量接口问，key 只发给厂商自己的域名 |
@@ -112,7 +112,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 ### 其他厂商订阅的适配（B20：Dot 说不做，用户 2026-10-06 定为 Claude 自己做；起点是云端 `gpt-wip` 分支里 GPT 的快照）
 
 - Cursor 是 connect+protobuf over HTTP/2（`agent.v1.AgentService/Run`，PKCE poll 登录）；Kiro 是 AWS CodeWhisperer eventstream（kiro-cli sqlite 导入）；Antigravity 是 Cloud Code Assist envelope（Google OAuth）。协议事实已从 opencodex 调研完毕，可以直接移植它的代码再按 EasySwitch 的接口适配（保留许可证、文件头声明、台账记一行）。
-- **唯一例外（用户 2026-10-06 明确决定，BACKLOG B56）**：Antigravity 桌面端的公开 OAuth 客户端 ID 和密钥，照 opencodex 的做法暂时写在 `core/src/antigravity-client.ts` 一个文件里，为了先跑通；后续改成运行时读取。公开前必须移除，发布检查的密钥扫描会一直报它，**不要加进放行清单**。除此之外，任何密钥、令牌都不得写进仓库。
+- **Antigravity历史例外已在当前源码移除**：B56曾保留的内置客户端身份不再提供。B58改为显式私有文件的运行时读取器，无原生app自动扫描、无内置后备；实际配置由用户另行处理。旧私有历史仍可能包含敏感值，不能读取/输出旧值、改写历史或发布历史；发布检查不得放行任何真实凭据。
 
 ### 分工与分支
 

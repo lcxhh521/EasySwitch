@@ -70,7 +70,7 @@ commit, license and how far the code was changed.
 | `core/src/quirks.ts` 怪癖表 | opencodex、Magpie 的知识 | 自己的结构重新表达 | 低风险；按各家官方行为文档复核 | 低 |
 | Kiro 适配：`aws-eventstream.ts`、`kiro-schema.ts`、`kiro-login.ts` 按 GPT 快照原样带入；`kiro.ts` 为 Chat 出口重写（请求构造、事件解释的协议事实仍来自 opencodex）；`third_party/opencodex/LICENSE` | opencodex（MIT） | 改编，文件头已声明 | 按协议事实清单重写；eventstream 帧格式是公开的 AWS 格式，可自实现；SQLite 登录库读取按 Kiro CLI 的表结构自写 | 待办 |
 | Cursor 适配（protobuf 定义、Run 端点） | opencodex（MIT）；protobuf 定义来自逆向的专有协议 | 未开始/进行中 | 手写 .proto 与编码；注意服务条款风险，独立于版权 | 待办 |
-| Antigravity 适配：`antigravity-client.ts`（客户端 ID/密钥、端点、UA 格式照 opencodex）、`antigravity.ts`（登录流程、项目发现、信封照 opencodex）、`gemini-upstream.ts`（自写） | opencodex（MIT） | 改编，文件头已声明；**密钥暂时写死在 `antigravity-client.ts`（用户决定，B56）** | **OAuth client secret 不得写进公开仓库**（来自 Antigravity 桌面端，会触发密钥扫描）；改为运行时从用户本机读取 | 待办 |
+| Antigravity 适配：`antigravity-client.ts`（现为独立显式运行时配置/固定Google端点；历史版本曾含客户端身份）、`antigravity.ts`（登录流程、项目发现、信封照 opencodex）、`gemini-upstream.ts`（自写） | opencodex（MIT） | 登录模块的改编声明保留；当前源码已移除内置身份，独立读取器只读用户明确提供的私有文件；原生自动提取未实现 | 保持无内置凭据；登录/项目协议仍须按独立事实清单重写及核实许可；不得发布旧私有历史 | 待办 |
 | `core/src/opencodex-import.ts` | 自写（读用户自己的 opencodex 配置） | 互操作功能，无拷贝 | 保留 | 无需 |
 | git 历史与本仓库 | 含出处声明、台账、协议调研 | 本仓库永远私有，不改写历史 | 公开版用发布脚本生成清理过的快照，作为**新仓库**的首次提交；旧历史不进入公开仓库 | 待办 |
 

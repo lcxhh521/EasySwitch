@@ -26,7 +26,7 @@
     ETIMEDOUT: "request_timeout", UND_ERR_CONNECT_TIMEOUT: "request_timeout", UND_ERR_HEADERS_TIMEOUT: "request_timeout", UND_ERR_BODY_TIMEOUT: "request_timeout",
     invalid_request_error: "invalid_input", invalid_subscription_source: "invalid_input", bad_request: "invalid_input",
     model_not_found: "model_unavailable", source_not_found: "model_unavailable", provider_not_found: "model_unavailable",
-    provider_disabled: "source_disabled", authentication_error: "source_auth_required", invalid_api_key: "source_auth_required", key_rejected: "source_auth_required",
+    antigravity_client_unavailable: "source_auth_required", provider_disabled: "source_disabled", authentication_error: "source_auth_required", invalid_api_key: "source_auth_required", key_rejected: "source_auth_required",
     access_denied: "permission_denied", EACCES: "permission_denied", EPERM: "permission_denied",
     rate_limit_error: "quota_limited", insufficient_quota: "quota_limited", subscription_sharing_usage_limit_exceeded: "quota_limited",
     budget_exceeded: "budget_blocked", provider_budget_exceeded: "budget_blocked", budget_accounting_unavailable: "budget_blocked", probe_budget_unmetered: "budget_blocked",
