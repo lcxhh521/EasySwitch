@@ -83,10 +83,12 @@ async function callTool(name: string, args: Json, depth: number, caller: string,
     if (!agent || !task) return text("run_agent needs `agent` and `task`.", true);
     if (depth >= MAX_DEPTH) return text(`Refused: agents started by agents may nest at most ${MAX_DEPTH} levels deep.`, true);
     if (running >= MAX_CONCURRENT) return text(`Refused: ${MAX_CONCURRENT} agent runs are already in progress. Try again shortly.`, true);
-    const available = await deps.agents();
-    if (agent !== "auto" && !available.some(a => a.id === agent)) return text(`Unknown or unavailable agent "${agent}". Available: ${available.map(a => a.id).join(", ") || "none"}, or "auto".`, true);
+    // Reserve synchronously before discovery yields. Otherwise several callers
+    // can all observe free capacity, await discovery, then exceed the limit.
     running += 1;
     try {
+      const available = await deps.agents();
+      if (agent !== "auto" && !available.some(a => a.id === agent)) return text(`Unknown or unavailable agent "${agent}". Available: ${available.map(a => a.id).join(", ") || "none"}, or "auto".`, true);
       const result = await deps.run(agent, {
         task,
         ...(typeof args.model === "string" && args.model ? { model: args.model } : {}),

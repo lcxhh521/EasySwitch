@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { Readable, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 import { test } from "node:test";
 import { runMcpStdioBridge, validateBridgeOptions, type McpBridgeOptions } from "../src/mcp-stdio-bridge.ts";
 
@@ -113,4 +113,36 @@ test("requests are served side by side: a slow tool call does not hold up a ping
     assert.ok(answers.every(a => a.result?.ok), JSON.stringify(answers));
     assert.ok(Date.now() - started < 750, "the two slow calls ran together, not one after the other");
   } finally { await server.close(); }
+});
+
+
+test("stdio bridge bounds tool work while reserving capacity for control requests", async () => {
+  const release: Array<() => void> = []; let tools = 0; let ping!: () => void;
+  const sawPing = new Promise<void>(resolve => { ping = resolve; });
+  const server = await fixture((_req, res, msg) => {
+    const answer = () => res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }));
+    if (msg.method === "tools/call") { tools++; release.push(answer); } else { answer(); ping(); }
+  });
+  try {
+    const lines = [...Array.from({ length: 8 }, (_, n) => ({ jsonrpc: "2.0", id: n + 1, method: "tools/call" })), { jsonrpc: "2.0", id: 9, method: "ping" }].map(x => JSON.stringify(x) + "\n");
+    const pending = bridge(lines, { url: server.url, headers: {} });
+    await sawPing; assert.equal(tools, 3);
+    release.forEach(done => done()); const replies = await pending;
+    assert.equal(replies.length, 9); assert.equal(replies.filter(x => x.error?.message === "EasySwitch MCP bridge is busy").length, 5);
+    assert.ok(replies.some(x => x.id === 9 && x.result));
+  } finally { await server.close(); }
+});
+
+test("a broken stdio writer is observed immediately and cancels pending work without waiting for input EOF", async t => {
+  const input = new PassThrough(); let aborted = false;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    const message = JSON.parse(String(init?.body));
+    if (message.method === "ping") return Response.json({ jsonrpc: "2.0", id: message.id, result: {} });
+    return new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("fake aborted")); }, { once: true }); });
+  });
+  const output = new Writable({ write(_chunk, _encoding, done) { done(new Error("PRIVATE fixture write failure")); } });
+  const pending = runMcpStdioBridge(input, output, { url: "http://127.0.0.1:1/mcp", headers: {} });
+  input.write('{"jsonrpc":"2.0","id":1,"method":"tools/call"}\n{"jsonrpc":"2.0","id":2,"method":"ping"}\n');
+  await assert.rejects(pending, error => error instanceof Error && /stdio stream failed/.test(error.message) && !error.message.includes("PRIVATE"));
+  assert.equal(input.destroyed, true); assert.equal(aborted, true);
 });
