@@ -16,7 +16,9 @@ const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样�
 const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_agent_v1": "子 agent 工具" };
 
 let state = null;
-let page = PANEL ? "agents" : (location.hash.slice(1) || "agents");
+const PAGE_META = {agents:["Agent","为每个工具选择合适的模型"],providers:["模型","管理来源、订阅与模型池"],tasks:["任务","派活、查看进度和管理规则"],usage:["用量","查看已记录用量与估算费用"],sessions:["会话记录","查看连接与实际模型线路"],doctor:["自检","检查运行状态，找到下一步"],settings:["设置","外观与本机订阅账号"]};
+function pageOf(value) { return value === "accounts" ? "settings" : Object.hasOwn(PAGE_META,value) ? value : "agents"; }
+let page = PANEL ? "agents" : pageOf(location.hash.slice(1));
 let usageRange = "7d";
 let chartMetric = "tokens"; // "tokens" | "cost"
 let usage = null;
@@ -208,9 +210,12 @@ function placePopover(el, anchor) {
 // ---------------------------------------------------------------- header
 
 function renderHeader() {
-  for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("on", b.dataset.page === page);
+  for (const b of document.querySelectorAll("#nav button")) { const active=b.dataset.page===page;b.classList.toggle("on",active);if(active)b.setAttribute?.("aria-current","page");else b.removeAttribute?.("aria-current"); }
+  const meta=PAGE_META[page]??PAGE_META.agents;
+  if($("#page-title"))$("#page-title").textContent=meta[0];
+  if($("#page-caption"))$("#page-caption").textContent=meta[1];
   $("#ver").textContent = state ? `v${state.version}` : "";
-  const files = state?.native.filter(f => f.exists) ?? [];
+  const files = state?.native?.filter(f => f.exists) ?? [];
   const clean = files.every(f => !f.mentionsEasySwitch);
   const chip = $("#guard-chip");
   chip.className = `chip ${state ? (clean ? "ok" : "bad") : "bad"}`;
@@ -668,6 +673,10 @@ function accountRow(a) {
       <button class="btn secondary" data-acc-toggle="${esc(a.id)}" data-enabled="${a.enabled ? "0" : "1"}">${a.enabled ? "停用" : "启用"}</button>
       <button class="btn danger" data-acc-del="${esc(a.id)}">移除</button>
     </div>`;
+}
+
+function renderSettings() {
+  return (globalThis.EasySwitchTheme?.controls() ?? "") + renderAccounts();
 }
 
 function renderAccounts() {
@@ -1353,10 +1362,10 @@ function render() {
   const main = $("#page");
   if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=renderDoctor();return;}
   if (!state) {
-    main.innerHTML = `<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
+    main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
     return;
   }
-  const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, accounts: renderAccounts, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
+  const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
   main.innerHTML = (views[page] ?? renderAgents)();
   if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
   if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
@@ -1366,7 +1375,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1429,6 +1438,10 @@ async function refresh(force = false) {
 // ---------------------------------------------------------------- events
 
 document.addEventListener("click", async e => {
+  if(e.target.closest?.("[data-skip-content]")){e.preventDefault();$("#page")?.focus?.();return;}
+  const theme=e.target.closest?.("[data-theme-choice]");
+  if(theme){globalThis.EasySwitchTheme?.set(theme.dataset.themeChoice);return;}
+
   const sourceSwitch=e.target.closest?.("[data-source-switch]");
   if(sourceSwitch){e.stopImmediatePropagation();if(sourceSwitch.disabled)return;sourceSwitch.disabled=true;try{await call("PUT",`/api/providers/${encodeURIComponent(sourceSwitch.dataset.sourceSwitch)}/switch`,{on:sourceSwitch.dataset.enabled!=="1"});await refresh(true);}catch(error){showError(error);}finally{sourceSwitch.disabled=false;}return;}
 
@@ -1442,11 +1455,12 @@ document.addEventListener("click", async e => {
   if (nav) {
     claudeDesktopConfirm = false;
     if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
-    page = nav.dataset.page ?? nav.dataset.go;
+    if(nav.disabled||nav.getAttribute?.("aria-disabled")==="true")return;
+    page = pageOf(nav.dataset.page ?? nav.dataset.go);
     if (!PANEL) history.replaceState(null, "", `#${page}`);
     closePopover();
     if (page === "usage") await loadUsage();
-    render();
+    await refresh(true);
     return;
   }
   if (t.closest("#refresh")) { await refresh(true); toast("已刷新"); return; }
@@ -2080,6 +2094,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageOf(location.hash.slice(1));if(next===page)return;if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();void refresh(true);});
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");
