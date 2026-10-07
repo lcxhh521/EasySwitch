@@ -1,5 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 
+// A headless task may need 3s TERM + 1s KILL confirmation before main.ts can exit.
+export const CORE_STOP_GRACE_MS = 6_000;
+export const CORE_KILL_CONFIRM_MS = 1_000;
 export type CoreSupervisorState = "idle" | "running" | "backoff" | "stopping" | "stopped" | "failed";
 export interface CoreSupervisorStatus { state: CoreSupervisorState; restarts: number; failure?: "spawn_failed" | "crash_loop" | "stop_unconfirmed" }
 export interface CoreSupervisorDeps {
@@ -19,6 +22,7 @@ export class CoreSupervisor {
   #forceTimer?: unknown;
   #startedAt = 0;
   #stopping = false;
+  #stopFailed = false;
   #stop?: Promise<void>;
   #resolveStop?: () => void;
   #rejectStop?: (error: Error) => void;
@@ -33,7 +37,7 @@ export class CoreSupervisor {
   #now() { return (this.#deps.now ?? Date.now)(); }
   start(): void {
     if (this.#child || ["running", "backoff", "stopping"].includes(this.#status.state)) return;
-    this.#stopping = false; this.#stop = undefined; this.#status.restarts = 0;
+    this.#stopping = false; this.#stopFailed = false; this.#stop = undefined; this.#status.restarts = 0;
     this.#launch();
   }
   #launch(): void {
@@ -48,15 +52,19 @@ export class CoreSupervisor {
       // Spawn errors have no live PID. A later error cannot authorize a duplicate core.
       if (!child.pid) this.#ended(child, "spawn_failed");
     });
-    child.once("close", () => this.#ended(child));
+    child.once("close", (code, signal) => this.#ended(child, undefined, signal ? null : code));
   }
-  #ended(child?: ChildProcess, failure?: CoreSupervisorStatus["failure"]) {
+  #ended(child?: ChildProcess, failure?: CoreSupervisorStatus["failure"], exitCode?: number | null) {
     if (child && child !== this.#child) return;
     this.#child = undefined;
     this.#cancel(this.#forceTimer); this.#forceTimer = undefined;
     if (this.#stopping) {
       this.#cancel(this.#timer); this.#timer = undefined;
-      this.#set("stopped"); this.#resolveStop?.(); return;
+      if (this.#stopFailed || failure || exitCode !== 0) {
+        this.#stopFailed = true; this.#set("failed", "stop_unconfirmed");
+        this.#rejectStop?.(new Error("Owned core cleanup was not confirmed by a successful exit"));
+      } else { this.#set("stopped"); this.#resolveStop?.(); }
+      return;
     }
     if (this.#now() - this.#startedAt >= 30_000) this.#status.restarts = 0;
     if (this.#status.restarts >= 5) { this.#set("failed", "crash_loop"); return; }
@@ -79,10 +87,11 @@ export class CoreSupervisor {
       if (child !== this.#child) return;
       this.#forceTimer = this.#schedule(() => {
         if (child !== this.#child) return;
+        this.#stopFailed = true;
         this.#set("failed", "stop_unconfirmed");
         this.#rejectStop?.(new Error("Owned core termination was not confirmed"));
-      }, 1_000);
-    }, 3_000);
+      }, CORE_KILL_CONFIRM_MS);
+    }, CORE_STOP_GRACE_MS);
     return this.#stop;
   }
 }

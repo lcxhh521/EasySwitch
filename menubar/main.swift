@@ -285,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     if quitting { return .terminateLater }
     quitting = true
     stopCore()
-    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
       guard let self, self.quitting, self.coreProcess?.isRunning == true else { return }
       self.quitting = false
       NSApp.reply(toApplicationShouldTerminate: false)

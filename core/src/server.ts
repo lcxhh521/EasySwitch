@@ -1,3 +1,4 @@
+import { TaskRuntime, TaskCancelledError } from "./task-runtime.ts";
 import { SourceHealthMonitor, modelsHealthFingerprint } from "./source-health.ts";
 import { resolveAgentFallback } from "./agent-fallback.ts";
 import { FeedbackBook, FeedbackStoreError } from "./feedback.ts";
@@ -58,7 +59,7 @@ import { isMimoFree, mimoFreeIssue } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
-import { TaskBook, type Task } from "./tasks.ts";
+import { TaskBook, type Task, type TaskParentAdmission } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
 import { GatewayTokenAuthority, GatewayIssuanceLimitError, GatewaySessionStoreError, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
 import { BudgetController, BudgetExceededError } from "./global-budget.ts";
@@ -122,6 +123,9 @@ export interface ServerDeps {
   /** Explicit dependency injection for local fixture tests; never accepted from HTTP input. */
   claudeDesktop?: Pick<ClaudeDesktopOptions, "executable" | "baseDir" | "parentEnv" | "platform">;
 }
+
+const taskShutdown = new WeakMap<Server, () => Promise<void>>();
+export async function stopOwnedTasks(server: Server): Promise<void> { await taskShutdown.get(server)?.(); }
 
 const desktopShutdown = new WeakMap<Server, () => Promise<void>>();
 /** The main process awaits this before exiting; it never stops a native app. */
@@ -274,6 +278,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const sessionTasks = new Map<string,{taskId:string;expiresAt:string}>();
   const accountingSafely = (action:()=>void) => {try{action();}catch{/* Incomplete attribution remains unknown; this never substitutes for the budget ledger. */}};
   const taskUsage = () => taskAccounting.usage(tasks.list(5000).map(t=>t.id));
+  const taskRuntime = new TaskRuntime({book:tasks,usage:taskUsage});
+  let tasksClosing = false;
   const taskAvailable = (id:string) => Boolean(LAUNCHERS[id]?.headless) && (deps.taskAgentAvailable?.(id) ?? agentCache?.list.some(a=>a.id===id&&a.installed) ?? false);
   const suggestions = () => buildRuleSuggestions({tasks:tasks.list(5000),feedback:feedback.list(),usage:taskUsage(),rules:store.rules(),
     isTargetAvailable:target=>taskAvailable(target.agent)&&Boolean(resolveModel(store,target.model)),
@@ -318,7 +324,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** Hands a task to an agent ("auto": the dispatch rules choose): records it, runs it headlessly in the background, records how it ended. */
-  async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string; parentTaskId?: string }): Promise<{ task: Task; done: Promise<Task> }> {
+  async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string; parentTaskId?: string; parentAdmission?: TaskParentAdmission }): Promise<{ task: Task; done: Promise<Task> }> {
+    if(tasksClosing)throw new TaskCancelledError();
     if(!Number.isInteger(input.depth)||input.depth<1||input.depth>2)throw new ParallelTaskError("invalid_depth","任务深度不能超过两层。",403);
     const release=taskCapacity.reserve(1);
     try {
@@ -341,16 +348,28 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (!model || !resolveModel(store, model)) throw new Error("还没有可用的模型：先在「模型来源」里添加一个");
     const wanted = input.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
-    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) });
+    if(tasksClosing)throw new TaskCancelledError();
+    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.parentTaskId ? {parentTaskId:input.parentTaskId} : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) },{parentAdmission:input.parentAdmission});
     accountingSafely(()=>taskAccounting.beginTask(task.id,input.parentTaskId));
-    const ownTokens = new Map<string,string>();
     const taskAuthority: Pick<GatewayTokenAuthority,"issue"|"revoke"> = {
-      issue:(agent,options)=>{const session=auth.issue(agent,options);for(const [id,value] of sessionTasks)if(Date.parse(value.expiresAt)<=Date.now())sessionTasks.delete(id);sessionTasks.set(session.id,{taskId:task.id,expiresAt:session.expiresAt});ownTokens.set(session.token,session.id);return session;},
-      revoke:token=>{const result=auth.revoke(token),id=ownTokens.get(token);if(id)sessionTasks.delete(id);ownTokens.delete(token);return result;},
+      issue:(agent,options)=>{
+        if(tasksClosing||tasks.isCancelled(task.id)||tasks.get(task.id)?.status!=="running")throw new TaskCancelledError();
+        const session=auth.issue(agent,options);
+        for(const [id,value] of sessionTasks)if(Date.parse(value.expiresAt)<=Date.now())sessionTasks.delete(id);
+        sessionTasks.set(session.id,{taskId:task.id,expiresAt:session.expiresAt});
+        taskRuntime.ownToken(task.id,session.token,()=>{try{return auth.revoke(session.token);}finally{sessionTasks.delete(session.id);}});
+        return session;
+      },
+      revoke:token=>taskRuntime.revokeToken(task.id,token),
     };
-    const done = (deps.taskRunner ?? runHeadless)(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: taskAuthority, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    const done = Promise.resolve().then(()=>(deps.taskRunner ?? runHeadless)(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: taskAuthority, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) }))
       .then(r => tasks.finish(task.id, r)!)
-      .catch(error => tasks.finish(task.id, { exitCode: null, output: String((error as Error).message ?? error), timedOut: false })!).finally(()=>{accountingSafely(()=>taskAccounting.finishTask(task.id));ownTokens.clear();release();});
+      .catch(error => {
+        const cleanupFailed=error && typeof error==="object" && (error as {code?:unknown}).code==="process_cleanup_failed";
+        if(cleanupFailed)taskRuntime.noteCleanupFailure(task.id);
+        return tasks.finish(task.id,{exitCode:null,output:cleanupFailed?"任务进程清理未能确认，请检查本机进程后再重试。":signal.aborted?"任务已取消":humanError(error,{context:"launch"}).message,timedOut:false})!;
+      }).finally(async()=>{accountingSafely(()=>taskAccounting.finishTask(task.id));await taskRuntime.release(task.id);release();});
+    taskRuntime.trackRun(task.id,done);
     return { task, done };
     } catch(error) {release();throw error;}
   }
@@ -1220,8 +1239,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     // --- tasks: hand work to an agent, watch it, read what came back ---------
     if (path === "/api/tasks" && method === "GET") {
       let ratings:ReturnType<FeedbackBook["list"]>=[],feedbackUnavailable=false;try{ratings=feedback.list();}catch{feedbackUnavailable=true;}
-      const usage=new Map(taskUsage().map(u=>[u.taskId,u]));
-      json(res,200,{tasks:tasks.list().map(t=>({...t,fallbackChanges:routeChanges(t.id),feedback:ratings.find(r=>r.taskId===t.id)??null,usage:usage.get(t.id)??{taskId:t.id,unknownCost:true}})),running:tasks.running(),feedbackUnavailable,accounting:taskAccounting.status()});
+      const snapshot=taskRuntime.snapshot();
+      const decorate=(t:typeof snapshot.tasks[number])=>({...t,fallbackChanges:routeChanges(t.id),feedback:ratings.find(r=>r.taskId===t.id)??null});
+      const tree=(nodes:typeof snapshot.tree):unknown[]=>nodes.map(t=>({...decorate(t),children:tree(t.children)}));
+      json(res,200,{...snapshot,tasks:snapshot.tasks.map(decorate),tree:tree(snapshot.tree),feedbackUnavailable,accounting:taskAccounting.status()});
       return;
     }
     if (path === "/api/tasks" && method === "DELETE") {
@@ -1248,7 +1269,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     const taskStop = /^\/api\/tasks\/(t-[a-z0-9]+)\/stop$/.exec(path);
     if (taskStop && method === "POST") {
-      json(res, tasks.stop(taskStop[1] ?? "") ? 200 : 404, { ok: tasks.get(taskStop[1] ?? "")?.status === "running" });
+      const result=await taskRuntime.cancelTree(taskStop[1]??"");
+      json(res,result.found?200:404,{ok:result.found&&result.cleanup.pending===0&&result.cleanup.failed===0,...result,...(!result.found?{error:"没有这个任务"}:{})});
       return;
     }
 
@@ -1811,14 +1833,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
     const stopMatch = /^\/api\/sessions\/(\d+)\/stop$/.exec(path);
     if (method === "POST" && stopMatch) {
-      const pid = Number(stopMatch[1]);
-      // Only ever signal a process that carries an EasySwitch session marker.
-      if (!(await augmentedSessions()).includes(pid)) {
-        json(res, 404, { error: "不是 EasySwitch 启动的会话" });
-        return;
-      }
-      process.kill(pid, "SIGTERM");
-      json(res, 200, { ok: true });
+      // Legacy interactive launchers do not retain a ChildProcess handle. A marker/PID
+      // from the process table is not authority to terminate somebody else's process.
+      json(res,409,{error:"请关闭对应的交互终端窗口，并在网关会话里撤销它的令牌。后台任务请用任务页取消。",code:"interactive_cleanup_unowned"});
       return;
     }
 
@@ -1974,10 +1991,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       if (path === "/mcp") {
         const parentTaskId=session?sessionTasks.get(session.id)?.taskId:undefined;
-        let hold:{end():void}|undefined;if(parentTaskId)accountingSafely(()=>{hold=taskAccounting.beginHold(parentTaskId);});
+        let hold:{end():void}|undefined;let parentAdmission:TaskParentAdmission|undefined;
+        if(parentTaskId){try{parentAdmission=tasks.admitChild(parentTaskId);}catch{gatewayError(res,"chat",409,"上级任务已结束或取消，不能创建新的子任务。","task_cancelled");return;}accountingSafely(()=>{hold=taskAccounting.beginHold(parentTaskId);});}
         try{await handleMcp(req,res,req.method==="POST"?await readBody(req):"",{...mcpDeps,session,
-          run:async(id,input)=>{const {done}=await startTask(id,{...input,...(parentTaskId?{parentTaskId}:{})});const t=await done;return {exitCode:t.exitCode??null,output:t.output??"",timedOut:t.status==="timeout",model:t.model,agent:t.agent};},
-        });}finally{accountingSafely(()=>hold?.end());}
+          run:async(id,input)=>{const {done}=await startTask(id,{...input,...(parentTaskId?{parentTaskId,parentAdmission}:{})});const t=await done;return {exitCode:t.exitCode??null,output:t.output??"",timedOut:t.status==="timeout",cancelled:t.status==="stopped",model:t.model,agent:t.agent};},
+        });}finally{parentAdmission?.release();accountingSafely(()=>hold?.end());}
         return;
       }
       if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
@@ -2066,6 +2084,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     json(res, 400, { error: { type: "invalid_request_error", message: "独立桌面会话只能使用 EasySwitch 已添加的模型，不会回退到 Claude 原生账号" } });
     return false;
   }
+  taskShutdown.set(server,async()=>{
+    tasksClosing=true;
+    const ids=taskRuntime.snapshot(5000).tasks.filter(t=>t.status==="running"||t.cleanupPending||t.cleanupFailed).map(t=>t.id);
+    const results=await Promise.all(ids.map(id=>taskRuntime.cancelTree(id)));
+    if(results.some(r=>r.cleanup.pending||r.cleanup.failed))throw new Error("任务清理未确认");
+  });
+  server.once("close",()=>{void stopOwnedTasks(server).catch(()=>console.error("任务清理未确认，请检查本机进程"));});
   desktopShutdown.set(server, async () => {
     desktopClosing = true;
     const stopped = await Promise.allSettled([...desktopSessions.values()].map(s => s.stop()));

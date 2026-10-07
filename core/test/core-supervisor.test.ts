@@ -3,8 +3,8 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { CoreSupervisor } from "../src/core-supervisor.ts";
-import { runAppSupervisor } from "../src/app-supervisor.ts"; // Import must never launch main.ts or any process.
+import { CoreSupervisor, CORE_KILL_CONFIRM_MS, CORE_STOP_GRACE_MS } from "../src/core-supervisor.ts";
+import { monitorCoreParent, ORPHAN_CORE_EXIT_MS, runAppSupervisor } from "../src/app-supervisor.ts"; // Import must never launch main.ts or any process.
 
 function fixture() {
   let now=0,next=0;const timers=new Map<number,{at:number;callback:()=>void}>();
@@ -43,8 +43,24 @@ test("stop waits for owned close and never restarts after normal termination",as
 });
 test("unresponsive owned child is escalated, but unconfirmed stop remains a failure",async()=>{
   const f=fixture();f.supervisor.start();const pending=f.supervisor.stop();const rejected=assert.rejects(pending,/not confirmed/);
-  f.advance(2999);assert.deepEqual(f.children[0]!.signals,["SIGTERM"]);f.advance(1);assert.deepEqual(f.children[0]!.signals,["SIGTERM","SIGKILL"]);
+  f.advance(5999);assert.deepEqual(f.children[0]!.signals,["SIGTERM"]);f.advance(1);assert.deepEqual(f.children[0]!.signals,["SIGTERM","SIGKILL"]);
   f.advance(1000);await rejected;assert.equal(f.supervisor.status().failure,"stop_unconfirmed");f.supervisor.start();assert.equal(f.children.length,1);
+});
+test("the outer stop window leaves time for the complete four-second task cleanup",async()=>{
+  const f=fixture();f.supervisor.start();const pending=f.supervisor.stop();f.advance(4500);
+  assert.deepEqual(f.children[0]!.signals,["SIGTERM"]);assert.equal(f.supervisor.status().state,"stopping");
+  f.children[0]!.emit("close",0);await pending;f.advance(10_000);assert.deepEqual(f.children[0]!.signals,["SIGTERM"]);assert.equal(f.timers.size,0);
+});
+test("active stop rejects nonzero or signal exits instead of claiming cleanup succeeded",async()=>{
+  for(const [code,signal] of [[1,null],[null,"SIGKILL"],[0,"SIGTERM"]] as const){
+    const f=fixture();f.supervisor.start();const rejected=assert.rejects(f.supervisor.stop(),/not confirmed/);
+    f.children[0]!.emit("close",code,signal);await rejected;assert.equal(f.supervisor.status().failure,"stop_unconfirmed");assert.equal(f.timers.size,0);
+    f.advance(10_000);assert.equal(f.children.length,1);
+  }
+});
+test("a late successful close cannot erase an already reported stop failure",async()=>{
+  const f=fixture();f.supervisor.start();const rejected=assert.rejects(f.supervisor.stop(),/not confirmed/);f.advance(7000);await rejected;
+  f.children[0]!.emit("close",0);assert.equal(f.supervisor.status().failure,"stop_unconfirmed");assert.equal(f.timers.size,0);
 });
 test("spawn error followed by close cannot schedule duplicate replacements",()=>{
   const f=fixture();f.supervisor.start();delete f.children[0]!.pid;f.children[0]!.emit("error",new Error("fixture secret"));f.children[0]!.emit("close",-1);
@@ -60,4 +76,17 @@ test("the parent ownership pipe ends the supervised fake core and sets Applicati
   assert.equal((calls[0]![2] as {env:Record<string,string>}).env.EASYSWITCH_HOME,"/fixture/home/Library/Application Support/EasySwitch");
   input.end();assert.equal(await pending,0);assert.equal(signals.listenerCount("SIGTERM"),0);
   assert.equal(JSON.parse(output.at(-1)!).state,"stopped");assert.equal(calls.length,1);
+});
+test("app supervisor returns failure when its owned core reports failed cleanup",async()=>{
+  const input=new PassThrough(),signals=new EventEmitter(),output:string[]=[];
+  const child=Object.assign(new EventEmitter(),{pid:321,kill(){child.emit("close",1);return true;}});
+  const pending=runAppSupervisor({input:input as unknown as NodeJS.ReadStream,signals:signals as unknown as NodeJS.Process,out:line=>output.push(line),spawn:(()=>child) as never});
+  input.end();assert.equal(await pending,1);assert.equal(JSON.parse(output.at(-1)!).failure,"stop_unconfirmed");assert.equal(signals.listenerCount("SIGTERM"),0);
+});
+test("parent EOF requests graceful core cleanup once and leaves an eight-second orphan window",()=>{
+  const input=Object.assign(new EventEmitter(),{resume(){return this;}});let stops=0,exits=0;const scheduled:Array<{callback:()=>void;delay:number}>=[];
+  monitorCoreParent({input:input as unknown as Pick<NodeJS.ReadStream,"once"|"resume">,requestStop:()=>{stops++;},forceExit:()=>{exits++;},schedule:(callback,delay)=>{scheduled.push({callback,delay});}});
+  assert.equal(stops,0);assert.equal(scheduled.length,0);input.emit("end");input.emit("close");assert.equal(stops,1);assert.equal(exits,0);
+  assert.equal(scheduled.length,1);assert.equal(scheduled[0]!.delay,8000);assert.equal(CORE_STOP_GRACE_MS,6000);assert.equal(CORE_KILL_CONFIRM_MS,1000);
+  assert.ok(ORPHAN_CORE_EXIT_MS>CORE_STOP_GRACE_MS+CORE_KILL_CONFIRM_MS);scheduled[0]!.callback();assert.equal(exits,1);
 });

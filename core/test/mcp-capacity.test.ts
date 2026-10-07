@@ -63,12 +63,12 @@ test("discovery errors, unavailable agents and runner failures all release their
   const { deps, invoke } = fixture(t);
   for (let i = 0; i < MAX_CONCURRENT + 1; i++) {
     deps.agents = async () => { throw new Error("fixture discovery error"); };
-    assert.match((await invoke()).content[0]!.text, /fixture discovery error/);
+    const discoveryFailure=await invoke();assert.equal(discoveryFailure.isError,true);assert.match(discoveryFailure.content[0]!.text,/任务未能完成/);assert.doesNotMatch(discoveryFailure.content[0]!.text,/fixture discovery error/);
     deps.agents = async () => [];
     assert.match((await invoke()).content[0]!.text, /Unknown or unavailable/);
     deps.agents = async () => agents;
     deps.run = async () => { throw new Error("fixture runner error"); };
-    assert.match((await invoke()).content[0]!.text, /fixture runner error/);
+    const runnerFailure=await invoke();assert.equal(runnerFailure.isError,true);assert.match(runnerFailure.content[0]!.text,/任务未能完成/);assert.doesNotMatch(runnerFailure.content[0]!.text,/fixture runner error/);
   }
   deps.run = async () => success;
   assert.equal((await invoke()).isError, undefined);

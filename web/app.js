@@ -33,6 +33,7 @@ let claudeDesktopError = "";
 const openDetails = new Set();
 const keepOpen = id => (openDetails.has(id) ? "open" : "");
 
+const taskCancelPending = new Set();
 let taskList = null; // /api/tasks
 const taskOpenIds = new Set(); // task ids whose output is expanded
 let taskNote = "";
@@ -465,12 +466,13 @@ const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
 let ruleForm = null; // { name, words, minChars, maxChars, cwdPrefix, agent, model, effort, error } while the rule form is open
 let ruleTest = { task: "", result: null };
 const AUTO = "auto";
-const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已停止", ""], timeout: ["超时", "warn"] };
+const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已取消", ""], timeout: ["超时", "warn"] };
 
 function renderTasks() {
   const agents = (agentList ?? []).filter(a => a.installed && a.can?.headless && (!a.where?.endsWith(".app") || ["codex", "claude"].includes(a.id)));
   const models = (state.providers ?? []).flatMap(p => modelsOf(p).map(m => `${p.id}/${m}`));
-  const list = taskList?.tasks ?? [];
+  const allTasks = taskList?.tasks ?? [];
+  const list = typeof taskProgressCard === "function" ? allTasks.filter(t=>t.status!=="running"&&!t.cleanupPending&&!t.cleanupFailed) : allTasks;
   const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
   const keep = (k, d = "") => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
   const rules = state.rules ?? [];
@@ -517,7 +519,8 @@ function renderTasks() {
     ${typeof taskAccountingNotice === "function" ? taskAccountingNotice() : ""}
     ${form}
     ${typeof parallelCard === "function" ? parallelCard() : ""}
-    <div class="section-head"><h2>任务</h2><span class="aside">${list.length ? `${list.length} 条${taskList.running ? `，${taskList.running} 条在运行` : ""}` : ""} ${list.some(t => t.status !== "running") ? `<button class="btn secondary" data-task-clear>清空已完成</button>` : ""}</span></div>
+    ${typeof taskProgressCard === "function" ? taskProgressCard(taskList) : ""}
+    <div class="section-head"><h2>任务记录</h2><span class="aside">${list.length ? `${list.length} 条${taskList.running ? `，${taskList.running} 条在运行` : ""}` : ""} ${list.some(t => t.status !== "running") ? `<button class="btn secondary" data-task-clear>清空已完成</button>` : ""}</span></div>
     <div class="card">${list.map(row).join("") || `<div class="empty">还没有任务。你在这里派的、以及 agent 之间互相派的，都会记在这里。</div>`}</div>
     <p class="hint">普通后台任务使用各程序自己的权限设置，不能把它当作已验证的只读沙箱；受限并行功能的开放范围另见上方说明。</p>
     ${typeof ruleSuggestionsCard === "function" ? ruleSuggestionsCard() : ""}
@@ -1195,7 +1198,7 @@ function renderSessions() {
     <div class="card">${running.length ? `<table class="tbl"><tr><th>Agent</th><th>模型</th><th>启动于</th><th>进程</th><th></th></tr>
       ${running.map(s => `<tr><td>${icon(agentMeta(s.harness).icon, "sm")} ${esc(agentMeta(s.harness).name)}</td><td class="mono">${esc(s.model ?? "")}</td>
         <td>${s.startedAt ? ago(s.startedAt) : "—"}</td><td class="mono">${s.pid}</td>
-        <td class="num"><button class="btn secondary" data-stop="${s.pid}">结束</button></td></tr>`).join("")}</table>`
+        <td class="num"><span class="hint">关闭对应终端后，在 Agent 页撤销令牌</span></td></tr>`).join("")}</table>`
       : `<div class="empty">没有运行中的增强会话；你的 agent 都在走原生</div>`}</div>
 
     <div class="section-head"><h2>最近的请求是怎么走的</h2></div>
@@ -1591,7 +1594,15 @@ document.addEventListener("click", async e => {
   const taskToggle = t.closest("[data-task-toggle]");
   if (taskToggle) { const id = taskToggle.dataset.taskToggle; if (taskOpenIds.has(id)) taskOpenIds.delete(id); else taskOpenIds.add(id); render(); return; }
   const taskStop = t.closest("[data-task-stop]");
-  if (taskStop) { await call("POST", `/api/tasks/${taskStop.dataset.taskStop}/stop`).catch(() => {}); await refresh(true); return; }
+  if (taskStop) {
+    const id=taskStop.dataset.taskStop;
+    if(taskStop.disabled||taskCancelPending.has(id))return;taskStop.disabled=true;taskCancelPending.add(id);
+    const targets=new Set([id]);for(let changed=true;changed;){changed=false;for(const row of taskList?.tasks??[])if(row.parentTaskId&&targets.has(row.parentTaskId)&&!targets.has(row.id)){targets.add(row.id);changed=true;}}
+    for(const row of taskList?.tasks??[])if(targets.has(row.id)){row.status="stopped";row.cleanupPending=true;}
+    const mark=nodes=>{for(const row of nodes??[]){if(targets.has(row.id)){row.status="stopped";row.cleanupPending=true;}mark(row.children);}};mark(taskList?.tree);render();
+    try{const result=await call("POST",`/api/tasks/${encodeURIComponent(id)}/stop`,{});if(result.cleanup?.failed||result.cleanup?.pending)toast("已请求取消，但清理尚未确认，请检查任务状态");else toast("任务及已登记子任务已取消并完成清理");}
+    catch(error){showError(error);}finally{taskCancelPending.delete(id);await refresh(true);}return;
+  }
   if (t.closest("[data-task-clear]")) { await call("DELETE", "/api/tasks").catch(() => {}); await refresh(true); return; }
 
   if (t.closest("[data-plan-signin]") || t.closest("[data-plan-signin-again]")) {

@@ -97,10 +97,11 @@ async function callTool(name: string, args: Json, depth: number, caller: string,
         depth: depth + 1,
         from: caller,
       });
+      if(result.cancelled)return text(`[${result.agent??agent} on ${result.model}] 任务已取消；此任务及已登记子任务已收到取消请求。\n${result.output||""}`,true);
       const head = `[${result.agent ?? agent} on ${result.model}${result.timedOut ? ", stopped at the time limit" : ""}, exit ${result.exitCode ?? "?"}]`;
       return text(`${head}\n${result.output || "(no output)"}`, result.exitCode !== 0 || result.timedOut);
     } catch (error) {
-      return text(String((error as Error).message ?? error), true);
+      return text(error && typeof error === "object" && (error as {code?:unknown}).code === "task_cancelled" ? "上级任务已取消，子任务没有启动。" : "任务未能完成，请在控制台任务记录中查看状态。", true);
     } finally {
       running -= 1;
     }

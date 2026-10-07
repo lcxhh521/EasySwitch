@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -380,6 +380,120 @@ export interface RunResult {
   output: string;
   timedOut: boolean;
   warnings?: string[];
+  cancelled?: boolean;
+}
+
+export class HeadlessCleanupError extends Error {
+  readonly code = "process_cleanup_failed";
+  tokenCleanupFailed = false;
+  constructor() { super("任务进程的清理未能确认，请先检查本机进程后再重试。"); this.name = "HeadlessCleanupError"; }
+}
+
+/** Process-local injection only: fake tests supply their own group operations and clock. */
+export interface HeadlessProcessRuntime {
+  spawn: typeof spawn;
+  processGroup?: { signal(group: number, signal: NodeJS.Signals): void; exists(group: number): boolean };
+  schedule?: (callback: () => void, delay: number) => unknown;
+  cancel?: (timer: unknown) => void;
+}
+const headlessRuntime: HeadlessProcessRuntime = {
+  spawn,
+  ...(process.platform === "win32" ? {} : { processGroup: {
+    signal(group: number, signal: NodeJS.Signals) { process.kill(-group, signal); },
+    exists(group: number) {
+      try { process.kill(-group, 0); return true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+    },
+  } }),
+};
+
+function runOwnedHeadless(spec: LaunchSpec, cwd: string, env: NodeJS.ProcessEnv,
+  opts: { timeoutMs?: number; maxBytes?: number; signal?: AbortSignal }, runtime: HeadlessProcessRuntime): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const schedule = runtime.schedule ?? ((callback, delay) => setTimeout(callback, delay));
+    const cancel = runtime.cancel ?? (timer => clearTimeout(timer as ReturnType<typeof setTimeout>));
+    let child: ChildProcess;
+    try { child = runtime.spawn(spec.command, spec.args, { cwd, env, shell: false, detached: Boolean(runtime.processGroup), stdio: ["ignore", "pipe", "pipe"] }); }
+    catch { resolve({ exitCode: null, output: "无法启动所选 agent。", timedOut: false }); return; }
+    let output = spec.warnings?.map(warning => `[EasySwitch] ${warning}\n`).join("") ?? "";
+    let bytes = Buffer.byteLength(output), timedOut = false, cancelled = false, failed = false;
+    let exited = false, closed = false, settled = false, stopping = false, exitCode: number | null = null;
+    // Capture only the group created by this detached spawn, never discover a PID by scanning.
+    const group = runtime.processGroup && Number.isSafeInteger(child.pid) && child.pid! > 0 ? child.pid : undefined;
+    let groupGone = group === undefined;
+    let poll: unknown, escalation: unknown, deadline: unknown, pipes: unknown, timeout: unknown;
+    const clear = (timer: unknown) => { if (timer !== undefined) cancel(timer); };
+    const add = (chunk: Buffer | string) => {
+      if (settled) return;
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const take = Math.min(data.length, Math.max(0, (opts.maxBytes ?? 2_000_000) - bytes));
+      output += data.subarray(0, take).toString("utf8"); bytes += take;
+    };
+    const groupState = (): "gone" | "alive" | "unknown" => {
+      // Retire a vanished group permanently: its numeric id might later be reused.
+      if (groupGone) return "gone";
+      try { if (runtime.processGroup!.exists(group!)) return "alive"; groupGone = true; return "gone"; }
+      catch { return "unknown"; }
+    };
+    const destroyPipes = () => { child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy(); };
+    const finish = (cleanupFailed = false) => {
+      if (settled) return; settled = true;
+      for (const timer of [poll, escalation, deadline, pipes, timeout]) clear(timer);
+      opts.signal?.removeEventListener("abort", abort);
+      child.stdout?.removeListener("data", add); child.stderr?.removeListener("data", add);
+      destroyPipes();
+      if (cleanupFailed) { child.unref(); reject(new HeadlessCleanupError()); return; }
+      resolve({ exitCode: failed || cancelled || timedOut ? null : exitCode,
+        output: [output.trim(), failed ? "agent 进程运行失败。" : cancelled ? "任务已取消" : timedOut ? "任务已超时" : ""].filter(Boolean).join("\n"),
+        timedOut, ...(cancelled ? { cancelled: true } : {}), ...(spec.warnings?.length ? { warnings: spec.warnings } : {}) });
+    };
+    const signalOwned = (signal: NodeJS.Signals) => {
+      const state = groupState();
+      if (state === "alive") {
+        try { runtime.processGroup!.signal(group!, signal); return; } catch { /* Still wait for confirmed exit. */ }
+      }
+      // ChildProcess.kill is used only while this exact child has not exited.
+      if (!exited && (group === undefined || state !== "gone")) { try { child.kill(signal); } catch { /* The bounded deadline reports failure. */ } }
+    };
+    const check = () => {
+      if (settled) return;
+      const state = groupState();
+      if (exited && state === "gone") {
+        if (closed) finish();
+        // A pipe may have been passed outside the group. Do not wait forever or kill its holder.
+        else if (pipes === undefined) pipes = schedule(() => finish(), 250);
+        return;
+      }
+      if (exited && !stopping) stop();
+      if (stopping && poll === undefined) poll = schedule(() => { poll = undefined; check(); }, 25);
+    };
+    const stop = () => {
+      if (settled || stopping) return; stopping = true;
+      signalOwned("SIGTERM");
+      if (settled) return;
+      escalation = schedule(() => {
+        signalOwned("SIGKILL");
+        if (!settled) deadline = schedule(() => {
+          if (exited && groupState() === "gone") finish(); else finish(true);
+        }, 1000);
+      }, 3000);
+      check();
+    };
+    const abort = () => { cancelled = true; stop(); };
+    child.stdout?.on("data", add); child.stderr?.on("data", add);
+    const pipeError = () => { if (!settled) { failed = true; stop(); } };
+    child.stdout?.on("error", pipeError); child.stderr?.on("error", pipeError);
+    child.on("error", () => {
+      failed = true;
+      // An error with a live pid is not proof of exit (e.g. a failed kill).
+      if (!child.pid) { exited = true; closed = true; check(); } else stop();
+    });
+    child.once("exit", code => { exited = true; exitCode = code; clear(timeout); check(); });
+    child.once("close", code => { exited = true; closed = true; exitCode = code; clear(timeout); check(); });
+    timeout = schedule(() => { timedOut = true; stop(); }, opts.timeoutMs ?? 300_000);
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    if (opts.signal?.aborted) abort();
+  });
 }
 
 /**
@@ -391,12 +505,14 @@ export async function runHeadless(
   agentId: string, input: Omit<LaunchInput, "token" | "sessionDir" | "mcp">,
   opts: { cwd?: string; timeoutMs?: number; maxBytes?: number; depth?: number; attachMcp?: boolean; signal?: AbortSignal;
     gatewayAuth?: Pick<GatewayTokenAuthority, "issue" | "revoke"> } = {},
+  runtime: HeadlessProcessRuntime = headlessRuntime,
 ): Promise<RunResult> {
   const launcher = LAUNCHERS[agentId];
   if (!launcher?.headless) throw new Error("这个 agent 还没有无界面的调用方式");
   const authority = opts.gatewayAuth ?? gatewayTokens;
   const sessionDir = newSessionDir();
   let token: string | undefined;
+  let runError: unknown;
   try {
     token = authority.issue(agentId, { depth: opts.depth ?? 1, allowMcp: opts.attachMcp !== false, allowNativeClaude: false }).token;
     const mcp = opts.attachMcp === false ? undefined : mcpEndpoint(input.port, token, opts.depth ?? 1);
@@ -404,29 +520,20 @@ export async function runHeadless(
     materialize(spec, sessionDir);
     const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
     for (const name of spec.unset ?? []) delete env[name];
-    const max = opts.maxBytes ?? 2_000_000;
-    if (opts.signal?.aborted) return { exitCode: null, output: "任务已取消", timedOut: false };
-    return await new Promise<RunResult>(resolve => {
-      const child = spawn(spec.command, spec.args, { cwd: opts.cwd ?? sessionDir, env, stdio: ["ignore", "pipe", "pipe"] });
-      let output = spec.warnings?.map(warning => `[EasySwitch] ${warning}\n`).join("") ?? "";
-      let timedOut = false;
-      let bytes = Buffer.byteLength(output);
-      let killTimer: ReturnType<typeof setTimeout> | undefined;
-      const add = (d: Buffer) => { const take = Math.min(d.length, Math.max(0, max - bytes)); output += d.subarray(0, take).toString("utf8"); bytes += take; };
-      child.stdout.on("data", add);
-      child.stderr.on("data", add);
-      const stop = () => {
-        child.kill("SIGTERM");
-        killTimer ??= setTimeout(() => child.kill("SIGKILL"), 3000).unref();
-      };
-      const timer = setTimeout(() => { timedOut = true; stop(); }, opts.timeoutMs ?? 300_000);
-      opts.signal?.addEventListener("abort", stop, { once: true });
-      const cleanup = () => { clearTimeout(timer); clearTimeout(killTimer); opts.signal?.removeEventListener("abort", stop); };
-      child.on("close", code => { cleanup(); resolve({ exitCode: code, output: output.trim(), timedOut, ...(spec.warnings?.length ? { warnings: spec.warnings } : {}) }); });
-      child.on("error", error => { cleanup(); resolve({ exitCode: null, output: output + String(error.message), timedOut, ...(spec.warnings?.length ? { warnings: spec.warnings } : {}) }); });
-    });
-  } finally {
-    try { if (token) authority.revoke(token); }
+    if (opts.signal?.aborted) return { exitCode: null, output: "任务已取消", timedOut: false, cancelled: true };
+    return await runOwnedHeadless(spec, opts.cwd ?? sessionDir, env, opts, runtime);
+  } catch (error) { runError = error; throw error; }
+  finally {
+    try {
+      if (token) {
+        try { authority.revoke(token); }
+        catch (error) {
+          // Keep the process-cleanup failure class visible even if token persistence also failed.
+          if (runError instanceof HeadlessCleanupError) runError.tokenCleanupFailed = true;
+          else throw error;
+        }
+      }
+    }
     finally { rmSync(sessionDir, { recursive: true, force: true }); }
   }
 }

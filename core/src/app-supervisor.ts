@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { CoreSupervisor } from "./core-supervisor.ts";
 
 const entry = fileURLToPath(import.meta.url);
+export const ORPHAN_CORE_EXIT_MS = 8_000;
 
 /** The parent must keep stdin open. Closing it is the ownership signal, not an unauthenticated HTTP API. */
 export async function runAppSupervisor(deps:{spawn?:typeof spawn;input?:Pick<NodeJS.ReadStream,"once"|"off"|"resume"|"pause">;signals?:Pick<NodeJS.Process,"once"|"off">;homeDir?:string;execPath?:string;out?:(line:string)=>void}={}): Promise<number> {
@@ -40,16 +41,26 @@ export async function runAppSupervisor(deps:{spawn?:typeof spawn;input?:Pick<Nod
   });
 }
 
-async function runOwnedCore(): Promise<void> {
+/** Purely injectable ownership guard; installation does not send a signal until parent EOF. */
+export function monitorCoreParent(deps: {
+  input: Pick<NodeJS.ReadStream,"once"|"resume">;
+  requestStop: () => void;
+  forceExit: () => void;
+  schedule?: (callback: () => void, delayMs: number) => unknown;
+}): void {
   let closing = false;
   const parentEnded = () => {
     if (closing) return; closing = true;
-    // main.ts already has graceful SIGTERM cleanup. Bound the orphan path if a request never drains.
-    process.kill(process.pid, "SIGTERM");
-    setTimeout(() => process.exit(1), 4_000).unref();
+    // Leave more time than both the task cleanup and the outer core stop window.
+    (deps.schedule ?? ((callback, delay) => setTimeout(callback, delay).unref()))(deps.forceExit, ORPHAN_CORE_EXIT_MS);
+    deps.requestStop();
   };
+  deps.input.once("end", parentEnded); deps.input.once("close", parentEnded); deps.input.resume();
+}
+
+async function runOwnedCore(): Promise<void> {
   await import("./main.ts");
-  process.stdin.once("end", parentEnded); process.stdin.once("close", parentEnded); process.stdin.resume();
+  monitorCoreParent({input:process.stdin,requestStop:()=>process.kill(process.pid,"SIGTERM"),forceExit:()=>process.exit(1)});
 }
 
 const direct = (() => { try { return Boolean(process.argv[1]) && realpathSync(process.argv[1]!) === realpathSync(entry); } catch { return false; } })();
