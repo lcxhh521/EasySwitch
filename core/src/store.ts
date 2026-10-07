@@ -20,6 +20,8 @@ interface StateFile {
   siwc?: SiwcAccount[];
   siwcHostId?: string;
   pools?: Pool[];
+  /** Hashes of normalized model names the user explicitly declined for pool suggestions. */
+  poolSuggestionDismissals?: string[];
   profiles?: Profile[];
   /** Dispatch rules, in the order they are tried (see dispatch.ts). */
   rules?: DispatchRule[];
@@ -234,11 +236,28 @@ export class Store {
   }
 
   upsertPool(pool: Pool): void {
-    const list = this.state.pools ?? [];
+    const old = this.state.pools;
+    const list = [...(old ?? [])];
     const at = list.findIndex(p => p.id === pool.id);
     if (at >= 0) list[at] = structuredClone(pool); else list.push(structuredClone(pool));
     this.state.pools = list;
-    this.save();
+    try { this.save(); } catch (error) { this.state.pools = old; throw error; }
+  }
+
+  dismissedPoolSuggestions(): string[] {
+    const list = this.state.poolSuggestionDismissals ?? [];
+    if (!Array.isArray(list) || list.length > 4096 || list.some(id => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id))) throw new Error("模型池建议记录无法安全读取，请检查本机存储");
+    return [...new Set(list)];
+  }
+
+  dismissPoolSuggestion(key: string): void {
+    if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("模型池建议标识无效");
+    const list = this.dismissedPoolSuggestions();
+    if (list.includes(key)) return;
+    if (list.length >= 4096) throw new Error("模型池建议记录已达到上限，请检查本机存储");
+    const old = this.state.poolSuggestionDismissals;
+    this.state.poolSuggestionDismissals = [...list, key];
+    try { this.save(); } catch (error) { this.state.poolSuggestionDismissals = old; throw error; }
   }
 
   removePool(id: string): void {

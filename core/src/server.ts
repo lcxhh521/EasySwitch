@@ -1,4 +1,5 @@
 import { FeedbackBook, FeedbackStoreError } from "./feedback.ts";
+import { buildPoolSuggestions } from "./pool-suggestions.ts";
 import { buildRuleSuggestions } from "./suggestions.ts";
 import { TaskAccounting, type TaskAccountingCall } from "./task-accounting.ts";
 import { ParallelTaskCoordinator, ParallelTaskError, TaskCapacity, type ReadonlyRelayFixtureAdapter } from "./parallel-tasks.ts";
@@ -248,6 +249,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     isTargetAvailable:target=>taskAvailable(target.agent)&&Boolean(resolveModel(store,target.model)),
     resolveRuleTarget:rule=>{const b=store.binding(rule.then.agent),first=store.catalog()[0];const model=rule.then.model??(b?`${b.providerId}/${b.model}`:first?`${first.providerId}/${first.model}`:undefined);const effort=rule.then.effort??store.prefs(rule.then.agent).effort;return {...rule.then,...(model?{model}:{}),...(effort?{effort}:{})};},
   });
+  const poolSuggestions = () => buildPoolSuggestions({ models: store.catalog(), pools: store.pools(), dismissed: store.dismissedPoolSuggestions() });
   const taskCapacity = new TaskCapacity();
   const taskGroups = new ParallelTaskCoordinator({book:tasks,adapters:deps.readonlyFixtures,limiter:taskCapacity,
     assertBudget: ({model,taskId}) => {accountingSafely(()=>taskAccounting.beginTask(taskId));budget.assertAllowed();if(!resolveModel(store,model))throw new ParallelTaskError("model_unavailable","所选来源或模型暂不可用。",409);},
@@ -734,6 +736,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         prefs: store.allPrefs(),
         rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })),
         pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
+        poolSuggestions: poolSuggestions(),
         profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
         modelEffortNotes: Object.fromEntries(store.catalog().map(m => { const p = store.provider(m.providerId); return [`${m.providerId}/${m.model}`, p ? officialThinkingProfile(p.baseUrl, m.model)?.note ?? "" : ""]; })),
         modelEfforts: Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts])),
@@ -773,6 +776,19 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
 
     // --- model pools ---------------------------------------------------------
+    if (path === "/api/pools/suggestions" && method === "GET") {
+      if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "请从本地控制台查看建议", code: "access_denied" }); return; }
+      json(res, 200, { suggestions: poolSuggestions() }); return;
+    }
+    const poolSuggestionAction = /^\/api\/pools\/suggestions\/(pool-suggestion-[a-f0-9]{24})\/(apply|dismiss)$/.exec(path);
+    if (poolSuggestionAction && method === "POST") {
+      if (Object.keys(body).length) { json(res, 400, { error: "建议操作不接受额外字段" }); return; }
+      const suggestion = poolSuggestions().find(s => s.id === poolSuggestionAction[1]);
+      if (!suggestion) { json(res, 409, { error: "建议已变化或已处理，请刷新后查看" }); return; }
+      if (poolSuggestionAction[2] === "dismiss") { store.dismissPoolSuggestion(suggestion.dismissKey); json(res, 200, { ok: true }); return; }
+      const pool = { id: `suggested-${randomUUID()}`, name: suggestion.model, strategy: "order" as const, members: suggestion.members.map(m => m.modelId), createdAt: new Date().toISOString() };
+      store.upsertPool(pool); json(res, 200, pool); return;
+    }
     if (path === "/api/pools" && method === "GET") {
       json(res, 200, { pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p), efforts: poolEfforts(store, p) })) });
       return;

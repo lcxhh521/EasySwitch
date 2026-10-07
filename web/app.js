@@ -1069,11 +1069,6 @@ let poolConfirmDel = null;
 /** Model pools: one name for several places to get a model from; a failing member is skipped. */
 function poolsCard() {
   const pools = state.pools ?? [];
-  // The same model offered by several sources: a pool is the obvious thing to make of it.
-  const seen = new Map();
-  for (const p of state.providers) for (const m of modelsOf(p)) { const k = m.toLowerCase(); (seen.get(k) ?? seen.set(k, []).get(k)).push(`${p.id}/${m}`); }
-  const taken = new Set(pools.map(p => p.name.toLowerCase()));
-  const suggestions = [...seen.entries()].filter(([name, list]) => list.length >= 2 && !taken.has(name)).slice(0, 4);
   const nameOf = key => { const i = key.indexOf("/"); const p = providerById(key.slice(0, i)); return `${key.slice(i + 1)}${p ? `（${p.name}）` : ""}`; };
   const row = p => `
     <div class="row">
@@ -1098,7 +1093,7 @@ function poolsCard() {
     <div class="section-head"><h2>模型池</h2><span class="aside">同一个模型有多个来源时合成一个名字，一个挂了自动换下一个</span></div>
     <div class="card">
       ${pools.map(row).join("")}
-      ${suggestions.map(([name, list]) => `<div class="row"><div class="grow"><div class="title">${esc(name)}</div><div class="sub">在 ${list.length} 个来源里都有：可以合成一个池</div></div><button class="btn secondary" data-pool-merge="${esc(name)}">合成一个池</button></div>`).join("")}
+      ${typeof poolSuggestionsCard === "function" ? poolSuggestionsCard() : ""}
       ${form}
       ${poolForm ? "" : `<button class="add-row" data-pool-new>＋ 新建模型池</button>`}
     </div>`;
@@ -1383,7 +1378,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1747,14 +1742,6 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-pool-cancel]")) { poolForm = null; render(); return; }
   const poolEdit = t.closest("[data-pool-edit]");
   if (poolEdit) { const p = (state.pools ?? []).find(x => x.id === poolEdit.dataset.poolEdit); if (p) { poolForm = { id: p.id, name: p.name, strategy: p.strategy, members: [...p.members] }; render(); } return; }
-  const poolMerge = t.closest("[data-pool-merge]");
-  if (poolMerge) {
-    const name = poolMerge.dataset.poolMerge;
-    const members = state.providers.flatMap(p => modelsOf(p).filter(m => m.toLowerCase() === name).map(m => `${p.id}/${m}`));
-    try { await call("POST", "/api/pools", { name, strategy: "order", members }); toast(`已合成 pool/${name}，顺序是来源列表的顺序，可以再编辑`); } catch (error) { showError(error); }
-    await refresh(true);
-    return;
-  }
   const poolDel = t.closest("[data-pool-del]");
   if (poolDel) {
     const id = poolDel.dataset.poolDel;
