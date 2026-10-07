@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>EasySwitch</title>
+  <clipPath id="shape"><rect width="1024" height="1024" rx="232"/></clipPath>
+  <g clip-path="url(#shape)">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#15928f"/><stop offset="1" stop-color="#0a5556"/></linearGradient></defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- The "e" of EasySwitch is a switch: its bar is the track and the amber knob is what you move. -->
+  <g transform="translate(-11 0)">
+    <path d="M724.0 512.0 A212 212 0 1 0 659.3 664.5" stroke="#f6f2e8" stroke-width="90" stroke-linecap="round" fill="none"/>
+    <path d="M300 512 H724" stroke="#f6f2e8" stroke-width="90" fill="none"/>
+    <circle cx="724" cy="512" r="68" fill="#f2a93b" stroke="#0b5253" stroke-opacity=".7" stroke-width="9"/>
+  </g>
+  </g>
+</svg>

@@ -9,7 +9,7 @@ render() { # svg size out.png
   qlmanage -t -s "$2" -o "$tmp" "$1" >/dev/null 2>&1
   mv "$tmp/$(basename "$1").png" "$3"
 }
-# App icon: the SVG is drawn on a 1024 canvas with the body inset by 100, as the macOS grid wants.
+# App icon: a full-bleed 1024 square (macOS applies the rounded shape; a transparent margin would get it a grey tile).
 set=$tmp/AppIcon.iconset; mkdir -p "$set"
 render "$repo/assets/easyswitch.svg" 1024 "$tmp/full.png"
 for pair in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x 128:icon_128x128 256:icon_128x128@2x 256:icon_256x256 512:icon_256x256@2x 512:icon_512x512 1024:icon_512x512@2x; do
@@ -27,7 +27,6 @@ for state in on off; do
   sips -z 36 36 "$tmp/$name.png" --out "$out/$name@2x.png" >/dev/null
   sips -z 18 18 "$tmp/$name.png" --out "$out/$name.png" >/dev/null
 done
-# The web mark is the icon body only (no canvas margin, no outer shadow), so it fills its box at 16 to 28 px.
-sed 's/width="1024" height="1024" viewBox="0 0 1024 1024"/width="824" height="824" viewBox="100 100 824 824"/' "$repo/assets/easyswitch.svg" > "$repo/web/favicon.svg"
+cp "$repo/assets/easyswitch-rounded.svg" "$repo/web/favicon.svg"
 rm -rf "$tmp"
 echo "icons written to $out and web/favicon.svg"
