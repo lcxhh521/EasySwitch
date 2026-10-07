@@ -349,12 +349,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
-  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; cleanup: () => Promise<void> } | { error: string; status: number }> {
+  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; cleanup: () => Promise<void> } | { error: string; status: number; code: string }> {
     const launcher = LAUNCHERS[id];
     const known = AGENTS.find(a => a.id === id);
+    if (!known || !launcher?.interactive) return { status: 409, code: "agent_not_integrated", error: "这个 agent 还没有接入交互启动" };
     const bin = await agentBinary(id);
-    if (!known || !launcher?.interactive) return { status: 409, error: "这个 agent 还没有接入交互启动" };
-    if (!bin) return { status: 404, error: "没有检测到这个 agent 的命令" };
+    if (!bin) return { status: 404, code: "agent_not_found", error: "没有检测到这个 agent 的命令" };
     const b = store.binding(id);
     const first = store.catalog()[0];
     // Claude Code keeps the user's own login when it has one: Claude's own models stay in the menu, and with no model chosen it starts on its usual default.
@@ -362,7 +362,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const model = opts.model ?? (b ? `${b.providerId}/${b.model}` : keepLogin ? "" : first ? `${first.providerId}/${first.model}` : "");
     if (keepLogin ? (model !== "" && !resolveModel(store, model)) : (!model || !resolveModel(store, model))) {
       const off = model ? store.provider(model.slice(0, Math.max(0, model.indexOf("/")))) : undefined;
-      return { status: 409, error: off?.off ? `「${off.name}」这个订阅现在是关着的：先在「模型来源」里把它打开` : "还没有可用的模型：先在「模型来源」里添加一个" };
+      return { status: 409, code: off?.off ? "provider_disabled" : "model_not_found", error: off?.off ? `「${off.name}」这个订阅现在是关着的：先在「模型来源」里把它打开` : "还没有可用的模型：先在「模型来源」里添加一个" };
     }
     const wanted = opts.effort ?? store.prefs(id).effort;
     const effort = wanted && (await levelsFor(id, model || undefined)).includes(wanted) ? wanted : undefined;
@@ -1335,7 +1335,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         ...(typeof body.model === "string" && body.model ? { model: body.model } : q.get("model") ? { model: q.get("model")! } : {}),
         ...(typeof body.effort === "string" && body.effort ? { effort: body.effort } : q.get("effort") ? { effort: q.get("effort")! } : {}),
       });
-      if ("error" in made) { json(res, made.status, { error: made.error }); return; }
+      if ("error" in made) { json(res, made.status, { error: made.error, code: made.code }); return; }
       if (agentAction[2] === "command") {
         // For the `es` command: the caller runs this in its own terminal and removes sessionDir afterwards.
         json(res, 200, { command: made.spec.command, args: made.spec.args, env: made.spec.env, unset: made.spec.unset ?? [], sessionDir: made.sessionDir, model: made.model, name: made.name, session: made.session });
@@ -1810,7 +1810,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const harness = launchMatch[1] as Harness;
       const label = harness === "codex" ? "ChatGPT" : "Claude Code";
       const made = await interactiveSpec(harness, {});
-      if ("error" in made) { json(res, made.status, { error: made.error }); return; }
+      if ("error" in made) { json(res, made.status, { error: made.error, code: made.code }); return; }
       const command = `${commandLine(made.spec)}; rm -rf ${JSON.stringify(made.sessionDir)}`;
       const shown = made.model || "Claude 原生模型 + 你加的模型";
       if (method === "POST") {

@@ -63,8 +63,9 @@ test("models 401 and malformed success are errors, never a falsely empty catalog
   for (const options of [{modelsStatus:401},{catalog:{data:[{name:"not-an-id"}]}},{catalog:{}}]) {
     const f = await fixture(t, options); assert.equal(await esMain(["models"], f.deps), 1);
     assert.deepEqual(f.output, []); assert.equal(f.spawns.length, 0);
-    assert.match(f.errors.join("\n"), options.modelsStatus ? /HTTP 401/ : /无效的模型目录/);
+    assert.match(f.errors.join("\n"), options.modelsStatus ? /连接凭据已失效/ : /无效的模型目录/);
     assert.ok(!f.errors.join("\n").includes(TOKEN));
+    assert.doesNotMatch(f.errors.join("\n"), /HTTP|\b[45]\d\d\b/);
   }
 });
 
@@ -145,4 +146,71 @@ test("help and invalid options never start a daemon, use the network, or read na
   assert.equal(await esMain(["--help"],deps),0); assert.match(output.join("\n"),/es models/);
   assert.equal(await esMain(["fixture","-m"],deps),1); assert.match(errors.join("\n"),/需要填写/);
   assert.equal(await esMain(["models"],{...deps,env:{EASYSWITCH_PORT:"NaN"}}),1);
+});
+
+test("real command API keeps unsupported, undetected and model-missing failures distinct without spawning or allocating", async () => {
+  const { createEasySwitchServer } = await import("../src/server.ts");
+  const { Store } = await import("../src/store.ts");
+  const { GatewayTokenAuthority } = await import("../src/gateway-auth.ts");
+  for (const scenario of [
+    { id: "no-such-agent", bin: undefined, code: "agent_not_integrated", text: /还没有接入交互启动/, status: 409, finds: 0 },
+    { id: "hermes", bin: undefined, code: "agent_not_found", text: /没有检测到/, status: 404, finds: 1 },
+    { id: "hermes", bin: "/fixture/never-run", code: "model_not_found", text: /没有可用的模型/, status: 409, finds: 1 },
+    { id: "hermes", bin: "/fixture/never-run", code: "provider_disabled", text: /来源还没打开/, status: 409, finds: 1, model: "off/m" },
+  ]) {
+    const dir = mkdtempSync(join(realpathSync(tmpdir()), "es-cli-errors-"));
+    const store = new Store(dir); store.setSettings({ claudeNative: false });
+    if (scenario.model) store.upsertProvider({ id: "off", name: "private-source-name", baseUrl: "http://127.0.0.1:1", models: ["m"], off: true, route: "chat-translate", routePinned: true, protocols: ["chat"], streamUsage: false, createdAt: "" });
+    const auth = new GatewayTokenAuthority(); let finds = 0;
+    const never = () => { assert.fail("rejected startup must not read secrets, allocate files, or start a process"); };
+    const server = createEasySwitchServer({ store, port: 0, gatewayAuth: auth,
+      secrets: { get: async () => never(), set: async () => never(), delete: async () => never() },
+      interactiveRuntime: { findBinary: async () => { finds++; return scenario.bin; }, newSessionDir: never, launchInTerminal: async () => never() },
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+    const errors: string[] = [], output: string[] = []; let result: any;
+    try {
+      const code = await esMain([scenario.id, ...(scenario.model ? ["-m", scenario.model] : [])], { env: { EASYSWITCH_PORT: String((server.address() as { port: number }).port) },
+        fetch: async (input, init) => { const response = await fetch(input, init); if (String(input).endsWith("/command")) result = { status: response.status, body: await response.clone().json() }; return response; },
+        spawn: never, err: line => errors.push(line), out: line => output.push(line),
+      });
+      assert.equal(code, 1); assert.deepEqual(output, []);
+      assert.match(errors.join("\n"), scenario.text);
+      assert.doesNotMatch(errors.join("\n"), /HTTP|\b[45]\d\d\b|no-such-agent|private-source-name/);
+      assert.match(errors.join("\n"), /es list|模型来源/);
+      assert.equal(result.status, scenario.status); assert.equal(result.body.code, scenario.code);
+      assert.equal(finds, scenario.finds); assert.deepEqual(auth.list(), []);
+    } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("request failures use fixed CLI wording and never echo hostile server prose or status codes", async () => {
+  const sensitive = "Bearer fixture-private-value sk-fixture-secret es-session-leak \u001b[31m /Users/private/path";
+  for (const [status, body, expected] of [
+    [409, { code: "agent_not_integrated", error: sensitive, uiError: { message: sensitive, title: sensitive } }, /还没有接入交互启动/],
+    [404, { code: "agent_not_found", error: { message: sensitive }, uiError: { message: sensitive } }, /没有检测到/],
+    [500, { code: sensitive, error: sensitive, uiError: { code: sensitive, message: sensitive } }, /这次操作没有完成/],
+    [409, { code: "provider_disabled", error: sensitive }, /来源还没打开/],
+  ] as const) {
+    const errors: string[] = [];
+    const code = await esMain(["fixture"], { env: {}, spawn: (() => assert.fail("no process on rejection")) as EsCliDeps["spawn"], out: () => assert.fail("no successful output"), err: line => errors.push(line),
+      fetch: async input => String(input).endsWith("/health") ? Response.json({ ok: true }) : Response.json(body, { status }),
+    });
+    assert.equal(code, 1); assert.match(errors.join("\n"), expected);
+    assert.doesNotMatch(errors.join("\n"), /HTTP|\b[45]\d\d\b|fixture-private|fixture-secret|session-leak|Users\/private|\u001b/);
+    assert.match(errors.join("\n"), /es list|es doctor|模型来源/);
+  }
+});
+
+test("transport and synchronous daemon-spawn exceptions cannot leak arbitrary messages", async () => {
+  const sensitive = "Bearer fixture-private-value sk-fixture-secret /Users/private/path";
+  for (const phase of ["request", "daemon"] as const) {
+    const errors: string[] = []; let spawns = 0;
+    const code = await esMain(["models"], { env: {}, err: line => errors.push(line), out: () => assert.fail("no successful output"),
+      fetch: async input => { if (phase === "request" && String(input).endsWith("/health")) return Response.json({ ok: true }); throw new Error(sensitive); },
+      spawn: (() => { spawns++; throw new Error(sensitive); }) as EsCliDeps["spawn"],
+    });
+    assert.equal(code, 1); assert.equal(spawns, phase === "daemon" ? 1 : 0);
+    assert.match(errors.join("\n"), /es doctor/); assert.doesNotMatch(errors.join("\n"), /fixture-private|fixture-secret|Users\/private|HTTP/);
+  }
 });

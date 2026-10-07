@@ -60,6 +60,8 @@ test("explicit codes take priority and status/technical codes stay in details on
   assert.equal(humanError({ code: "probe_budget_unmetered", status: 409 }).code, "budget_blocked");
   assert.equal(humanError({ code: "key_rejected", status: 401 }).code, "source_auth_required");
   assert.equal(humanError({ code: "provider_unavailable", status: 503 }).code, "service_unavailable");
+  assert.equal(humanError({ code: "agent_not_integrated", status: 409 }).details.technicalCode, "agent_not_integrated");
+  assert.equal(humanError({ code: "agent_not_integrated", status: 409 }).code, "capability_unavailable");
 });
 
 test("ambiguous filesystem and authentication failures use only explicit bounded context", () => {

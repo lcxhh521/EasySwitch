@@ -74,6 +74,8 @@ test("`es <agent>` with an unknown agent or no model fails with a plain message 
   const r = await es(["no-such-agent"]) as { stderr: string; failed?: number };
   assert.ok(r.failed, "non-zero exit");
   assert.match(r.stderr, /还没有接入交互启动|没有检测到/);
+  assert.doesNotMatch(r.stderr, /HTTP|\b[45]\d\d\b/);
+  assert.match(r.stderr, /es list/);
 });
 
 test("`es claude` starts the real Claude Code here, on the gateway, with the model chosen on the command line", async t => {

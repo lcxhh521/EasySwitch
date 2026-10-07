@@ -45,3 +45,8 @@ unknown_error：这次操作没有完成。暂时无法判断具体原因，需�
 ## 验证
 
 core/test/user-errors.test.ts 遍历全部词条并对照本表，检查三件套、正文无技术原文、已登记代码优先、当前真实错误形状、浏览器/Node一致、未知错误与恶意字段不泄漏。测试只用内存数据和本地文件，禁止真实程序、账号和服务调用。界面按钮/折叠以及菜单栏接口接线由各端集成回归单独验证。
+
+
+## 命令行启动拒绝
+
+交互命令接口保留稳定技术原因码：`agent_not_integrated`映射`capability_unavailable`，`agent_not_found`映射`client_not_installed`，`model_not_found`映射`model_unavailable`，`provider_disabled`映射`source_disabled`。这些别名只选择固定词条，不带程序名、路径或原始异常。CLI对未接入和未检测到保留明确区别，并给`es list`、`es doctor`或控制台入口；不拼接HTTP状态、服务端error/uiError文案。只有CLI自行写出的参数校验提示可原样显示，网络或子进程异常同样经过固定词典。

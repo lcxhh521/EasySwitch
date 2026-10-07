@@ -32,7 +32,7 @@
     budget_exceeded: "budget_blocked", provider_budget_exceeded: "budget_blocked", budget_accounting_unavailable: "budget_blocked", probe_budget_unmetered: "budget_blocked",
     agent_not_found: "client_not_installed", executable_not_found: "client_not_installed",
     desktop_isolation_unverified: "capability_unavailable", desktop_gateway_auth_unverified: "capability_unavailable", subscription_source_unavailable: "capability_unavailable",
-    unsupported_platform: "capability_unavailable", protocol_unsupported: "capability_unavailable",
+    agent_not_integrated: "capability_unavailable", unsupported_platform: "capability_unavailable", protocol_unsupported: "capability_unavailable",
     helper_missing: "keychain_unavailable", helper_not_executable: "keychain_unavailable", helper_signature_invalid: "keychain_unavailable", helper_timeout: "keychain_unavailable",
     no_default_keychain: "keychain_unavailable", keychain_error: "keychain_unavailable", keychain_access_required: "keychain_unavailable",
     task_accounting_unavailable: "storage_unavailable", feedback_unavailable: "storage_unavailable", readonly_unavailable: "capability_unavailable", fixture_only: "capability_unavailable", task_capacity: "request_busy", invalid_depth: "permission_denied",
