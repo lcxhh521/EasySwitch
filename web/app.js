@@ -844,7 +844,7 @@ function billingBlock(p) {
   const r = s?.rates;
   const own = p.prices?.[s?.model ?? ""];
   const priceText = !s ? "" : r
-    ? `${esc(s.model)}：输入 $${r.input} · 输出 $${r.output} · 缓存读 $${r.cacheRead}（每百万 token，${s.source === "user" ? "你填的" : "价格表"}）`
+    ? `${esc(s.model)}：输入 $${r.input} · 输出 $${r.output} · 缓存读 $${r.cacheRead}（每百万 token，${s.source === "user" ? "你填的" : "旧参考表，未按官方现价复核"}）`
     : `${esc(s.model)}：还没有价格，用量页会显示「—」；可以在下面填`;
   return `
     <div class="section-head"><h3>计费</h3><span class="aside">估算用，不是账单</span></div>

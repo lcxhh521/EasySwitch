@@ -7,8 +7,9 @@ import type { Provider, Rates } from "../types.ts";
  * detail is what the provider reported, and an unknown model is "unpriced",
  * not zero. Order: the user's own price for that model, then the built-in
  * table, otherwise null. Design after opencodex's usage/cost.ts (MIT): same
- * order of precedence, same four-rate shape; the table is generated from its
- * metadata source by scripts/build-prices.mjs. See PROVENANCE.md.
+ * order of precedence, same four-rate shape. The legacy table was generated
+ * from that metadata source; its values are not reverified official prices. scripts/build-prices.mjs now builds a separate
+ * staged official table; it does not replace these runtime rates. See PROVENANCE.md.
  */
 
 export type { Rates };
@@ -63,7 +64,7 @@ function originVendor(model: string): string | undefined {
   return rules.find(([re]) => re.test(m))?.[1];
 }
 
-export type PriceSource = "user" | "table";
+export type PriceSource = "user" | "legacy";
 export interface Priced { rates: Rates; source: PriceSource }
 
 /** The rates for one model on one provider, or undefined when nothing is known. */
@@ -74,10 +75,10 @@ export function ratesFor(provider: Pick<Provider, "baseUrl" | "prices">, model: 
   }
   const vendor = vendorFor(provider.baseUrl);
   const table = vendor ? TABLE.prices[vendor] : undefined;
-  if (table) for (const id of candidates(model)) if (table[id]) return { rates: fromRow(table[id]), source: "table" };
+  if (table) for (const id of candidates(model)) if (table[id]) return { rates: fromRow(table[id]), source: "legacy" };
   // A relay re-sells another vendor's model under its own id: price it as the vendor that makes it.
   const origin = originVendor(model);
-  if (origin && TABLE.prices[origin]) for (const id of candidates(model)) if (TABLE.prices[origin]![id]) return { rates: fromRow(TABLE.prices[origin]![id]!), source: "table" };
+  if (origin && TABLE.prices[origin]) for (const id of candidates(model)) if (TABLE.prices[origin]![id]) return { rates: fromRow(TABLE.prices[origin]![id]!), source: "legacy" };
   // Otherwise look across vendors for an exact id.
   const matches = new Set<string>();
   const found: Row[] = [];
@@ -89,7 +90,7 @@ export function ratesFor(provider: Pick<Provider, "baseUrl" | "prices">, model: 
     }
   }
   // Only trust an unambiguous match (the same model priced the same by every vendor that has it).
-  if (found.length && found.every(r => r.join() === found[0]!.join())) return { rates: fromRow(found[0]!), source: "table" };
+  if (found.length && found.every(r => r.join() === found[0]!.join())) return { rates: fromRow(found[0]!), source: "legacy" };
   return undefined;
 }
 
@@ -108,4 +109,4 @@ export function costOf(rates: Rates, usage: TokenUsage): number {
   return (fresh * rates.input + cached * rates.cacheRead + usage.output * rates.output) / 1_000_000;
 }
 
-export const PRICE_SOURCES = { generatedFrom: "opencodex model-metadata.source.json" };
+export const PRICE_SOURCES = { generatedFrom: "opencodex model-metadata.source.json", status: "legacy-unverified", officialTable: "official-prices.json", officialRuntimeEnabled: false } as const;

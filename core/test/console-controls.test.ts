@@ -236,3 +236,12 @@ test("CodeBuddy source form closes cleanly and a later Qoder form does not retai
   assert.equal(app.run("cliTextKind"), "qoder");
   assert.doesNotMatch(app.run("cliTextSourcesCard()"), /name="edition"/);
 });
+
+test("billing keeps legacy reference estimates distinct from user-entered rates", () => {
+  const app = ui();
+  const html = app.run(`billingBlock({priceSample:{model:'fixture',source:'legacy',rates:{input:2,output:3,cacheRead:0.5}}})`) as string;
+  assert.match(html, /旧参考表，未按官方现价复核/);
+  assert.match(html, /输入 \$2/);
+  const own = app.run(`billingBlock({priceSample:{model:'fixture',source:'user',rates:{input:2,output:3,cacheRead:0.5}}})`) as string;
+  assert.match(own, /你填的/); assert.doesNotMatch(own, /旧参考表/);
+});

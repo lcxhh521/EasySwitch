@@ -1,0 +1,912 @@
+{
+  "checkedAt": "2026-10-07",
+  "coverageGaps": [
+    {
+      "model": "gpt-5.4",
+      "reason": "Session-wide long-context selection, long-context cached-input amount, and regional/service-tier modifiers are not supported by this first-batch estimator.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI GPT-5.4 pricing and long-context conditions",
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.4"
+        }
+      ],
+      "vendor": "openai"
+    },
+    {
+      "model": "claude-sonnet-4-6",
+      "reason": "Tariffs are verified, but cache creation quantities/TTL are not in the current ledger; Sonnet/Opus also require verified effective inference geography.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        }
+      ],
+      "vendor": "anthropic"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "reason": "Tariffs are verified, but cache creation quantities/TTL are not in the current ledger; Sonnet/Opus also require verified effective inference geography.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        }
+      ],
+      "vendor": "anthropic"
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "reason": "Tariffs are verified, but cache creation quantities/TTL are not in the current ledger; Sonnet/Opus also require verified effective inference geography.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        }
+      ],
+      "vendor": "anthropic"
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "reason": "Paid token tariffs are verified; cache storage duration/allocation and grounding charges are not represented by current per-call usage.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Gemini Developer API pricing",
+          "url": "https://ai.google.dev/gemini-api/docs/pricing"
+        }
+      ],
+      "vendor": "google"
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "reason": "Paid token tariffs are verified; cache storage duration/allocation and grounding charges are not represented by current per-call usage.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Gemini Developer API pricing",
+          "url": "https://ai.google.dev/gemini-api/docs/pricing"
+        }
+      ],
+      "vendor": "google"
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "reason": "Both official USD period tariffs are recorded; peak/off-peak selection requires an authoritative Chinese public-holiday calendar. No cache-write tariff was separately verified.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "DeepSeek models and pricing",
+          "url": "https://api-docs.deepseek.com/quick_start/pricing/"
+        }
+      ],
+      "vendor": "deepseek"
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "reason": "Both official USD period tariffs are recorded; peak/off-peak selection requires an authoritative Chinese public-holiday calendar. No cache-write tariff was separately verified.",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "DeepSeek models and pricing",
+          "url": "https://api-docs.deepseek.com/quick_start/pricing/"
+        }
+      ],
+      "vendor": "deepseek"
+    }
+  ],
+  "entries": [
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "separate",
+      "cacheWriteTtl": "1h",
+      "conditions": [
+        "First-party Claude API standard text-token rates; excludes partner-operated Bedrock, Google Cloud, Foundry, Batch, service-tier premiums, and server-side tool charges.",
+        "This row prices 1h cache creation; creation tokens and their TTL must be known separately from uncached input and cache reads.",
+        "The current input/output/cached-only ledger cannot establish cache-creation quantities or TTL, so this tariff is not automatically selected.",
+        "Haiku 4.5 does not support inference_geo; standard first-party pricing applies.",
+        "The verified claude-haiku-4-5 alias resolves to claude-haiku-4-5-20251001; no other alias is inferred."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "anthropic/claude-haiku-4-5/global-1h",
+      "modality": "text",
+      "mode": "standard",
+      "model": "claude-haiku-4-5",
+      "rates": {
+        "cacheRead": 0.1,
+        "cacheWrite": 2,
+        "input": 1,
+        "output": 5
+      },
+      "region": "global",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude haiku-4-5 exact API ID and pricing",
+          "url": "https://platform.claude.com/docs/en/models/haiku-4-5/overview"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {},
+      "vendor": "anthropic"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "separate",
+      "cacheWriteTtl": "5m",
+      "conditions": [
+        "First-party Claude API standard text-token rates; excludes partner-operated Bedrock, Google Cloud, Foundry, Batch, service-tier premiums, and server-side tool charges.",
+        "This row prices 5m cache creation; creation tokens and their TTL must be known separately from uncached input and cache reads.",
+        "The current input/output/cached-only ledger cannot establish cache-creation quantities or TTL, so this tariff is not automatically selected.",
+        "Haiku 4.5 does not support inference_geo; standard first-party pricing applies.",
+        "The verified claude-haiku-4-5 alias resolves to claude-haiku-4-5-20251001; no other alias is inferred."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "anthropic/claude-haiku-4-5/global-5m",
+      "modality": "text",
+      "mode": "standard",
+      "model": "claude-haiku-4-5",
+      "rates": {
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25,
+        "input": 1,
+        "output": 5
+      },
+      "region": "global",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude haiku-4-5 exact API ID and pricing",
+          "url": "https://platform.claude.com/docs/en/models/haiku-4-5/overview"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {},
+      "vendor": "anthropic"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "separate",
+      "cacheWriteTtl": "1h",
+      "conditions": [
+        "First-party Claude API standard text-token rates; excludes partner-operated Bedrock, Google Cloud, Foundry, Batch, service-tier premiums, and server-side tool charges.",
+        "This row prices 1h cache creation; creation tokens and their TTL must be known separately from uncached input and cache reads.",
+        "The current input/output/cached-only ledger cannot establish cache-creation quantities or TTL, so this tariff is not automatically selected.",
+        "Global inference only. US-only inference applies 1.1x to all four token categories.",
+        "Omitted inference_geo can inherit a workspace default; absence in a request does not establish global pricing.",
+        "The full supported 1M context window uses these base token rates; no older 200k long-context premium is applied."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "anthropic/claude-opus-4-6/global-1h",
+      "modality": "text",
+      "mode": "standard",
+      "model": "claude-opus-4-6",
+      "rates": {
+        "cacheRead": 0.5,
+        "cacheWrite": 10,
+        "input": 5,
+        "output": 25
+      },
+      "region": "global",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude opus-4-6 exact API ID and pricing",
+          "url": "https://platform.claude.com/docs/en/models/opus-4-6/overview"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {},
+      "vendor": "anthropic"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "separate",
+      "cacheWriteTtl": "5m",
+      "conditions": [
+        "First-party Claude API standard text-token rates; excludes partner-operated Bedrock, Google Cloud, Foundry, Batch, service-tier premiums, and server-side tool charges.",
+        "This row prices 5m cache creation; creation tokens and their TTL must be known separately from uncached input and cache reads.",
+        "The current input/output/cached-only ledger cannot establish cache-creation quantities or TTL, so this tariff is not automatically selected.",
+        "Global inference only. US-only inference applies 1.1x to all four token categories.",
+        "Omitted inference_geo can inherit a workspace default; absence in a request does not establish global pricing.",
+        "The full supported 1M context window uses these base token rates; no older 200k long-context premium is applied."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "anthropic/claude-opus-4-6/global-5m",
+      "modality": "text",
+      "mode": "standard",
+      "model": "claude-opus-4-6",
+      "rates": {
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25,
+        "input": 5,
+        "output": 25
+      },
+      "region": "global",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude opus-4-6 exact API ID and pricing",
+          "url": "https://platform.claude.com/docs/en/models/opus-4-6/overview"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {},
+      "vendor": "anthropic"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "separate",
+      "cacheWriteTtl": "1h",
+      "conditions": [
+        "First-party Claude API standard text-token rates; excludes partner-operated Bedrock, Google Cloud, Foundry, Batch, service-tier premiums, and server-side tool charges.",
+        "This row prices 1h cache creation; creation tokens and their TTL must be known separately from uncached input and cache reads.",
+        "The current input/output/cached-only ledger cannot establish cache-creation quantities or TTL, so this tariff is not automatically selected.",
+        "Global inference only. US-only inference applies 1.1x to all four token categories.",
+        "Omitted inference_geo can inherit a workspace default; absence in a request does not establish global pricing.",
+        "The full supported 1M context window uses these base token rates; no older 200k long-context premium is applied."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "anthropic/claude-sonnet-4-6/global-1h",
+      "modality": "text",
+      "mode": "standard",
+      "model": "claude-sonnet-4-6",
+      "rates": {
+        "cacheRead": 0.3,
+        "cacheWrite": 6,
+        "input": 3,
+        "output": 15
+      },
+      "region": "global",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude sonnet-4-6 exact API ID and pricing",
+          "url": "https://platform.claude.com/docs/en/models/sonnet-4-6/overview"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {},
+      "vendor": "anthropic"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "separate",
+      "cacheWriteTtl": "5m",
+      "conditions": [
+        "First-party Claude API standard text-token rates; excludes partner-operated Bedrock, Google Cloud, Foundry, Batch, service-tier premiums, and server-side tool charges.",
+        "This row prices 5m cache creation; creation tokens and their TTL must be known separately from uncached input and cache reads.",
+        "The current input/output/cached-only ledger cannot establish cache-creation quantities or TTL, so this tariff is not automatically selected.",
+        "Global inference only. US-only inference applies 1.1x to all four token categories.",
+        "Omitted inference_geo can inherit a workspace default; absence in a request does not establish global pricing.",
+        "The full supported 1M context window uses these base token rates; no older 200k long-context premium is applied."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.anthropic.com"
+      ],
+      "id": "anthropic/claude-sonnet-4-6/global-5m",
+      "modality": "text",
+      "mode": "standard",
+      "model": "claude-sonnet-4-6",
+      "rates": {
+        "cacheRead": 0.3,
+        "cacheWrite": 3.75,
+        "input": 3,
+        "output": 15
+      },
+      "region": "global",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude API pricing",
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude inference geography and workspace defaults",
+          "url": "https://platform.claude.com/docs/en/manage-claude/data-residency"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Claude sonnet-4-6 exact API ID and pricing",
+          "url": "https://platform.claude.com/docs/en/models/sonnet-4-6/overview"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {},
+      "vendor": "anthropic"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Official DeepSeek USD API rates for both thinking and non-thinking text calls.",
+        "Peak: Monday-Friday 01:00-04:00 and 06:00-10:00 UTC, excluding Chinese public holidays. All remaining hours, weekends, and Chinese public holidays are off-peak.",
+        "A timestamp alone does not identify the Chinese public-holiday calendar; current estimator cannot select this tariff safely.",
+        "The official page explicitly accepts this legacy model ID but serves DeepSeek-V4.1-Flash at the deepseek-flash tariff. This is a documented alias, not a neighboring-model inference."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.deepseek.com"
+      ],
+      "id": "deepseek/deepseek-v4-flash/usd-off-peak",
+      "modality": "text",
+      "mode": "standard",
+      "model": "deepseek-v4-flash",
+      "period": {
+        "description": "Weekday peak windows exclude Chinese public holidays; all other times are off-peak.",
+        "kind": "off-peak",
+        "timezone": "UTC"
+      },
+      "rates": {
+        "cacheRead": 0.003,
+        "cacheWrite": null,
+        "input": 0.15,
+        "output": 0.6
+      },
+      "region": "official-api-usd",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "DeepSeek models and pricing",
+          "url": "https://api-docs.deepseek.com/quick_start/pricing/"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "The current tariff lists cache-hit input, cache-miss input, and output only; no separate cache-write token price was verified."
+      },
+      "vendor": "deepseek"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Official DeepSeek USD API rates for both thinking and non-thinking text calls.",
+        "Peak: Monday-Friday 01:00-04:00 and 06:00-10:00 UTC, excluding Chinese public holidays. All remaining hours, weekends, and Chinese public holidays are off-peak.",
+        "A timestamp alone does not identify the Chinese public-holiday calendar; current estimator cannot select this tariff safely.",
+        "The official page explicitly accepts this legacy model ID but serves DeepSeek-V4.1-Flash at the deepseek-flash tariff. This is a documented alias, not a neighboring-model inference."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.deepseek.com"
+      ],
+      "id": "deepseek/deepseek-v4-flash/usd-peak",
+      "modality": "text",
+      "mode": "standard",
+      "model": "deepseek-v4-flash",
+      "period": {
+        "description": "Weekday peak windows exclude Chinese public holidays; all other times are off-peak.",
+        "kind": "peak",
+        "timezone": "UTC"
+      },
+      "rates": {
+        "cacheRead": 0.006,
+        "cacheWrite": null,
+        "input": 0.3,
+        "output": 1.2
+      },
+      "region": "official-api-usd",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "DeepSeek models and pricing",
+          "url": "https://api-docs.deepseek.com/quick_start/pricing/"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "The current tariff lists cache-hit input, cache-miss input, and output only; no separate cache-write token price was verified."
+      },
+      "vendor": "deepseek"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Official DeepSeek USD API rates for both thinking and non-thinking text calls.",
+        "Peak: Monday-Friday 01:00-04:00 and 06:00-10:00 UTC, excluding Chinese public holidays. All remaining hours, weekends, and Chinese public holidays are off-peak.",
+        "A timestamp alone does not identify the Chinese public-holiday calendar; current estimator cannot select this tariff safely.",
+        "The current pricing page explicitly lists deepseek-v4-pro separately at DeepSeek-V4-Pro-0813 rates; an older release announcement about rerouting is not used."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.deepseek.com"
+      ],
+      "id": "deepseek/deepseek-v4-pro/usd-off-peak",
+      "modality": "text",
+      "mode": "standard",
+      "model": "deepseek-v4-pro",
+      "period": {
+        "description": "Weekday peak windows exclude Chinese public holidays; all other times are off-peak.",
+        "kind": "off-peak",
+        "timezone": "UTC"
+      },
+      "rates": {
+        "cacheRead": 0.022,
+        "cacheWrite": null,
+        "input": 0.66,
+        "output": 1.98
+      },
+      "region": "official-api-usd",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "DeepSeek models and pricing",
+          "url": "https://api-docs.deepseek.com/quick_start/pricing/"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "The current tariff lists cache-hit input, cache-miss input, and output only; no separate cache-write token price was verified."
+      },
+      "vendor": "deepseek"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Official DeepSeek USD API rates for both thinking and non-thinking text calls.",
+        "Peak: Monday-Friday 01:00-04:00 and 06:00-10:00 UTC, excluding Chinese public holidays. All remaining hours, weekends, and Chinese public holidays are off-peak.",
+        "A timestamp alone does not identify the Chinese public-holiday calendar; current estimator cannot select this tariff safely.",
+        "The current pricing page explicitly lists deepseek-v4-pro separately at DeepSeek-V4-Pro-0813 rates; an older release announcement about rerouting is not used."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "api.deepseek.com"
+      ],
+      "id": "deepseek/deepseek-v4-pro/usd-peak",
+      "modality": "text",
+      "mode": "standard",
+      "model": "deepseek-v4-pro",
+      "period": {
+        "description": "Weekday peak windows exclude Chinese public holidays; all other times are off-peak.",
+        "kind": "peak",
+        "timezone": "UTC"
+      },
+      "rates": {
+        "cacheRead": 0.044,
+        "cacheWrite": null,
+        "input": 1.32,
+        "output": 3.96
+      },
+      "region": "official-api-usd",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "DeepSeek models and pricing",
+          "url": "https://api-docs.deepseek.com/quick_start/pricing/"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "The current tariff lists cache-hit input, cache-miss input, and output only; no separate cache-write token price was verified."
+      },
+      "vendor": "deepseek"
+    },
+    {
+      "additionalCharges": [
+        {
+          "condition": "Explicit context-cache storage, based on cached token count and retained duration.",
+          "currency": "USD",
+          "kind": "cache-storage",
+          "rate": 1,
+          "unit": "per_1m_token_hours"
+        }
+      ],
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Gemini Developer API paid standard text-token rates; free-tier, Vertex AI, Batch, Flex, Priority, audio, and other modalities are outside this row.",
+        "Output pricing includes thinking tokens.",
+        "Explicit cache storage is an additional time-based charge; current per-call usage does not identify storage duration or allocation.",
+        "Google Search/Maps grounding has separate usage allowances and charges; those charges are outside these token rates."
+      ],
+      "context": {},
+      "currency": "USD",
+      "hosts": [
+        "generativelanguage.googleapis.com"
+      ],
+      "id": "google/gemini-2.5-flash/paid-standard-all",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gemini-2.5-flash",
+      "rates": {
+        "cacheRead": 0.03,
+        "cacheWrite": null,
+        "input": 0.3,
+        "output": 2.5
+      },
+      "region": "developer-api",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Gemini Developer API pricing",
+          "url": "https://ai.google.dev/gemini-api/docs/pricing"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "A standalone per-token cache-write tariff is not specified here; context-cache storage is priced by token-hours and is not zero."
+      },
+      "vendor": "google"
+    },
+    {
+      "additionalCharges": [
+        {
+          "condition": "Explicit context-cache storage, based on cached token count and retained duration.",
+          "currency": "USD",
+          "kind": "cache-storage",
+          "rate": 4.5,
+          "unit": "per_1m_token_hours"
+        }
+      ],
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Gemini Developer API paid standard text-token rates; free-tier, Vertex AI, Batch, Flex, Priority, audio, and other modalities are outside this row.",
+        "Output pricing includes thinking tokens.",
+        "Explicit cache storage is an additional time-based charge; current per-call usage does not identify storage duration or allocation.",
+        "Google Search/Maps grounding has separate usage allowances and charges; those charges are outside these token rates."
+      ],
+      "context": {
+        "minInputTokensExclusive": 200000
+      },
+      "currency": "USD",
+      "hosts": [
+        "generativelanguage.googleapis.com"
+      ],
+      "id": "google/gemini-2.5-pro/paid-standard-long",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gemini-2.5-pro",
+      "rates": {
+        "cacheRead": 0.25,
+        "cacheWrite": null,
+        "input": 2.5,
+        "output": 15
+      },
+      "region": "developer-api",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Gemini Developer API pricing",
+          "url": "https://ai.google.dev/gemini-api/docs/pricing"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "A standalone per-token cache-write tariff is not specified here; context-cache storage is priced by token-hours and is not zero."
+      },
+      "vendor": "google"
+    },
+    {
+      "additionalCharges": [
+        {
+          "condition": "Explicit context-cache storage, based on cached token count and retained duration.",
+          "currency": "USD",
+          "kind": "cache-storage",
+          "rate": 4.5,
+          "unit": "per_1m_token_hours"
+        }
+      ],
+      "applicability": "conditional",
+      "cacheWriteTreatment": "unknown",
+      "conditions": [
+        "Gemini Developer API paid standard text-token rates; free-tier, Vertex AI, Batch, Flex, Priority, audio, and other modalities are outside this row.",
+        "Output pricing includes thinking tokens.",
+        "Explicit cache storage is an additional time-based charge; current per-call usage does not identify storage duration or allocation.",
+        "Google Search/Maps grounding has separate usage allowances and charges; those charges are outside these token rates."
+      ],
+      "context": {
+        "maxInputTokensInclusive": 200000
+      },
+      "currency": "USD",
+      "hosts": [
+        "generativelanguage.googleapis.com"
+      ],
+      "id": "google/gemini-2.5-pro/paid-standard-short",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gemini-2.5-pro",
+      "rates": {
+        "cacheRead": 0.125,
+        "cacheWrite": null,
+        "input": 1.25,
+        "output": 10
+      },
+      "region": "developer-api",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "Gemini Developer API pricing",
+          "url": "https://ai.google.dev/gemini-api/docs/pricing"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "A standalone per-token cache-write tariff is not specified here; context-cache storage is priced by token-hours and is not zero."
+      },
+      "vendor": "google"
+    },
+    {
+      "applicability": "standard-text",
+      "cacheWriteTreatment": "included-in-input",
+      "conditions": [
+        "Direct OpenAI standard text-token inference; excludes Batch, service-tier premiums, tools, and non-text charges.",
+        "128000 is the model context ceiling, not a promise that every input of that size leaves room for output.",
+        "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      ],
+      "context": {
+        "maxInputTokensInclusive": 128000
+      },
+      "currency": "USD",
+      "hosts": [
+        "api.openai.com"
+      ],
+      "id": "openai/gpt-4o-mini/standard-text",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gpt-4o-mini",
+      "rates": {
+        "cacheRead": 0.075,
+        "cacheWrite": null,
+        "input": 0.15,
+        "output": 0.6
+      },
+      "region": "non-regional",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI prompt caching: model differences",
+          "url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI gpt-4o-mini model pricing",
+          "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      },
+      "vendor": "openai"
+    },
+    {
+      "applicability": "standard-text",
+      "cacheWriteTreatment": "included-in-input",
+      "conditions": [
+        "Direct OpenAI standard text-token inference; excludes Batch, service-tier premiums, tools, and non-text charges.",
+        "128000 is the model context ceiling, not a promise that every input of that size leaves room for output.",
+        "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      ],
+      "context": {
+        "maxInputTokensInclusive": 128000
+      },
+      "currency": "USD",
+      "hosts": [
+        "api.openai.com"
+      ],
+      "id": "openai/gpt-4o/standard-text",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gpt-4o",
+      "rates": {
+        "cacheRead": 1.25,
+        "cacheWrite": null,
+        "input": 2.5,
+        "output": 10
+      },
+      "region": "non-regional",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI prompt caching: model differences",
+          "url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI gpt-4o model pricing",
+          "url": "https://developers.openai.com/api/docs/models/gpt-4o"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      },
+      "vendor": "openai"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "included-in-input",
+      "conditions": [
+        "Direct OpenAI standard text-token inference; excludes Batch, Flex, service-tier premiums, tools, and non-text charges.",
+        "A prompt above 272000 input tokens applies 2x input and 1.5x output pricing for the full session; current per-call usage cannot prove session-wide applicability.",
+        "Long-row input and output amounts are arithmetic derivations of the explicitly published multipliers: 2.50 x 2 and 15 x 1.5.",
+        "Regional data-residency processing carries a 10% uplift; these rows are the non-regional rates.",
+        "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      ],
+      "context": {
+        "maxInputTokensInclusive": 1050000,
+        "minInputTokensExclusive": 272000
+      },
+      "currency": "USD",
+      "hosts": [
+        "api.openai.com"
+      ],
+      "id": "openai/gpt-5.4/standard-long",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gpt-5.4",
+      "rates": {
+        "cacheRead": null,
+        "cacheWrite": null,
+        "input": 5,
+        "output": 22.5
+      },
+      "region": "non-regional",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI prompt caching: model differences",
+          "url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI GPT-5.4 pricing and long-context conditions",
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.4"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheRead": "The checked model page specifies 2x input and 1.5x output for long sessions, but does not separately state a long-context cached-input amount; no inferred cache rate is stored.",
+        "cacheWrite": "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      },
+      "vendor": "openai"
+    },
+    {
+      "applicability": "conditional",
+      "cacheWriteTreatment": "included-in-input",
+      "conditions": [
+        "Direct OpenAI standard text-token inference; excludes Batch, Flex, service-tier premiums, tools, and non-text charges.",
+        "A prompt above 272000 input tokens applies 2x input and 1.5x output pricing for the full session; current per-call usage cannot prove session-wide applicability.",
+        "Long-row input and output amounts are arithmetic derivations of the explicitly published multipliers: 2.50 x 2 and 15 x 1.5.",
+        "Regional data-residency processing carries a 10% uplift; these rows are the non-regional rates.",
+        "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      ],
+      "context": {
+        "maxInputTokensInclusive": 272000
+      },
+      "currency": "USD",
+      "hosts": [
+        "api.openai.com"
+      ],
+      "id": "openai/gpt-5.4/standard-short",
+      "modality": "text",
+      "mode": "standard",
+      "model": "gpt-5.4",
+      "rates": {
+        "cacheRead": 0.25,
+        "cacheWrite": null,
+        "input": 2.5,
+        "output": 15
+      },
+      "region": "non-regional",
+      "sources": [
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI prompt caching: model differences",
+          "url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+        },
+        {
+          "checkedAt": "2026-10-07",
+          "title": "OpenAI GPT-5.4 pricing and long-context conditions",
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.4"
+        }
+      ],
+      "unit": "per_1m_tokens",
+      "unknownReasons": {
+        "cacheWrite": "No separate cache-write token tariff: implicit cache creation remains ordinary uncached input, with no additional write charge for models before GPT-5.6."
+      },
+      "vendor": "openai"
+    }
+  ],
+  "factsSha256": "134b31ce31a538c5b96379fd0f049f8dde95afda7b09d79c167428902c0415fb",
+  "generatedFrom": "official-facts.json",
+  "schemaVersion": 1
+}

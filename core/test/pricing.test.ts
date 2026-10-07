@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { summarize } from "../src/ledger.ts";
-import { costOf, ratesFor, vendorFor } from "../src/pricing/cost.ts";
+import { costOf, ratesFor, vendorFor, PRICE_SOURCES } from "../src/pricing/cost.ts";
 import { priceEntry } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import type { GatewayLogEntry, Provider } from "../src/types.ts";
@@ -13,7 +13,10 @@ const provider = (over: Partial<Provider> = {}): Provider => ({
   id: "p", name: "P", baseUrl: "https://api.deepseek.com/v1", models: [], route: "chat-translate", routePinned: false, streamUsage: true, createdAt: new Date().toISOString(), ...over,
 });
 
-test("prices come from the table by host, relays are priced as the vendor that makes the model, unknowns stay unpriced", () => {
+test("legacy reference rates preserve prior estimates during the staged official-table migration", () => {
+  assert.equal(PRICE_SOURCES.status, "legacy-unverified");
+  assert.equal(PRICE_SOURCES.officialRuntimeEnabled, false);
+  assert.equal(ratesFor({ baseUrl: "https://api.deepseek.com/v1" }, "deepseek-v4-flash")?.source, "legacy");
   assert.equal(vendorFor("https://api.deepseek.com/v1"), "deepseek");
   assert.deepEqual(ratesFor({ baseUrl: "https://api.deepseek.com/v1" }, "deepseek-v4-flash")?.rates, { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 });
   assert.equal(ratesFor({ baseUrl: "https://relay.example.com/v1" }, "deepseek-v4-flash")?.rates.input, 0.14, "a relay's copy is priced at the maker's rate");
