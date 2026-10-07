@@ -82,7 +82,6 @@ function coverageCard() {
         ${agentList.map(a => `<tr><td>${icon(a.icon, "sm")} ${esc(a.name)}</td>${feats.map(f => cell(a, f)).join("")}</tr>`).join("")}</table></div>
     </details>`;
 }
-let ocxImport = null; // { candidates, chosen:Set } while the opencodex import panel is open
 let presets = [];
 let popover = null;
 
@@ -1010,24 +1009,6 @@ function renderAddForm() {
     </form>`;
 }
 
-function renderOcxImport() {
-  const cands = ocxImport.candidates;
-  const usable = cands.filter(c => !c.skipReason);
-  return `
-    <div class="detail" style="display:block">
-      <div class="controls"><b>从 opencodex 导入</b><span class="hint">读 ~/.opencodex/config.json；Key 直接进钥匙串，不会显示或保存明文</span></div>
-      ${cands.length ? usable.map(c => `
-        <label class="row" style="cursor:pointer">
-          <input type="checkbox" data-ocx="${esc(c.sourceId)}" ${ocxImport.chosen.has(c.sourceId) ? "checked" : ""}>
-          ${icon(c.icon ?? "newapi-color", "sm")}
-          <div class="grow"><div class="title">${esc(c.name)}</div><div class="sub">${esc(c.baseUrl)} · ${c.keys} 把 Key · ${c.models.length} 个模型</div></div>
-        </label>`).join("") : ""}
-        ${cands.filter(c => c.skipReason).map(c => `<div class="hint">· ${esc(c.name)}：${esc(c.skipReason)}</div>`).join("")}
-      <div class="controls"><button class="btn" data-ocx-go ${usable.length ? "" : "disabled"}>导入选中的来源</button>
-        <button class="btn secondary" data-ocx-cancel>取消</button></div>
-    </div>`;
-}
-
 let planInfo = null; // /api/plan
 let planConfirmOut = null; // account id whose sign-out is waiting for a second click
 
@@ -1105,12 +1086,12 @@ function renderProviders() {
     ${planCard()}
     ${typeof cliTextSourcesCard === "function" ? cliTextSourcesCard() : ""}
     ${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}
-    <div class="section-head"><h2>模型来源</h2><span class="aside">中转站、官方 API、本地模型都可以；加进来先自动测一遍</span></div>
+    <div class="section-head"><h2>模型来源</h2><span class="aside">支持中转站、官方 API 和本地模型；导入后请核对并开启</span></div>
     <div class="card">
       ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
-      ${ocxImport ? renderOcxImport() : ""}
+      ${typeof providerImportCard === "function" ? providerImportCard() : ""}
       ${vertexForm ? renderVertexForm() : ""}
-      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-vertex-open>${icon("gemini-color", "sm")} 添加 Google Vertex AI（服务账号）</button><button class="add-row" data-ocx-open>从 opencodex 导入</button>`}
+      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-vertex-open>${icon("gemini-color", "sm")} 添加 Google Vertex AI（服务账号）</button><button class="add-row" data-provider-import-open>从其他工具导入</button>`}
     </div>
     ${state.providers.length ? poolsCard() : ""}`;
 }
@@ -1378,7 +1359,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || ocxImport || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
+  return (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
 function syncTaskForm() {
@@ -1788,37 +1769,8 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-add]")) {
     if (!presets.length) presets = await call("GET", "/api/presets").catch(() => []);
     addForm = { preset: null };
-    ocxImport = null;
+    if (typeof resetProviderImport === "function") resetProviderImport(false);
     render();
-    return;
-  }
-  if (t.closest("[data-ocx-open]")) {
-    try {
-      const { candidates } = await call("GET", "/api/import/opencodex");
-      ocxImport = { candidates: candidates ?? [], chosen: new Set((candidates ?? []).filter(c => !c.skipReason).map(c => c.sourceId)) };
-    } catch (error) {
-      ocxImport = { candidates: [], chosen: new Set() };
-      showError(error);
-    }
-    addForm = null;
-    render();
-    return;
-  }
-  if (t.closest("[data-ocx-cancel]")) { ocxImport = null; render(); return; }
-  const ocxBox = t.closest('[data-ocx]');
-  if (ocxBox) {
-    ocxImport.chosen.has(ocxBox.dataset.ocx) ? ocxImport.chosen.delete(ocxBox.dataset.ocx) : ocxImport.chosen.add(ocxBox.dataset.ocx);
-    return;
-  }
-  if (t.closest("[data-ocx-go]")) {
-    try {
-      const result = await call("POST", "/api/import/opencodex", { chosen: [...ocxImport.chosen] });
-      const ok = result.imported.length;
-      const bad = result.failed.map(f => `${f.sourceId}: ${f.reason}`).join("；");
-      toast(ok ? `已导入 ${ok} 个来源${bad ? `；失败的：${bad}` : ""}` : `导入失败：${bad}`);
-      ocxImport = null;
-    } catch (error) { showError(error); }
-    await refresh(true);
     return;
   }
   const preset = t.closest("[data-preset]");

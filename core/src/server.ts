@@ -39,7 +39,8 @@ import { augmentedSessions, claudeCapabilities, claudeLoggedIn, findClaude, find
 import { rangeStart, summarize, Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
-import { importFromOpencodex, opencodexCandidates } from "./opencodex-import.ts";
+import { ProviderImportService, ProviderImportError, type ImportSource } from "./provider-import.ts";
+import { homedir } from "node:os";
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
 import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
@@ -95,6 +96,8 @@ export interface ServerDeps {
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
   taskRunner?: typeof runHeadless;
+  /** Trusted fixture inputs only; paths are never accepted from HTTP. */
+  providerImport?: { home: string; environment: () => Record<string, string | undefined>; now?: () => number };
   /** Known availability only; test seam avoids executing program discovery for suggestions. */
   taskAgentAvailable?: (id: string) => boolean;
   /** Opaque Node-test-only relay fixtures; the production registry is empty. */
@@ -240,6 +243,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
   const tasks = new TaskBook(store.dir);
   const feedback = new FeedbackBook(store.dir);
+  const providerImports = new ProviderImportService({ home: deps.providerImport?.home ?? homedir(), environment: deps.providerImport?.environment ?? (() => process.env), ...(deps.providerImport?.now ? { now: deps.providerImport.now } : {}), store, secrets });
   const taskAccounting = new TaskAccounting(store.dir);
   const sessionTasks = new Map<string,{taskId:string;expiresAt:string}>();
   const accountingSafely = (action:()=>void) => {try{action();}catch{/* Incomplete attribution remains unknown; this never substitutes for the budget ledger. */}};
@@ -1471,26 +1475,21 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
 
-    // --- import from an existing opencodex config --------------------------
+    // External configuration is read only after an explicit, guarded preview selection.
     if (path === "/api/import/opencodex") {
-      const configPath = typeof body.configPath === "string" && body.configPath.trim() ? body.configPath.trim() : undefined;
-      if (method === "GET") {
-        json(res, 200, { candidates: opencodexCandidates(configPath).map(c => ({ ...c, icon: iconForBaseUrl(c.baseUrl, c.name) })) });
-        return;
-      }
-      if (method === "POST") {
-        const chosen = Array.isArray(body.chosen) ? body.chosen.filter((c: unknown) => typeof c === "string") : [];
-        if (!chosen.length) {
-          json(res, 400, { error: "没有选择要导入的来源" });
-          return;
-        }
-        const result = await importFromOpencodex(chosen, configPath, store, secrets, async (provider, apiKey) => {
-          const { models } = await listModels(provider, apiKey);
-          return { models };
-        });
+      json(res, 405, { error: "请使用从其他工具导入入口，先预览再逐项选择；旧地址不再读取配置", code: "invalid_input" }); return;
+    }
+    if (path === "/api/provider-import/preview" || path === "/api/provider-import/commit") {
+      if (method !== "POST") { json(res, 405, { error: "请选择配置来源后再读取", code: "invalid_input" }); return; }
+      try {
+        const result = path.endsWith("/preview")
+          ? await providerImports.preview(body as { sources: ImportSource[] })
+          : await providerImports.commit(body as { previewId: string; chosen: string[] });
         json(res, 200, result);
-        return;
+      } catch (error) {
+        json(res, error instanceof ProviderImportError ? error.status : 500, { code: error instanceof ProviderImportError ? error.code : "storage_unavailable", error: error instanceof ProviderImportError ? error.message : "导入记录无法安全读取或保存，请检查本机数据目录" });
       }
+      return;
     }
 
     if (path === "/api/cli-text-sources" && method === "GET") {
