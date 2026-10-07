@@ -1,10 +1,11 @@
 #!/bin/zsh
-# Renders the icon files from assets/*.svg on a Mac (Quick Look draws the SVG, sips scales, iconutil packs):
+# Writes assets/*.svg from scripts/icon-svg.mjs, then renders them on a Mac (Quick Look draws the SVG, sips scales, iconutil packs):
 #   menubar/Resources/AppIcon.icns, menubar/Resources/MenubarOn.png / MenubarOff.png (+ @2x), web/favicon.svg
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 out="$repo/menubar/Resources"; tmp=$(mktemp -d)
 mkdir -p "$out"
+node "$repo/scripts/icon-svg.mjs"
 render() { # svg size out.png
   qlmanage -t -s "$2" -o "$tmp" "$1" >/dev/null 2>&1
   mv "$tmp/$(basename "$1").png" "$3"
@@ -27,6 +28,6 @@ for state in on off; do
   sips -z 36 36 "$tmp/$name.png" --out "$out/$name@2x.png" >/dev/null
   sips -z 18 18 "$tmp/$name.png" --out "$out/$name.png" >/dev/null
 done
-cp "$repo/assets/easyswitch-rounded.svg" "$repo/web/favicon.svg"
+cp "$repo/assets/easyswitch-mark.svg" "$repo/web/favicon.svg"
 rm -rf "$tmp"
 echo "icons written to $out and web/favicon.svg"

@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   // MARK: Menu
 
   private func rebuildMenu() {
-    // The mark: an S-shaped track with a knob; the knob is filled while the core service runs, hollow when it does not.
+    // The mark: the cloud with a prompt whose underscore is a switch; switched on (solid) while the core service runs, off (hollow) when it does not.
     // A template image, so the system colours it for light, dark and highlighted menu bars. The text is only a fallback.
     if let image = Self.menubarImage(running: healthy) {
       statusItem.button?.image = image
