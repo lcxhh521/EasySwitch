@@ -272,3 +272,8 @@ B96已接：普通来源先明确允许GET元数据，再显式检查成功，�
 B98代码与fake验收完成：沿用TaskBook持久记录父子关系，控制台展示任务树、耗时和未完整费用；MCP父级从已鉴权session取得，已接纳的子请求可在父自然结束后落地，但父取消后禁止。取消先标整树、撤销各自令牌，再等实际owned runner及finally，未确认的进程/令牌清理保留失败记录，清历史和停机不能把它洗成成功。普通交互PID没有可靠所有权，旧猜测停止接口明确拒绝，用户关闭对应终端并撤销token。
 
 监督器给任务完整清理窗口（core TERM6秒后才KILL、孤儿自退8秒、菜单等待10秒），非零/信号/未确认退出不当成功。独立窄审与HTTP父子/他人token/迟到mint/停机race和真实app事件链均通过；最终Node白名单932通过（主915+桌面fake17）、1真实Keychain跳过，typecheck/JS语法/差异检查通过。未运行真实CLI、Mac编译/签名/安装或模型；详见 docs/task-progress.md。
+
+
+### ChatGPT增强的安全设计（2026-10-07）
+
+B99仅完成只读设计，不恢复生产增强或WebSocket。官方当前开源客户端会在WS连接成功/失败日志写完整URL，因此在路径放秘密不能仅靠网关脱敏解决；该事实不同于聊天rollout历史，后者当前明确不存Error/StreamError。HTTP权限、每次启动精确所有权、逐response预算和记账、活连接撤销/到期以及fake/Mac验收矩阵均见 research/chatgpt-enhancement-safety.md。请求头替代尚缺桌面内置provider与用户原生登录兼容的证据，不能猜配置或降低现有边界。15项既有假测试独立通过，只证明旧安全边界保持。
