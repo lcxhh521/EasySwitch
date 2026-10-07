@@ -14,6 +14,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 
 ## 技术约定
 
+- **产品图标已定稿（用户 2026-10-07 定为正式图标，BACKLOG B92）**：Codex 式 8 瓣玻璃云朵（薄荷→青→蓝）+ 白色发光 `>`，下划线是开关。不要重新设计、换造型或换配色；要新尺寸或新格式只改 `scripts/icon-svg.mjs` 的输出并跑 `scripts/build-icons.sh`。UI 改版（B91）也必须沿用它。
 - **Node ≥ 22.18 直接跑 TypeScript**（type-stripping）：只能用可擦除语法——没有参数属性、没有 enum、没有 namespace。运行时零依赖，devDependencies 只有 TypeScript。
 - **测试**：`npm test`（即 `node --test --test-force-exit core/test/*.test.ts`）。`--test-force-exit` 必须带（真实 agent 的句柄会挂住 runner）。macOS 没有 `timeout` 命令，需要限时用 `perl -e 'alarm N; exec @ARGV' -- cmd`。
 - **类型检查**：`npm run typecheck`。
