@@ -6,6 +6,10 @@ commit, license and how far the code was changed.
 
 ## Transplanted code
 
+These are historical source records. Current replacement status is recorded in
+the release-preparation table below; historical entries do not mean the original
+assets or implementations are still present.
+
 | What | Source | License | How far it was changed |
 |---|---|---|---|
 | Console design tokens (grey ground, card, pill, segmented control, indigo accent, status colours, shadow, system font stack) | Magpie, [yetone/magpie](https://github.com/yetone/magpie) @ `8b7c4ef`, `internal/gui/assets/app.css` | MIT, notice in `third_party/magpie/LICENSE` | Values adapted (accent re-stepped and validated for chart contrast, a dark theme of our own); every rule rewritten for EasySwitch's layout in `web/style.css` |
@@ -66,9 +70,9 @@ commit, license and how far the code was changed.
 | `web/icons/` 中原供应商图标集 | opencodex及其记录的其他来源（历史声明保留） | 当前全部服务图标为独立文本/圆角矩形字母头像，无原logo几何、字体包或外部资源 | 已替换当前图形，旧历史和第三方许可仍保持私有记录 | 完成 |
 | `core/src/pricing/prices.json` | opencodex 模型元数据（MIT） | 由脚本从其数据生成 | 价格是事实；换成自己整理的来源重新生成 | 待办 |
 | `core/src/presets.ts` 预设表 | opencodex 供应商注册表（MIT） | 手工删改过 | 对照各家官方文档逐条核实后重写 | 待办 |
-| `web/style.css` 设计变量 | （原先取自 Magpie） | 2026-10-06 已整套换成自己的色板（暖纸色底 + 青绿强调色） | 无需再处理 | 完成 |
+| `web/style.css` 设计变量 | （原先取自 Magpie） | 先于2026-10-06换成独立暖色板，2026-10-07再按已评审的本产品设计稿改为冷灰/蓝明暗色板 | 无需再处理 | 完成 |
 | `core/src/quirks.ts` 怪癖表 | opencodex、Magpie 的知识 | 自己的结构重新表达 | 低风险；按各家官方行为文档复核 | 低 |
-| Kiro 适配：`aws-eventstream.ts`、`kiro-schema.ts`、`kiro-login.ts` 按 GPT 快照原样带入；`kiro.ts` 为 Chat 出口重写（请求构造、事件解释的协议事实仍来自 opencodex）；`third_party/opencodex/LICENSE` | opencodex（MIT） | 改编，文件头已声明 | 按协议事实清单重写；eventstream 帧格式是公开的 AWS 格式，可自实现；SQLite 登录库读取按 Kiro CLI 的表结构自写 | 待办 |
+| Kiro 适配：`aws-eventstream.ts` 原有移植已整体替换；`kiro-schema.ts`、`kiro-login.ts`及高层来源构造历史记录仍保留 | opencodex（MIT，历史来源）；新帧模块依据公开Smithy/AWS/RFC1952事实独立实现 | 帧实现保留字符串调用API，验证CRC/类型/分片/取消/本地资源；没有读取旧实现后逐行改写，见 research/aws-eventstream-rewrite.md | 帧子项完成；登录库、厂商信封及专有协议仍须独立重写/核实；许可证继续保留 | 部分 |
 | Cursor 适配（protobuf 定义、Run 端点） | opencodex（MIT）；protobuf 定义来自逆向的专有协议 | 未开始/进行中 | 手写 .proto 与编码；注意服务条款风险，独立于版权 | 待办 |
 | Antigravity 适配：`antigravity-client.ts`（现为独立显式运行时配置/固定Google端点；历史版本曾含客户端身份）、`antigravity.ts`（登录流程、项目发现、信封照 opencodex）、`gemini-upstream.ts`（自写） | opencodex（MIT） | 登录模块的改编声明保留；当前源码已移除内置身份，独立读取器只读用户明确提供的私有文件；原生自动提取未实现 | 保持无内置凭据；登录/项目协议仍须按独立事实清单重写及核实许可；不得发布旧私有历史 | 待办 |
 | `core/src/opencodex-import.ts` | 自写（读用户自己的 opencodex 配置） | 互操作功能，无拷贝 | 保留 | 无需 |

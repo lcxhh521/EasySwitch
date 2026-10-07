@@ -1,255 +1,229 @@
-// Adapted from opencodex (MIT), commit 5841269073b3898e5dd3ac9dcd956c7e56c1bb34.
-// Copyright (c) 2026 opencodex contributors. See third_party/opencodex/LICENSE.
 /**
- * `application/vnd.amazon.eventstream` decoder.
- *
- * Ported from jawcode `packages/ai/src/providers/aws-eventstream.ts` (verbatim logic).
- * Foundational dependency for AWS-eventstream providers: kiro (CodeWhisperer
- * GenerateAssistantResponse) and amazon-bedrock (Converse). Self-contained — only
- * uses Buffer / DataView / TextDecoder (Bun + Node compatible).
- *
- * Wire format (all integers big-endian):
- *
- *   [total length     u32]
- *   [headers length   u32]
- *   [prelude CRC32    u32]   <- CRC over the first 8 bytes
- *   [headers          headers_length]
- *   [payload          total_length - headers_length - 16]
- *   [message CRC32    u32]   <- CRC over the entire message minus the trailing 4 bytes
- *
- * Headers: a sequence of `[name_len u8][name utf8][value_type u8][value …]`.
+ * Independent AWS EventStream framing from the public Smithy/AWS wire contract.
+ * https://smithy.io/2.0/aws/amazon-eventstream.html
+ * CRC32/GZIP: RFC 1952. No vendor login or event-payload semantics live here.
+ * The replaced implementation's historical provenance and MIT notice remain in
+ * PROVENANCE.md and third_party/opencodex/LICENSE; its code was not consulted.
  */
-
-const PRELUDE_LEN = 8;
-const PRELUDE_CRC_LEN = 4;
-const MESSAGE_CRC_LEN = 4;
-const HEADER_BLOCK_OFFSET = PRELUDE_LEN + PRELUDE_CRC_LEN;
-const MIN_MESSAGE_LEN = HEADER_BLOCK_OFFSET + MESSAGE_CRC_LEN;
-const MAX_MESSAGE_LEN = 16 * 1024 * 1024;
-const MAX_HEADERS_LEN = 128 * 1024;
-
+export type EventHeaderValue =
+  | { type: "boolean"; value: boolean }
+  | { type: "byte" | "short" | "integer"; value: number }
+  | { type: "long" | "timestamp"; value: bigint }
+  | { type: "binary"; value: Uint8Array }
+  | { type: "string" | "uuid"; value: string };
 export interface EventStreamMessage {
-	/** Header casing is preserved verbatim (e.g. `:event-type`, `:message-type`). */
-	headers: Record<string, string>;
-	payload: Uint8Array;
+  /** Backward-compatible projection of string headers used by current callers. */
+  headers: Record<string, string>;
+  /** All wire values, including lossless signed 64-bit values. */
+  headerValues: Record<string, EventHeaderValue>;
+  payload: Uint8Array;
+}
+export interface EventStreamLimits {
+  maxFrameBytes?: number;
+  /** Maximum size of one supplied transport chunk; not a total JS heap claim. */
+  maxChunkBytes?: number;
+  maxStreamBytes?: number;
+  maxMessages?: number;
+  maxHeaders?: number;
+  signal?: AbortSignal;
+}
+export class EventStreamError extends Error {
+  readonly status = 502;
+  readonly code: "invalid_eventstream" | "eventstream_limit";
+  constructor(code: "invalid_eventstream" | "eventstream_limit", message: string) { super(message); this.name = "EventStreamError"; this.code = code; }
+}
+const MAX_FRAME = 32 * 1024 * 1024;
+const MAX_STREAM = 64 * 1024 * 1024;
+const MAX_HEADERS = 1024;
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const encoder = new TextEncoder();
+const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
+  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
+  return value >>> 0;
+});
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255]!;
+  return (crc ^ 0xffffffff) >>> 0;
+}
+const invalid = () => new EventStreamError("invalid_eventstream", "上游事件流格式或校验和无效。");
+const limit = () => new EventStreamError("eventstream_limit", "上游事件流超过本地资源限制。");
+const aborted = () => new DOMException("事件流读取已取消。", "AbortError");
+function bounded(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new TypeError("事件流资源限制设置无效。");
+  return value;
+}
+function decodeText(bytes: Uint8Array): string { try { return utf8.decode(bytes); } catch { throw invalid(); } }
+function encodeText(value: string): Uint8Array {
+  if (typeof value !== "string") throw invalid();
+  const bytes = encoder.encode(value);
+  // TextEncoder replaces unpaired UTF-16 surrogates; do not silently change names.
+  if (decodeText(bytes) !== value) throw invalid();
+  return bytes;
+}
+function parseHeaders(bytes: Uint8Array, maxHeaders: number): Pick<EventStreamMessage, "headers" | "headerValues"> {
+  const headers: Record<string, string> = Object.create(null), headerValues: Record<string, EventHeaderValue> = Object.create(null);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0, count = 0;
+  const take = (size: number) => {
+    if (size > bytes.length - offset) throw invalid();
+    const begin = offset; offset += size; return begin;
+  };
+  while (offset < bytes.length) {
+    if (++count > maxHeaders) throw limit();
+    const nameSize = bytes[take(1)]!;
+    if (!nameSize) throw invalid();
+    const name = decodeText(bytes.subarray(take(nameSize), offset));
+    if (Object.hasOwn(headerValues, name)) throw invalid();
+    const tag = bytes[take(1)]!;
+    let value: EventHeaderValue;
+    switch (tag) {
+      case 0: case 1: value = { type: "boolean", value: tag === 0 }; break;
+      case 2: value = { type: "byte", value: view.getInt8(take(1)) }; break;
+      case 3: value = { type: "short", value: view.getInt16(take(2), false) }; break;
+      case 4: value = { type: "integer", value: view.getInt32(take(4), false) }; break;
+      case 5: value = { type: "long", value: view.getBigInt64(take(8), false) }; break;
+      case 6: case 7: {
+        const size = view.getUint16(take(2), false), start = take(size);
+        value = tag === 6 ? { type: "binary", value: bytes.slice(start, offset) } : { type: "string", value: decodeText(bytes.subarray(start, offset)) };
+        break;
+      }
+      // Smithy's type table says unsigned while its wire pseudocode says int64.
+      // Follow the signed wire definition and retain precision without Date conversion.
+      case 8: value = { type: "timestamp", value: view.getBigInt64(take(8), false) }; break;
+      case 9: {
+        const start = take(16), hex = [...bytes.subarray(start, offset)].map(b => b.toString(16).padStart(2, "0")).join("");
+        value = { type: "uuid", value: `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}` }; break;
+      }
+      default: throw invalid();
+    }
+    headerValues[name] = value;
+    if (value.type === "string") headers[name] = value.value;
+  }
+  return { headers, headerValues };
 }
 
-/** CRC32 (IEEE / zlib polynomial 0xEDB88320), matches `@aws-crypto/crc32`. */
-const CRC_TABLE = (() => {
-	const t = new Uint32Array(256);
-	for (let i = 0; i < 256; i++) {
-		let c = i;
-		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-		t[i] = c >>> 0;
-	}
-	return t;
-})();
-
-export function crc32(bytes: Uint8Array, seed = 0): number {
-	let c = (seed ^ 0xffffffff) >>> 0;
-	for (let i = 0; i < bytes.length; i++) c = (CRC_TABLE[(c ^ bytes[i]!) & 0xff]! ^ (c >>> 8)) >>> 0;
-	return (c ^ 0xffffffff) >>> 0;
-}
-
-/**
- * Decode a single, fully buffered eventstream message. Throws if the framing is
- * malformed or either CRC mismatches.
+/** One bounded frame at a time, independent of transport chunk boundaries.
+ * Limits below are local resource policy, not the service-side Smithy size rules.
+ * On validation failure or early return the reader is cancelled; no raw bytes or
+ * transport error messages are incorporated into diagnostics.
  */
-export function decodeMessage(frame: Uint8Array): EventStreamMessage {
-	if (frame.length < MIN_MESSAGE_LEN) throw new Error("eventstream: frame too short");
-	const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-	const total = view.getUint32(0, false);
-	if (total !== frame.length) throw new Error(`eventstream: framed length ${total} != buffer ${frame.length}`);
-	if (total > MAX_MESSAGE_LEN) throw new Error(`eventstream: total length ${total} exceeds maximum`);
-	const headersLen = view.getUint32(4, false);
-	const preludeCrc = view.getUint32(8, false);
-	const computedPreludeCrc = crc32(frame.subarray(0, PRELUDE_LEN));
-	if (computedPreludeCrc !== preludeCrc) throw new Error("eventstream: prelude CRC mismatch");
-	if (headersLen > MAX_HEADERS_LEN) throw new Error(`eventstream: headers length ${headersLen} exceeds maximum`);
-	if (headersLen > total - MIN_MESSAGE_LEN) throw new Error("eventstream: headers length exceeds frame payload");
-	const msgCrc = view.getUint32(total - MESSAGE_CRC_LEN, false);
-	const computedMsgCrc = crc32(frame.subarray(0, total - MESSAGE_CRC_LEN));
-	if (computedMsgCrc !== msgCrc) throw new Error("eventstream: message CRC mismatch");
-
-	const headersBytes = frame.subarray(HEADER_BLOCK_OFFSET, HEADER_BLOCK_OFFSET + headersLen);
-	const payload = frame.subarray(HEADER_BLOCK_OFFSET + headersLen, total - MESSAGE_CRC_LEN);
-	return { headers: parseHeaders(headersBytes), payload };
+export async function* decodeEventStream(source: ReadableStream<Uint8Array>, options: EventStreamLimits = {}): AsyncGenerator<EventStreamMessage> {
+  const maxFrame = bounded(options.maxFrameBytes, MAX_FRAME, 16, 1024 * 1024 * 1024);
+  const maxChunk = bounded(options.maxChunkBytes, MAX_FRAME, 12, 1024 * 1024 * 1024);
+  const maxStream = bounded(options.maxStreamBytes, MAX_STREAM, 16, Number.MAX_SAFE_INTEGER);
+  const maxMessages = bounded(options.maxMessages, 100_000, 1, 1_000_000);
+  const maxHeaders = bounded(options.maxHeaders, MAX_HEADERS, 1, 65_536);
+  const reader = source.getReader();
+  let chunk: Uint8Array = new Uint8Array(0), cursor = 0, total = 0, messages = 0, emptyReads = 0, ended = false;
+  const checkAbort = () => { if (options.signal?.aborted) throw aborted(); };
+  const read = async () => {
+    checkAbort();
+    let rejectAbort: ((reason: unknown) => void) | undefined;
+    const cancellation = new Promise<never>((_, reject) => { rejectAbort = reject; });
+    const onAbort = () => { void reader.cancel().catch(() => {}); rejectAbort?.(aborted()); };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      checkAbort();
+      const next = await Promise.race([reader.read(), cancellation]);
+      checkAbort();
+      return next;
+    } catch {
+      if (options.signal?.aborted) throw aborted();
+      throw new EventStreamError("invalid_eventstream", "上游事件流读取失败。");
+    } finally { options.signal?.removeEventListener("abort", onAbort); }
+  };
+  const fill = async (target: Uint8Array, allowCleanEof = false): Promise<boolean> => {
+    let written = 0;
+    while (written < target.length) {
+      checkAbort();
+      if (cursor === chunk.length) {
+        const next = await read();
+        if (next.done) { if (allowCleanEof && written === 0) { ended = true; return false; } throw invalid(); }
+        if (!(next.value instanceof Uint8Array)) throw invalid();
+        if (!next.value.length) { if (++emptyReads > 1024) throw limit(); continue; }
+        emptyReads = 0;
+        if (next.value.byteLength > maxChunk || total > maxStream - next.value.byteLength) throw limit();
+        total += next.value.byteLength; chunk = next.value; cursor = 0;
+      }
+      const size = Math.min(target.length - written, chunk.length - cursor);
+      target.set(chunk.subarray(cursor, cursor + size), written); cursor += size; written += size;
+    }
+    return true;
+  };
+  try {
+    for (;;) {
+      const prelude = new Uint8Array(12);
+      if (!await fill(prelude, true)) return;
+      const meta = new DataView(prelude.buffer);
+      if (crc32(prelude.subarray(0,8)) !== meta.getUint32(8, false)) throw invalid();
+      const length = meta.getUint32(0, false), headerLength = meta.getUint32(4, false);
+      if (length < 16 || headerLength > length - 16) throw invalid();
+      if (length > maxFrame || ++messages > maxMessages) throw limit();
+      const frame = new Uint8Array(length); frame.set(prelude);
+      await fill(frame.subarray(12));
+      checkAbort();
+      if (crc32(frame.subarray(0,length-4)) !== new DataView(frame.buffer).getUint32(length-4, false)) throw invalid();
+      const fields = parseHeaders(frame.subarray(12,12+headerLength), maxHeaders);
+      yield { ...fields, payload: frame.slice(12+headerLength,length-4) };
+    }
+  } finally {
+    if (!ended) { try { void reader.cancel().catch(() => {}); } catch { /* Preserve the validation outcome. */ } }
+    try { reader.releaseLock(); } catch { /* A cancelled, uncooperative transport must not hold up return. */ }
+  }
 }
 
-function parseHeaders(buf: Uint8Array): Record<string, string> {
-	const out: Record<string, string> = {};
-	const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-	const decoder = new TextDecoder();
-	let p = 0;
-	const need = (n: number, label: string) => {
-		if (p + n > buf.length) throw new Error(`eventstream: truncated header ${label}`);
-	};
-	while (p < buf.length) {
-		need(1, "name length");
-		const nameLen = view.getUint8(p);
-		p += 1;
-		need(nameLen, "name");
-		const name = decoder.decode(buf.subarray(p, p + nameLen));
-		p += nameLen;
-		need(1, "type");
-		const type = view.getUint8(p);
-		p += 1;
-		switch (type) {
-			case 0: // bool true
-				out[name] = "true";
-				break;
-			case 1: // bool false
-				out[name] = "false";
-				break;
-			case 2: // byte
-				need(1, "byte value");
-				out[name] = String(view.getInt8(p));
-				p += 1;
-				break;
-			case 3: // short
-				need(2, "short value");
-				out[name] = String(view.getInt16(p, false));
-				p += 2;
-				break;
-			case 4: // integer
-				need(4, "integer value");
-				out[name] = String(view.getInt32(p, false));
-				p += 4;
-				break;
-			case 5: // long — decimal string to avoid precision loss
-				need(8, "long value");
-				out[name] = bigIntFromBytes(buf.subarray(p, p + 8)).toString();
-				p += 8;
-				break;
-			case 6: {
-				// byte array — base64 for safe transport
-				need(2, "byte-array length");
-				const len = view.getUint16(p, false);
-				p += 2;
-				need(len, "byte-array value");
-				out[name] = Buffer.from(buf.buffer, buf.byteOffset + p, len).toString("base64");
-				p += len;
-				break;
-			}
-			case 7: {
-				// string
-				need(2, "string length");
-				const len = view.getUint16(p, false);
-				p += 2;
-				need(len, "string value");
-				out[name] = decoder.decode(buf.subarray(p, p + len));
-				p += len;
-				break;
-			}
-			case 8: // timestamp (ms since epoch as i64)
-				need(8, "timestamp value");
-				out[name] = new Date(Number(bigIntFromBytes(buf.subarray(p, p + 8)))).toISOString();
-				p += 8;
-				break;
-			case 9: {
-				// uuid
-				need(16, "uuid value");
-				const u = buf.subarray(p, p + 16);
-				const hex: string[] = [];
-				for (let i = 0; i < 16; i++) hex.push(u[i]!.toString(16).padStart(2, "0"));
-				out[name] =
-					`${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
-				p += 16;
-				break;
-			}
-			default:
-				throw new Error(`eventstream: unknown header value type ${type}`);
-		}
-	}
-	return out;
+/** Fixture/interop encoder; the production Kiro path only decodes frames. */
+export function encodeTypedMessage(headers: Record<string, EventHeaderValue>, payload: Uint8Array): Uint8Array {
+  if (!(payload instanceof Uint8Array) || !headers || typeof headers !== "object" || Array.isArray(headers)) throw invalid();
+  const names = Object.keys(headers);
+  if (names.length > MAX_HEADERS || payload.length > MAX_FRAME - 16) throw limit();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  const push = (part: Uint8Array) => { size += part.length; if (size > MAX_FRAME - 16 - payload.length) throw limit(); parts.push(part); };
+  for (const name of names) {
+    if (name.length === 0 || name.length > 255) throw invalid();
+    const encodedName = encodeText(name), header = headers[name];
+    if (!encodedName.length || encodedName.length > 255 || !header || typeof header !== "object") throw invalid();
+    push(Uint8Array.of(encodedName.length)); push(encodedName);
+    const numeric = (tag: number, width: number, minimum: number, maximum: number) => {
+      if (typeof header.value !== "number" || !Number.isInteger(header.value) || header.value < minimum || header.value > maximum) throw invalid();
+      const data = new Uint8Array(width + 1), view = new DataView(data.buffer); data[0] = tag;
+      if (width === 1) view.setInt8(1,header.value); else if (width === 2) view.setInt16(1,header.value,false); else view.setInt32(1,header.value,false);
+      push(data);
+    };
+    switch (header.type) {
+      case "boolean": if (typeof header.value !== "boolean") throw invalid(); push(Uint8Array.of(header.value ? 0 : 1)); break;
+      case "byte": numeric(2,1,-128,127); break;
+      case "short": numeric(3,2,-32768,32767); break;
+      case "integer": numeric(4,4,-2147483648,2147483647); break;
+      case "long": case "timestamp": {
+        if (typeof header.value !== "bigint" || header.value < -(1n << 63n) || header.value >= (1n << 63n)) throw invalid();
+        const data = new Uint8Array(9); data[0] = header.type === "long" ? 5 : 8; new DataView(data.buffer).setBigInt64(1,header.value,false); push(data); break;
+      }
+      case "binary": case "string": {
+        if (header.type === "string" && (typeof header.value !== "string" || header.value.length > 65535)) throw invalid();
+        const value = header.type === "string" ? encodeText(header.value) : header.value;
+        if (!(value instanceof Uint8Array) || value.length > 65535) throw invalid();
+        const meta = new Uint8Array(3); meta[0] = header.type === "string" ? 7 : 6; new DataView(meta.buffer).setUint16(1,value.length,false); push(meta); push(value); break;
+      }
+      case "uuid": {
+        if (typeof header.value !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(header.value)) throw invalid();
+        const hex = header.value.replaceAll("-", ""), data = new Uint8Array(17); data[0] = 9;
+        for (let i = 0; i < 16; i++) data[i+1] = Number.parseInt(hex.slice(i*2,i*2+2),16); push(data); break;
+      }
+      default: throw invalid();
+    }
+  }
+  const frame = new Uint8Array(size + payload.length + 16), view = new DataView(frame.buffer);
+  view.setUint32(0,frame.length,false); view.setUint32(4,size,false); view.setUint32(8,crc32(frame.subarray(0,8)),false);
+  let offset = 12; for (const part of parts) { frame.set(part,offset); offset += part.length; } frame.set(payload,offset);
+  view.setUint32(frame.length-4,crc32(frame.subarray(0,frame.length-4)),false); return frame;
 }
-
-function bigIntFromBytes(b: Uint8Array): bigint {
-	let v = 0n;
-	for (let i = 0; i < b.length; i++) v = (v << 8n) | BigInt(b[i]!);
-	// sign-extend (two's complement)
-	if (b.length === 8 && b[0]! & 0x80) v -= 1n << 64n;
-	return v;
-}
-
-/**
- * Async generator that consumes a `ReadableStream<Uint8Array>` (a fetch response
- * body) and yields fully-framed messages, handling arbitrary chunk boundaries.
- */
-export async function* decodeEventStream(source: ReadableStream<Uint8Array>): AsyncGenerator<EventStreamMessage> {
-	const reader = source.getReader();
-	let buf: Uint8Array = new Uint8Array(0);
-	try {
-		while (true) {
-			const { value, done } = await reader.read();
-			if (value && value.length > 0) buf = buf.length === 0 ? value : Buffer.concat([buf, value]);
-			let offset = 0;
-			while (buf.length - offset >= 4) {
-				const dv = new DataView(buf.buffer, buf.byteOffset + offset, buf.length - offset);
-				const total = dv.getUint32(0, false);
-				if (total < MIN_MESSAGE_LEN) throw new Error(`eventstream: total length ${total} below minimum`);
-				if (total > MAX_MESSAGE_LEN) throw new Error(`eventstream: total length ${total} exceeds maximum`);
-				if (buf.length - offset >= HEADER_BLOCK_OFFSET) {
-					const headersLen = dv.getUint32(4, false);
-					const preludeCrc = dv.getUint32(8, false);
-					const computedPreludeCrc = crc32(buf.subarray(offset, offset + PRELUDE_LEN));
-					if (computedPreludeCrc !== preludeCrc) throw new Error("eventstream: prelude CRC mismatch");
-					if (headersLen > MAX_HEADERS_LEN) throw new Error(`eventstream: headers length ${headersLen} exceeds maximum`);
-				}
-				if (buf.length - offset < total) break;
-				const frame = buf.subarray(offset, offset + total);
-				yield decodeMessage(frame);
-				offset += total;
-			}
-			if (offset > 0) buf = buf.slice(offset);
-			if (buf.length > MAX_MESSAGE_LEN) throw new Error(`eventstream: buffered frame exceeds maximum ${MAX_MESSAGE_LEN}`);
-			if (done) break;
-		}
-		if (buf.length > 0) throw new Error("eventstream: truncated message at end of stream");
-	} finally {
-		// Early termination (consumer break/return, turn abort, or an HTTP/2 mid-body reset) can leave
-		// an in-flight `reader.read()` pending when this generator's `finally` runs. Releasing the lock
-		// does NOT settle that orphaned read — Bun then surfaces it as an off-path
-		// `unhandledRejection: TypeError: null is not an object` that no caller try/catch can intercept.
-		// Cancel first (settles the pending read + closes the body), then release. On a clean `done`
-		// finish the read is already settled, so cancel() is a harmless no-op.
-		try {
-			await reader.cancel();
-		} catch {
-			/* body already errored/closed — nothing to cancel */
-		}
-		try {
-			reader.releaseLock();
-		} catch {
-			/* lock already released by cancel() on some runtimes */
-		}
-	}
-}
-
-/** Build a single eventstream frame (string headers only) — used by tests and fixtures. */
 export function encodeMessage(headers: Record<string, string>, payload: Uint8Array): Uint8Array {
-	const enc = new TextEncoder();
-	const headerParts: Uint8Array[] = [];
-	for (const [name, value] of Object.entries(headers)) {
-		const nameBytes = enc.encode(name);
-		const valueBytes = enc.encode(value);
-		const head = new Uint8Array(1 + nameBytes.length + 1 + 2);
-		const hv = new DataView(head.buffer);
-		hv.setUint8(0, nameBytes.length);
-		head.set(nameBytes, 1);
-		hv.setUint8(1 + nameBytes.length, 7); // string type
-		hv.setUint16(1 + nameBytes.length + 1, valueBytes.length, false);
-		headerParts.push(head, valueBytes);
-	}
-	const headersBytes = Buffer.concat(headerParts.map(p => Buffer.from(p)));
-	const total = HEADER_BLOCK_OFFSET + headersBytes.length + payload.length + MESSAGE_CRC_LEN;
-	const frame = new Uint8Array(total);
-	const dv = new DataView(frame.buffer);
-	dv.setUint32(0, total, false);
-	dv.setUint32(4, headersBytes.length, false);
-	dv.setUint32(8, crc32(frame.subarray(0, PRELUDE_LEN)), false);
-	frame.set(headersBytes, HEADER_BLOCK_OFFSET);
-	frame.set(payload, HEADER_BLOCK_OFFSET + headersBytes.length);
-	dv.setUint32(total - MESSAGE_CRC_LEN, crc32(frame.subarray(0, total - MESSAGE_CRC_LEN)), false);
-	return frame;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw invalid();
+  const typed: Record<string, EventHeaderValue> = Object.create(null);
+  for (const [name,value] of Object.entries(headers)) typed[name] = { type: "string", value };
+  return encodeTypedMessage(typed,payload);
 }
