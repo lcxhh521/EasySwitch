@@ -8,7 +8,7 @@ app="$repo/menubar/build/EasySwitch.app"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-swiftc -O -o "$app/Contents/MacOS/EasySwitch" "$repo/menubar/main.swift" -framework AppKit -framework WebKit
+swiftc -O -o "$app/Contents/MacOS/EasySwitch" "$repo/menubar/main.swift" -framework AppKit -framework WebKit -framework ServiceManagement
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
