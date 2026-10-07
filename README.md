@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/easyswitch.svg" alt="EasySwitch" width="128" height="128"></p>
+<p align="center"><img src="assets/easyswitch-rounded.svg" alt="EasySwitch" width="128" height="128"></p>
 
 # EasySwitch
 
