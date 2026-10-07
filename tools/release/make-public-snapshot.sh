@@ -23,7 +23,7 @@ git -C "$repo" archive "$ref" | tar -x -C "$out"
 
 rm -f "$out/PROVENANCE.md" "$out/BACKLOG.md" "$out/BACKLOG-DONE.md" "$out/HANDOVER.md"
 # User-facing docs stay with README links; internal reviews remain under research/.
-rm -rf "$out/research" "$out/.claude" "$out/tools/release"
+rm -rf "$out/research" "$out/.claude" "$out/tools/release" "$out/design"
 python3 - "$out" <<'EOF'
 import os, re, sys
 root = sys.argv[1]
