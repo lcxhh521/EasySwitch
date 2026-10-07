@@ -291,3 +291,8 @@ B100首批代码完成但保持进行中：按design/ui-v2的左侧主/次导航
 B33的EventStream帧子项完成：独立官方事实提取后整模块重写，保留decodeEventStream/encodeMessage调用契约，增加typed64位值、严格CRC/UTF8/边界、分片与取消，资源策略与厂商服务端上限分开。16项纯fixture、Kiro与中立订阅共31项回归及独立只读审查通过。旧代码来源/许可证留存，未修改Kiro登录或厂商请求；本次不代表其余公开前项或真实订阅验收完成。事实/金标/局限见 research/aws-eventstream-rewrite.md。
 
 本次最终安全Node白名单959项通过（主942+桌面fake17），1真实Keychain跳过；typecheck与差异检查通过。整个B33仍部分完成，不执行真实凭据扫描、公开快照、main合并或公开发布。
+
+
+### 剩余工作的完整实施路线（2026-10-07）
+
+用户要求继续开发并对有问题的部分先给完整方案。总览见 research/remaining-work-roadmap.md；专题是ChatGPT增强、真正只读agent以及Grok/Cursor官方路线，均有原因、比较、推荐架构、分步实现、fake/平台/账号验收矩阵。三项产品选择分别是自有app-server维护、可选隔离执行组件、官方agent任务与原模型来源目标的语义；这些选择不授权安装、登录或真实调用。当前B100仍未发现Claude评审通过，B101–104未提前改变生产页面；AWS公开帧重写已实际推进，不因UI关口暂停其他可验证开发。
