@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   private var quitting = false
   private var cliInstallProcess: Process?
   private var activeConnections: Int?
+  private var sourceWarning: String?
+  private var sourceHealthLoading = false
   private var returnToNativeRequested = false
   private var healthy = false
   private var window: NSWindow?
@@ -51,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
       let ok = isCoreHealth(data, response)
       DispatchQueue.main.async {
         self?.healthy = ok
-        if ok { self?.refreshConnections() } else { self?.activeConnections = nil }
+        if ok { self?.refreshConnections(); self?.refreshSourceHealth() } else { self?.activeConnections = nil }
         self?.rebuildMenu()
       }
     }.resume()
@@ -67,6 +69,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
       DispatchQueue.main.async {
         guard let self, self.healthy else { return }
         self.activeConnections = (response as? HTTPURLResponse)?.statusCode == 200 ? sessions?.count : nil
+        self.rebuildMenu()
+      }
+    }.resume()
+  }
+
+  private func refreshSourceHealth() {
+    guard !sourceHealthLoading else { return }
+    sourceHealthLoading = true
+    var request = URLRequest(url: coreURL.appendingPathComponent("api/source-health"))
+    request.setValue("1", forHTTPHeaderField: "x-easyswitch")
+    request.timeoutInterval = 1.5
+    URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+      let payload = data.flatMap { $0.count <= 524288 ? (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] : nil }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.sourceHealthLoading = false
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+        let sources = payload?["sources"] as? [[String: Any]] ?? []
+        let failed = sources.filter { $0["status"] as? String == "unavailable" }.count
+        // The server drains each outage transition once; no repeated alert or sound.
+        self.sourceWarning = failed > 0 ? "有 \(failed) 个来源的轻量检查不可用，请在控制台查看" : nil
         self.rebuildMenu()
       }
     }.resume()
@@ -102,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     sessionsItem.toolTip = "按网关签发记录统计，不代表客户端程序仍在运行。"
     sessionsItem.isEnabled = false
     menu.addItem(sessionsItem)
+    if let warning = sourceWarning { let row = NSMenuItem(title: warning, action: nil, keyEquivalent: ""); row.isEnabled = false; menu.addItem(row) }
     menu.addItem(.separator())
     if healthy {
       menu.addItem(item("打开控制台", #selector(openConsole), "o"))

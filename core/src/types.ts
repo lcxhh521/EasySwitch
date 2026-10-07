@@ -14,6 +14,8 @@ export type MessagesRoute = "anthropic-native" | "chat-translate";
 export type ApiProtocol = "chat" | "responses" | "messages" | "gemini";
 
 export interface Provider {
+  /** Explicit metadata polling permission and proof bound to the current source configuration. */
+  healthMonitor?: { enabled: boolean; verifiedFingerprint?: string };
   /** Explicit text-only CLI source. Never an ordinary HTTP endpoint. */
   cliTextBridge?: CliTextBridgeConfig;
   /** Explicit Vertex auth/protocol mode, or the legacy service-account shape; never contains a credential. */
@@ -95,7 +97,7 @@ export interface Profile {
   id: string;
   name: string;
   bindings: HarnessBinding[];
-  prefs: Record<string, { effort?: string; tiers?: Record<string, string> }>;
+  prefs: Record<string, { effort?: string; tiers?: Record<string, string>; fallbackModel?: string }>;
   createdAt: string;
 }
 
@@ -213,6 +215,9 @@ export interface HarnessBinding {
 }
 
 export interface GatewayLogEntry {
+  fallback?: import("./agent-fallback.ts").AgentFallbackChange;
+  /** Issued capability identity, never its token. */
+  sessionId?: string;
   at: string;
   /** Exact server-owned task attribution; never accepted from inference request bodies. */
   taskId?: string;

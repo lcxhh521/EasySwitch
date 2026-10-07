@@ -499,6 +499,22 @@
           "additionalProperties": false
         }
       ]
+    },
+    "healthMonitor": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "verifiedFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
     }
   },
   "additionalProperties": false,

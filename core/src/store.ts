@@ -30,6 +30,7 @@ interface StateFile {
 }
 
 export interface AgentPrefs {
+  fallbackModel?: string;
   effort?: string;
   /** Tier id → `<provider>/<model>`. */
   tiers?: Record<string, string>;
@@ -93,10 +94,9 @@ export class Store {
   }
 
   upsertProvider(provider: Provider): void {
-    const index = this.state.providers.findIndex(p => p.id === provider.id);
-    if (index >= 0) this.state.providers[index] = provider;
-    else this.state.providers.push(provider);
-    this.save();
+    const before = this.state.providers;
+    this.state.providers = before.some(p=>p.id===provider.id) ? before.map(p=>p.id===provider.id?structuredClone(provider):p) : [...before,structuredClone(provider)];
+    try { this.save(); } catch(error) { this.state.providers=before; throw error; }
   }
 
   removeProvider(id: string): void {
@@ -289,18 +289,20 @@ export class Store {
   }
 
   /** Changes one agent's preferences. `effort: ""` clears the level; a tier set to `""` clears that tier. */
-  setPrefs(agent: string, patch: { effort?: string; tiers?: Record<string, string> }): AgentPrefs {
+  setPrefs(agent: string, patch: { effort?: string; tiers?: Record<string, string>; fallbackModel?: string }): AgentPrefs {
     const cur = this.prefs(agent);
     const next: AgentPrefs = { ...cur };
+    if (patch.fallbackModel !== undefined) { if (patch.fallbackModel) next.fallbackModel = patch.fallbackModel; else delete next.fallbackModel; }
     if (patch.effort !== undefined) { if (patch.effort) next.effort = patch.effort; else delete next.effort; }
     if (patch.tiers) {
       const tiers = { ...(cur.tiers ?? {}) };
       for (const [k, v] of Object.entries(patch.tiers)) { if (v) tiers[k] = v; else delete tiers[k]; }
       if (Object.keys(tiers).length) next.tiers = tiers; else delete next.tiers;
     }
+    const before = this.state.prefs;
     this.state.prefs = { ...(this.state.prefs ?? {}) };
     if (Object.keys(next).length) this.state.prefs[agent] = next; else delete this.state.prefs[agent];
-    this.save();
+    try { this.save(); } catch(error) { this.state.prefs=before; throw error; }
     return structuredClone(next);
   }
 

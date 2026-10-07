@@ -269,7 +269,8 @@ function agentControls(id) {
       // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
       ? `<div class="ctl"><small>想得多深</small><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="${esc(binding.model)} 没有已知的思考档位；告诉 EasySwitch 它有哪些">档位未知，设置</button></div>`
       : "";
-  return effort + (modelKey && state.modelEffortNotes?.[modelKey] ? `<small class="hint">${esc(state.modelEffortNotes[modelKey])}</small>` : "") + (can0.tiers ?? []).map(tierCtl).join("");
+  const backup = `<div class="ctl"><small>备用模型</small><select data-fallback-select="${esc(id)}"><option value="">不设置备用</option>${(state.providers??[]).filter(p=>!p.off&&!p.budgetStatus?.blocked).flatMap(p=>modelsOf(p).map(m=>{const name=`${p.id}/${m}`;return `<option value="${esc(name)}" ${prefs.fallbackModel===name?"selected":""}>${esc(p.name)} / ${esc(m)}</option>`;})).join("")}</select><small>仅来源明确不可用或额度耗尽时，在发送前换用；不重放请求</small></div>`;
+  return backup + effort + (modelKey && state.modelEffortNotes?.[modelKey] ? `<small class="hint">${esc(state.modelEffortNotes[modelKey])}</small>` : "") + (can0.tiers ?? []).map(tierCtl).join("");
 }
 
 /** The levels editor for the bound model, shown under the row it was opened from. */
@@ -504,7 +505,7 @@ function renderTasks() {
     <div class="row" style="cursor:pointer" data-task-toggle="${esc(t.id)}">
       <div class="grow"><div class="title">${esc(t.task.length > 80 ? t.task.slice(0, 80) + "…" : t.task)}</div>
         <div class="sub">${t.from === "console" ? "你" : esc(nameOf(t.from))} → ${esc(nameOf(t.agent))} · ${esc(t.model)} · ${new Date(t.at).toLocaleTimeString()}${t.ms ? ` · ${(t.ms / 1000).toFixed(1)} 秒` : ""}</div>
-        ${t.why ? `<div class="sub" title="${esc(t.why)}">${esc(t.why)}</div>` : ""}${t.usage ? `<div class="hint">${t.usage.unknownCost ? "费用未知或尚未完整归集" : `任务及子任务估算费用：${esc(money(t.usage.costUsd ?? 0))}`}</div>` : ""}</div>
+        ${t.fallbackChanges?.length ? `<div class="hint">曾换用备用：${esc(t.fallbackChanges.at(-1).fromModel)} → ${esc(t.fallbackChanges.at(-1).toModel)}</div>` : ""}${t.why ? `<div class="sub" title="${esc(t.why)}">${esc(t.why)}</div>` : ""}${t.usage ? `<div class="hint">${t.usage.unknownCost ? "费用未知或尚未完整归集" : `任务及子任务估算费用：${esc(money(t.usage.costUsd ?? 0))}`}</div>` : ""}</div>
       <span class="chip ${tone}">${label}</span>
       ${t.status === "running" ? `<button class="btn secondary" data-task-stop="${esc(t.id)}">停止</button>` : ""}
     </div>
@@ -958,15 +959,17 @@ function providerRow(p) {
       <div class="hint">${p.cliTextBridge ? "本地CLI标识（不是HTTP接口）" : "OpenAI 兼容地址"}：<span class="mono">${esc(p.baseUrl)}</span>${p.anthropicBaseUrl ? ` · Anthropic 地址：<span class="mono">${esc(p.anthropicBaseUrl)}</span>` : ""}</div>
       ${billingBlock(p)}
       ${budgetBlock(p)}
+      ${typeof sourceHealthCard === "function" ? sourceHealthCard(p) : ""}
       ${keyList(p)}
       <div><button class="btn danger" data-remove>删除这个来源</button></div>
     </div>` : "";
   return `
     <div class="row clickable ${open ? "open" : ""}" data-toggle="${esc(p.id)}">
       ${icon(p.icon, "lg")}
-      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}${p.quotaSupport ? ` · ${esc(p.quotaSupport.text)}` : ""}${p.quota ? ` · <span class="${p.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(p.quota.text)}</span>` : ""}</div></div>
+      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.sourceHealth ? ` · ${p.sourceHealth.status === "unavailable" ? "轻量检查不可用" : p.sourceHealth.status === "healthy" ? "轻量检查正常" : "轻量检查未知"}` : ""}${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}${p.quotaSupport ? ` · ${esc(p.quotaSupport.text)}` : ""}${p.quota ? ` · <span class="${p.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(p.quota.text)}</span>` : ""}</div></div>
       ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
       <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
+      ${!p.cliTextBridge&&!p.plan&&!p.kimi&&!p.cursor&&!p.kiro&&!p.antigravity ? `<button class="switch ${p.off ? "" : "on"}" data-source-switch="${esc(p.id)}" data-enabled="${p.off ? "0" : "1"}">${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button>` : ""}
       ${p.cliTextBridge ? `<button class="switch ${p.off ? "" : "on"}" data-cli-source-switch="${esc(p.id)}" data-on="${p.off ? "0" : "1"}" ${p.cliTextBridge.kind === "droid" ? "disabled" : ""}>${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button><span class="chip warn">实验性 · 仅文字</span>` : ""}
       <span class="chev">›</span>
     </div>${detail}`;
@@ -1144,6 +1147,7 @@ function explain(e) {
   else if (e.route === "chat-translate") parts.push(`这个来源不支持 ${harness.protocol} 协议，EasySwitch 把请求翻译成 Chat 协议转发`);
   else parts.push(`这个来源原生支持 ${harness.protocol} 协议，请求原样转发`);
   if (e.dropped?.length) parts.push(`去掉了${e.dropped.map(d => TOOL_NAMES[d] ?? d.replace(/^tool:/, "")).join("、")}（目标协议不支持这些内容或参数）`);
+  if(e.fallback)parts.push(`发送前换用备用：${e.fallback.fromModel} → ${e.fallback.toModel}（${e.fallback.reason === "quota_exhausted" ? "主来源额度暂不可用" : "主来源轻量检查不可用"}）`);
   if (e.note) parts.push(e.status >= 400 ? userErrorMessage({status:e.status,message:e.note},"source") : e.note);
   if (e.inputTokens != null || e.outputTokens != null) {
     parts.push(`输入 ${thousands(e.inputTokens)} / 输出 ${thousands(e.outputTokens)} tokens${e.cachedTokens ? `，其中 ${thousands(e.cachedTokens)} 命中缓存` : ""}`);
@@ -1372,6 +1376,10 @@ function syncTaskForm() {
 document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
 for(const name of ["input","change"])document.addEventListener(name,e=>{const form=e.target.closest?.("form[data-rule-form]");if(!form||!ruleForm||ruleForm.saving)return;const f=new FormData(form);for(const key of ["name","words","minChars","maxChars","cwdPrefix","agent","model","effort"])ruleForm[key]=String(f.get(key)??"");});
 document.addEventListener("change", async e => {
+  const fallback=e.target.closest?.("[data-fallback-select]");
+  if(fallback){fallback.disabled=true;try{await call("PUT",`/api/bindings/${encodeURIComponent(fallback.dataset.fallbackSelect)}/fallback`,{model:fallback.value});toast(fallback.value?"已保存备用模型":"已取消备用模型");}catch(error){showError(error);}finally{fallback.disabled=false;await refresh(true);}return;}
+  const health=e.target.closest?.("[data-source-health]");
+  if(health){health.disabled=true;try{await call("PUT",`/api/providers/${encodeURIComponent(health.dataset.sourceHealth)}/health`,{enabled:health.checked});toast(health.checked?"已允许轻量检查；请点击检查一次完成验证":"已关闭轻量检查");}catch(error){showError(error);}finally{health.disabled=false;await refresh(true);}return;}
   const desktopModel = e.target.closest?.("[data-claude-desktop-model]");
   if (desktopModel) { claudeDesktopModel = desktopModel.value; claudeDesktopConfirm = false; claudeDesktopError = ""; render(); return; }
   const sel = e.target.closest?.("[data-effort-select]");
@@ -1418,6 +1426,12 @@ async function refresh(force = false) {
 // ---------------------------------------------------------------- events
 
 document.addEventListener("click", async e => {
+  const sourceSwitch=e.target.closest?.("[data-source-switch]");
+  if(sourceSwitch){e.stopImmediatePropagation();if(sourceSwitch.disabled)return;sourceSwitch.disabled=true;try{await call("PUT",`/api/providers/${encodeURIComponent(sourceSwitch.dataset.sourceSwitch)}/switch`,{on:sourceSwitch.dataset.enabled!=="1"});await refresh(true);}catch(error){showError(error);}finally{sourceSwitch.disabled=false;}return;}
+
+  const healthCheck=e.target.closest?.("[data-source-health-check]");
+  if(healthCheck){e.stopImmediatePropagation();if(healthCheck.disabled)return;healthCheck.disabled=true;try{await call("POST",`/api/providers/${encodeURIComponent(healthCheck.dataset.sourceHealthCheck)}/health/check`,{});await refresh(true);}catch(error){showError(error);}finally{healthCheck.disabled=false;}return;}
+
   const t = e.target;
   if (popover && !popover.contains(t) && !t.closest("[data-pick], #guard-chip")) closePopover();
 

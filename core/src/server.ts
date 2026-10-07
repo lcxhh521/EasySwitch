@@ -1,3 +1,5 @@
+import { SourceHealthMonitor, modelsHealthFingerprint } from "./source-health.ts";
+import { resolveAgentFallback } from "./agent-fallback.ts";
 import { FeedbackBook, FeedbackStoreError } from "./feedback.ts";
 import { buildPoolSuggestions } from "./pool-suggestions.ts";
 import { buildRuleSuggestions } from "./suggestions.ts";
@@ -73,7 +75,7 @@ import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { slugify, type Store } from "./store.ts";
-import { expandUrl, UnresolvedPlaceholder } from "./upstream.ts";
+import { expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "./upstream.ts";
 import { officialThinkingProfile, upstreamModelId } from "./quirks.ts";
 import { sourceProtocols } from "./outbound.ts";
 import { subscriptionSourceIssue, subscriptionSignInIssue, subscriptionSupport } from "./subscription-support.ts";
@@ -96,6 +98,8 @@ export interface ServerDeps {
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
   taskRunner?: typeof runHeadless;
+  /** Fixture clock/transport only; HTTP cannot supply them. */
+  sourceHealth?: { now?: () => number; fetch?: typeof fetch };
   /** Trusted fixture inputs only; paths are never accepted from HTTP. */
   providerImport?: { home: string; environment: () => Record<string, string | undefined>; now?: () => number };
   /** Known availability only; test seam avoids executing program discovery for suggestions. */
@@ -214,9 +218,30 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const budget = new BudgetController(store.dir, { readSummary: (start, end, now) => ledger.budgetSummary(start, end, now) });
   const providerBudgets = new ProviderBudgetController({ readSummary: (start, end, now) => ledger.budgetSummary(start, end, now) });
   store.setProviderBudgetChecker(p => providerBudgets.isBudgetStopped(p));
+  const health = new SourceHealthMonitor({ ...deps.sourceHealth,
+    eligibility: p => p.healthMonitor?.enabled === true ? { eligible: true, basis: "user_enabled" } : { eligible: false, blockedReason: "permission_required" },
+    headers: async (p, signal) => {
+      const before = modelsHealthFingerprint(p);
+      const key = await pickKey(secrets, p); signal.throwIfAborted();
+      const current = store.provider(p.id);
+      if (!current || current.healthMonitor?.enabled !== true || modelsHealthFingerprint(current) !== before) throw new Error("来源配置已改变");
+      return upstreamHeaders(current, key.apiKey);
+    },
+  });
+  const syncHealth = () => { const providers = store.providers(); health.sync(providers); for (const p of providers) if (p.healthMonitor?.enabled && p.healthMonitor.verifiedFingerprint) health.restoreVerification(p, p.healthMonitor.verifiedFingerprint); };
+  const fallbackFor = (session?: GatewaySession) => session ? (model: string) => {
+    syncHealth();
+    return resolveAgentFallback({requestedModel:model, fallbackModel:store.prefs(session.agentId).fallbackModel,
+      resolveModel:name=>{ const r=resolveModel(store,name);return r?{providerId:r.provider.id}:undefined; }, healthOf:id=>health.snapshot(id), exhaustedUntil, now:deps.sourceHealth?.now?.()});
+  } : undefined;
+  let fallbackHistory: GatewayLogEntry[] | undefined;
+  const fallbackRows = () => fallbackHistory ??= ledger.read().filter(e=>e.fallback).slice(-2000);
+  const routeChanges = (taskId?: string, sessionId?: string) => fallbackRows().filter(e=>e.fallback && (taskId ? e.taskId===taskId : e.sessionId===sessionId)).slice(-20).map(e=>e.fallback!);
+  const sessionsPublic = () => { const rows=fallbackRows().filter(e=>e.fallback&&e.sessionId);return auth.list().map(session=>({...session,fallbackChanges:rows.filter(e=>e.sessionId===session.id).slice(-20).map(e=>e.fallback!)})); };
   const publicProvider = (p: Provider, hasKey: boolean, usedBy: Harness[] = []) => {
     const status = providerBudgets.budgetStatus(p);
-    return { ...basePublicProvider(p, hasKey, usedBy), ...(status ? { budgetStatus: status } : {}) };
+    syncHealth();
+    return { ...basePublicProvider(p, hasKey, usedBy), sourceHealth: health.snapshot(p.id), ...(status ? { budgetStatus: status } : {}) };
   };
   const providerHasKey = async (p: Provider): Promise<boolean> => { try { return Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id)); } catch { return false; } };
   const doctorHelp = new Map<string, { checkedAt: string; verdicts: Verdict[] }>();
@@ -230,6 +255,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     log.unshift(entry);
     log.length = Math.min(log.length, 100);
     ledger?.append(entry);
+    if(entry.fallback&&fallbackHistory){fallbackHistory.push(structuredClone(entry));if(fallbackHistory.length>2000)fallbackHistory.shift();}
     console.log(`[gateway] ${entry.status} ${entry.route} ${entry.model} ${entry.ms}ms${entry.note ? ` (${entry.note})` : ""}`);
   };
   /** The executable for an agent: the two built-ins have their own finders, the rest come from detection. */
@@ -637,7 +663,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     let tokens: DoctorInput["tokens"];
     try {
       const supplied = Boolean(req?.headers["x-easyswitch-session"] || req?.headers.authorization);
-      tokens = { storeAvailable: true, sessions: auth.list().map(s => ({expiresAt:s.expiresAt})), current: supplied ? auth.authenticate(req!.headers) ? "valid" : "invalid" : "absent" };
+      tokens = { storeAvailable: true, sessions: sessionsPublic().map(s => ({expiresAt:s.expiresAt})), current: supplied ? auth.authenticate(req!.headers) ? "valid" : "invalid" : "absent" };
     } catch { tokens = {storeAvailable:false}; }
     const agents = deps.doctor?.agents?.() ?? AGENTS.map(a => {
       const detected=agentCache?.list.find(x=>x.id===a.id);
@@ -702,7 +728,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, listExposedModels(store, false)); return;
     }
     if (path === "/api/gateway/sessions") {
-      if (method === "GET") { json(res, 200, { sessions: auth.list() }); return; }
+      if (method === "GET") { json(res, 200, { sessions: sessionsPublic() }); return; }
       if (method === "POST") {
         if (typeof body.agentId !== "string" || !AGENTS.some(a => a.id === body.agentId)) { json(res, 400, { error: "请选择已登记的 agent" }); return; }
         if (body.allowNativeClaude === true && body.agentId !== "claude") { json(res, 400, { error: "只有 Claude Code 会话可请求保留原生登录" }); return; }
@@ -718,6 +744,26 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     const revokeSession = /^\/api\/gateway\/sessions\/([a-f0-9-]+)$/.exec(path);
     if (revokeSession && method === "DELETE") { const revoked = auth.revokeId(revokeSession[1]!); json(res, revoked ? 200 : 404, revoked ? { ok: true } : { ok: false, error: "没有找到可撤销的会话" }); return; }
+    if (path === "/api/source-health" && method === "GET") {
+      if(req.headers["x-easyswitch"]!=="1"){json(res,403,{error:"missing x-easyswitch header"});return;}
+      syncHealth();json(res,200,{sources:health.snapshots(),transitions:health.drainTransitions()});return;
+    }
+    const healthMatch=/^\/api\/providers\/([a-z0-9-]+)\/health(?:\/(check))?$/.exec(path);
+    if(healthMatch){
+      const p=store.provider(healthMatch[1]!);if(!p){json(res,404,{error:"来源不存在"});return;}
+      if(method==="PUT"&&!healthMatch[2]){
+        if(typeof body.enabled!=="boolean"||Object.keys(body).some(k=>k!=="enabled")){json(res,400,{error:"请选择是否允许轻量检查"});return;}
+        if(body.enabled&&!modelsHealthFingerprint(p)){json(res,409,{error:"此来源暂不支持轻量检查，关闭的来源请先开启"});return;}
+        p.healthMonitor={...p.healthMonitor,enabled:body.enabled};store.upsertProvider(p);syncHealth();json(res,200,publicProvider(p,false));return;
+      }
+      if(method==="POST"&&healthMatch[2]){
+        if(Object.keys(body).length){json(res,400,{error:"检查参数无效"});return;}
+        syncHealth();const fingerprint=await health.checkNow(p.id);const current=store.provider(p.id);
+        if(fingerprint&&current?.healthMonitor?.enabled&&modelsHealthFingerprint(current)===fingerprint){current.healthMonitor={enabled:true,verifiedFingerprint:fingerprint};store.upsertProvider(current);}
+        json(res,200,health.snapshot(p.id));return;
+      }
+      json(res,405,{error:"不支持的检查操作"});return;
+    }
     if (path === "/api/budget") {
       if (method === "GET") { json(res, 200, budget.status()); return; }
       if (method === "PUT") {
@@ -731,7 +777,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const providers = await Promise.all(store.providers().map(async p =>
         publicProvider(p, await providerHasKey(p), bound.filter(b => b.providerId === p.id).map(b => b.harness))));
       json(res, 200, {
-        version: VERSION, port, providers, budget: budget.status(), gatewaySessions: auth.list(),
+        version: VERSION, port, providers, budget: budget.status(), gatewaySessions: sessionsPublic(),
         binding: store.binding("codex") ?? null,
         bindings: { codex: null, claude: null, ...Object.fromEntries(store.allBindings().map(b => [b.harness, b])) },
         codexPath: (await findCodex()) ?? null,
@@ -1175,7 +1221,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/tasks" && method === "GET") {
       let ratings:ReturnType<FeedbackBook["list"]>=[],feedbackUnavailable=false;try{ratings=feedback.list();}catch{feedbackUnavailable=true;}
       const usage=new Map(taskUsage().map(u=>[u.taskId,u]));
-      json(res,200,{tasks:tasks.list().map(t=>({...t,feedback:ratings.find(r=>r.taskId===t.id)??null,usage:usage.get(t.id)??{taskId:t.id,unknownCost:true}})),running:tasks.running(),feedbackUnavailable,accounting:taskAccounting.status()});
+      json(res,200,{tasks:tasks.list().map(t=>({...t,fallbackChanges:routeChanges(t.id),feedback:ratings.find(r=>r.taskId===t.id)??null,usage:usage.get(t.id)??{taskId:t.id,unknownCost:true}})),running:tasks.running(),feedbackUnavailable,accounting:taskAccounting.status()});
       return;
     }
     if (path === "/api/tasks" && method === "DELETE") {
@@ -1591,7 +1637,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           return;
         }
         const key = { id: newKeyId(), label: label || `Key ${(provider.keys?.length ?? 0) + 1}`, enabled: true, addedAt: new Date().toISOString() };
+        health.invalidate(provider.id);
         await secrets.set(keySecretId(provider.id, key.id), apiKey);
+        if(provider.healthMonitor)delete provider.healthMonitor.verifiedFingerprint;
         provider.keys = [...(provider.keys ?? []), key];
         store.upsertProvider(provider);
         json(res, 201, publicProvider(provider, true));
@@ -1605,11 +1653,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         }
         if (method === "PATCH") {
           if (typeof body.label === "string" && body.label.trim()) key.label = body.label.trim();
-          if (typeof body.enabled === "boolean") key.enabled = body.enabled;
+          if (typeof body.enabled === "boolean") { key.enabled = body.enabled; health.invalidate(provider.id); if(provider.healthMonitor)delete provider.healthMonitor.verifiedFingerprint; }
           store.upsertProvider(provider);
         } else if (method === "DELETE") {
           provider.keys = provider.keys?.filter(k => k.id !== keyId);
-          await secrets.delete(keySecretId(provider.id, key.id));
+          health.invalidate(provider.id);
+          await secrets.delete(keySecretId(provider.id, key.id)); if(provider.healthMonitor)delete provider.healthMonitor.verifiedFingerprint;
           store.upsertProvider(provider);
         } else {
           json(res, 405, { error: "不支持的操作" });
@@ -1669,9 +1718,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       const action = providerMatch[2];
       if (action === "switch" && method === "PUT") {
-        if (!provider.cliTextBridge || typeof body.on !== "boolean" || Object.keys(body).some(k => k !== "on")) { json(res, 400, { error: "需要CLI文字来源及明确开关" }); return; }
-        const issue = cliTextSourceIssue(provider); if (issue) { json(res, 400, { error: issue }); return; }
-        if (provider.cliTextBridge.kind === "droid") { json(res, 501, { error: DROID_TEXT_BRIDGE_BLOCKER }); return; }
+        if (typeof body.on !== "boolean" || Object.keys(body).some(k => k !== "on") || provider.plan || provider.kimi || provider.cursor || provider.kiro || provider.antigravity) { json(res, 400, { error: "需要普通或CLI来源及明确开关；订阅请使用专用开关" }); return; }
+        if(provider.cliTextBridge){const issue = cliTextSourceIssue(provider); if (issue) { json(res, 400, { error: issue }); return; }
+        if (provider.cliTextBridge.kind === "droid") { json(res, 501, { error: DROID_TEXT_BRIDGE_BLOCKER }); return; }}
         if (body.on) delete provider.off; else provider.off = true;
         store.upsertProvider(provider); json(res, 200, { on: !provider.off }); return;
       }
@@ -1798,6 +1847,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
     // Thinking level and the other models an agent runs belong to the agent, whatever its main model is (even native).
+    const bindingFallback=/^\/api\/bindings\/([a-z0-9-]+)\/fallback$/.exec(path);
+    if(bindingFallback&&(method==="PUT"||method==="DELETE")){
+      const id=bindingFallback[1]!;if(!AGENTS.some(a=>a.id===id)){json(res,404,{error:"不认识这个agent"});return;}
+      const model=method==="DELETE"?"":body.model;
+      if(typeof model!=="string"||Object.keys(body).some(k=>k!=="model")||(model&&(model.startsWith("pool/")||!store.catalog().some(m=>`${m.providerId}/${m.model}`===model)))){json(res,400,{error:"请选择一个可用的直接模型作为备用"});return;}
+      json(res,200,store.setPrefs(id,{fallbackModel:model}));return;
+    }
     const bindingEffort = /^\/api\/bindings\/([a-z0-9-]+)\/effort$/.exec(path);
     if (bindingEffort && method === "PUT") {
       const id = bindingEffort[1] ?? "";
@@ -1908,12 +1964,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
-        await handleChatgpt(req, res, path, url.search, { store, secrets, log: taskLog(), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+        await handleChatgpt(req, res, path, url.search, { store, secrets, log: taskLog(), session, fallback: fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         return;
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (path === "/mcp") {
@@ -1936,13 +1992,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+          return handleGemini(req, r, m, raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -1956,7 +2012,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
@@ -2036,6 +2092,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       try { await refreshPlanUsage(p, (await pickKey(secrets, p)).apiKey); } catch { /* the next round tries again */ }
     }
   };
+  syncHealth();
+  const healthEvery=setInterval(()=>{syncHealth();void health.runDue();},30_000);healthEvery.unref();
+  server.on("close",()=>{clearInterval(healthEvery);health.close();});
   const first = setTimeout(() => void pollUsage(), 5_000);
   const every = setInterval(() => void pollUsage(), 5 * 60_000);
   first.unref(); every.unref();

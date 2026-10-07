@@ -65,12 +65,15 @@ async function observe(response: Response, protocol: ApiProtocol, onUsage?: (usa
 export async function routeRequest(req: IncomingMessage, res: ServerResponse, input: InboundRequest, harness: string, deps: GatewayDeps): Promise<void> {
   const started = performance.now();
   harness = deps.session?.agentId ?? harness;
+  const fallback = deps.fallback?.(input.model);
+  if (fallback?.change && fallback.model) input = { ...input, model: fallback.model };
   const resolved = resolveModel(deps.store, input.model);
   if (!resolved) { gatewayError(res, input.protocol, 404, noModelMessage(deps.store, input.model), "model_not_found"); return; }
   const { provider, model } = resolved;
   let prepared: PreparedOutbound | undefined; let keyId: string | undefined; let usage: Usage | undefined; let usageComplete = false;
   const finish = (status: number, note?: string) => deps.log({
     at: new Date().toISOString(), model: input.model, providerId: provider.id, harness,
+    ...(fallback?.change ? { fallback: fallback.change } : {}), ...(deps.session ? { sessionId: deps.session.id } : {}),
     route: prepared?.protocol === "responses" ? "responses-native" : prepared?.protocol === "messages" ? "anthropic-native" : "chat-translate",
     inboundProtocol: input.protocol, outboundProtocol: prepared?.protocol, adapter: prepared?.adapter,
     usageComplete, status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...(keyId ? { keyId } : {}),

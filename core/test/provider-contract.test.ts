@@ -5,7 +5,7 @@ import { vertexConfigIssue } from "../src/vertex-config.ts";
 
 const schema = JSON.parse(readFileSync(new URL("../../contracts/provider.schema.json", import.meta.url), "utf8"));
 test("provider contract describes every persisted field and excludes credential values from Vertex", () => {
-  assert.deepEqual(Object.keys(schema.properties).sort(), ["cliTextBridge", "cursor", "kimi", "budget", "vertex", "id", "name", "baseUrl", "defaultModel", "models", "protocols", "modelProtocols", "route", "routePinned", "messagesRoute", "anthropicBaseUrl", "streamUsage", "reasoningEffort", "modelEfforts", "antigravity", "kiro", "mimoFree", "probe", "off", "plan", "billing", "prices", "icon", "urlParams", "wire", "keys", "createdAt"].sort());
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["cliTextBridge", "cursor", "kimi", "budget", "vertex", "id", "name", "baseUrl", "defaultModel", "models", "protocols", "modelProtocols", "route", "routePinned", "messagesRoute", "healthMonitor", "anthropicBaseUrl", "streamUsage", "reasoningEffort", "modelEfforts", "antigravity", "kiro", "mimoFree", "probe", "off", "plan", "billing", "prices", "icon", "urlParams", "wire", "keys", "createdAt"].sort());
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.off.type, "boolean");
   assert.equal(schema.properties.protocols.$ref, "#/$defs/protocols");
