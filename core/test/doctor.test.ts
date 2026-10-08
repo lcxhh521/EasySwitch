@@ -131,6 +131,18 @@ test("active provider success or failure never reclassifies or replaces endpoint
   }
 });
 
+test("SDK-derived subscription warnings disclose derivation and shared Zhipu routes produce one warning",()=>{
+  for (const baseUrl of ["https://api.z.ai/api/anthropic","https://ark.cn-beijing.volces.com/api/coding"]) {
+    const data=input();data.providers![0]!.endpoints={baseUrl};
+    const row=buildDoctorReport(data).findings.find(r=>r.code==="source_messages_endpoint_stale")!;
+    assert.equal(row.evidence,"metadata");assert.match(row.message,/官方客户端根地址及 SDK 路径推导/);
+    assert.doesNotMatch(row.message,/已核实的官方地址/);
+  }
+  const data=input();data.providers![0]!.endpoints={baseUrl:"https://open.bigmodel.cn/api/coding/paas/v4",anthropicBaseUrl:"https://open.bigmodel.cn/api/anthropic"};
+  const rows=buildDoctorReport(data).findings.filter(r=>r.code==="source_messages_endpoint_stale");
+  assert.equal(rows.length,1);assert.match(rows[0]!.message,/智谱 GLM.*已核实的官方地址/);assert.doesNotMatch(rows[0]!.message,/开放平台/);
+});
+
 test("endpoint warnings obey the provider inventory limit",()=>{
   const data=input();data.providers=Array.from({length:201},(_,i)=>({id:`source-${i}`,endpoints:{baseUrl:"https://api.deepseek.com/anthropic"}}));
   const report=buildDoctorReport(data);assert.equal(report.findings.filter(r=>r.code==="source_messages_endpoint_stale").length,200);

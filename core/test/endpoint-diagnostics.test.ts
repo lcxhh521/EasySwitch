@@ -9,9 +9,14 @@ const officialBases = [
   "https://open.bigmodel.cn/api/anthropic",
   "https://dashscope.aliyuncs.com/apps/anthropic",
   "https://api.xiaomimimo.com/anthropic",
+  "https://api.z.ai/api/anthropic",
+  "https://api.kimi.com/coding",
+  "https://api.minimax.io/anthropic",
+  "https://ark.cn-beijing.volces.com/api/coding",
+  "https://token-plan-cn.xiaomimimo.com/anthropic",
 ];
 
-test("only the five verified stale effective Messages endpoints have precise public guidance", () => {
+test("the ten unique verified stale effective Messages endpoints have precise public guidance", () => {
   for (const base of officialBases) {
     const provider = { baseUrl: "https://custom-chat.invalid/v1", anthropicBaseUrl: base };
     const before = JSON.stringify(provider);
@@ -26,6 +31,31 @@ test("only the five verified stale effective Messages endpoints have precise pub
     assert.deepEqual(diagnoseMessagesEndpoint({ baseUrl: base }), diagnostic, "fallback base has the same effective Messages URL");
     assert.equal(diagnoseMessagesEndpoint({ ...provider, anthropicBaseUrl: `${base}/v1` }), undefined);
   }
+});
+
+test("direct HTTP evidence and documented SDK-path derivations remain distinguishable", () => {
+  const derived = new Set([
+    "https://api.deepseek.com/anthropic",
+    "https://api.z.ai/api/anthropic",
+    "https://ark.cn-beijing.volces.com/api/coding",
+  ]);
+  for (const baseUrl of officialBases) {
+    assert.equal(diagnoseMessagesEndpoint({ baseUrl })?.endpointEvidence, derived.has(baseUrl) ? "sdk-derived" : "direct");
+    assert.equal(diagnoseMessagesEndpoint({ baseUrl, wire: { paths: { messages: "v1/messages" } } }), undefined);
+    assert.equal(diagnoseMessagesEndpoint({ baseUrl: `${baseUrl}/v1/messages`, wire: { paths: { messages: "" } } }), undefined);
+  }
+});
+
+test("unresolved MiniMax CN and routes outside the bounded subscription correction set stay unclassified", () => {
+  for (const baseUrl of [
+    "https://api.minimaxi.com/anthropic",
+    "https://api.minimax.cn/anthropic",
+    "https://api.kimi.ai/coding",
+    "https://api.lkeap.cloud.tencent.com/coding/anthropic",
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+    "https://opencode.ai/zen/go/v1",
+    "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic",
+  ]) assert.equal(diagnoseMessagesEndpoint({ baseUrl }), undefined, baseUrl);
 });
 
 test("explicit Messages overrides use runtime semantics and already corrected routes do not warn", () => {

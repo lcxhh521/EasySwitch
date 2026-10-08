@@ -108,7 +108,7 @@ function providerEndpointFinding(p: DoctorProvider): DoctorFinding | undefined {
   const diagnostic = diagnoseMessagesEndpoint(p.endpoints);
   if (!diagnostic) return undefined;
   return finding("provider", diagnostic.code, "warn", "Messages 地址缺少 /v1",
-    `${diagnostic.service} 的有效 Messages 请求地址为 ${diagnostic.staleEndpoint}，与已核实的官方地址 ${diagnostic.recommendedEndpoint} 不一致。`,
+    `${diagnostic.service} 的有效 Messages 请求地址为 ${diagnostic.staleEndpoint}，与${diagnostic.endpointEvidence === "sdk-derived" ? "按官方客户端根地址及 SDK 路径推导的地址" : "已核实的官方地址"} ${diagnostic.recommendedEndpoint} 不一致。`,
     `查看这个来源的配置，将 Anthropic 地址（anthropicBaseUrl）设为 ${diagnostic.recommendedBaseUrl}。${diagnostic.hasPathOverride ? "同时删除 wire.paths.messages 覆盖，或将它设为 messages。" : "EasySwitch 会追加 /messages。"}此地址检查没有修改已保存的来源，也没有为检查地址发送请求；如需验证，修正后再另行确认检测。`,
     [action("open-providers", "查看来源配置", p.id)], p.id);
 }
