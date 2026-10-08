@@ -57,6 +57,17 @@ test("empty pools are rejected while a pool with one selectable member remains s
   assert.equal(f.store.binding("claude")!.providerId, "pool");
 });
 
+test("main binding keeps malformed pool selectors rejected without replacing the binding", async t => {
+  const f = await fixture(t), before = readFileSync(join(f.dir, "state.json"), "utf8");
+  for (const providerId of [["pool"], [["pool"]]]) {
+    const result = await f.api("/api/bindings/claude", { providerId, model: "mixed" });
+    assert.equal(result.status, 400); assert.equal(result.body.uiError.code, "invalid_input");
+    assert.deepEqual(f.store.binding("claude"), { harness: "claude", providerId: "old", model: "m" });
+    assert.equal(readFileSync(join(f.dir, "state.json"), "utf8"), before);
+  }
+  assert.equal((await f.api("/api/bindings/claude", { providerId: "pool", model: "mixed" })).status, 200);
+});
+
 test("stale selection is checked at save time and becomes selectable after explicit reopening", async t => {
   const f = await fixture(t);
   assert.ok(f.store.catalog().some(m => m.providerId === "on"));
@@ -104,4 +115,133 @@ test("tier and fallback rejection preserve saved values and only explicit clear 
   assert.equal((await f.api("/api/bindings/claude/tiers/small", undefined, "DELETE")).status, 200);
   assert.equal((await f.api("/api/bindings/claude/fallback", { model: "" })).status, 200);
   assert.deepEqual(f.store.prefs("claude"), {});
+});
+
+const ruleDraft = (model?: string) => ({ name: "选择模型", enabled: true, when: { anyWords: ["test"] }, then: { agent: "claude", ...(model === undefined ? {} : { model }) } });
+
+test("new and changed rule targets reject unavailable sources before changing rules, IDs or order", async t => {
+  const f = await fixture(t);
+  const first = f.store.addRule({ ...ruleDraft(), name: "first" });
+  const saved = f.store.addRule(ruleDraft("old/m"));
+  const last = f.store.addRule({ ...ruleDraft(), name: "last" });
+  const before = readFileSync(join(f.dir, "state.json"), "utf8"), rules = f.store.rules();
+  for (const [target, status, code, uiCode] of [
+    ["missing/m", 400, "invalid_input", "invalid_input"],
+    ["on", 400, "invalid_input", "invalid_input"],
+    ["on/", 400, "invalid_input", "invalid_input"],
+    ["/m", 400, "invalid_input", "invalid_input"],
+    ["off/m", 409, "provider_disabled", "source_disabled"],
+    ["budget/m", 409, "provider_budget_exceeded", "budget_blocked"],
+    ["droid/m", 409, "capability_unavailable", "capability_unavailable"],
+  ] as const) {
+    for (const method of ["POST", "PUT"]) {
+      for (const enabled of [true, false]) {
+        const result = await f.api(method === "POST" ? "/api/rules" : `/api/rules/${saved.id}`, { ...ruleDraft(target), name: "must not replace", enabled }, method);
+        assert.equal(result.status, status, `${method} ${target}`);
+        assert.equal(result.body.code, code); assert.equal(result.body.uiError.code, uiCode); assert.ok(result.body.uiError.action.label);
+        assert.deepEqual(f.store.rules(), rules);
+        assert.equal(readFileSync(join(f.dir, "state.json"), "utf8"), before);
+      }
+    }
+  }
+  const listed = await f.api("/api/rules", undefined, "GET");
+  assert.equal(listed.status, 200); assert.deepEqual(listed.body.rules.map((r: { id: string }) => r.id), [first.id, saved.id, last.id]);
+});
+
+test("rule targets are rechecked after a source closes or reaches its budget after selection", async t => {
+  const f = await fixture(t);
+  f.store.upsertProvider({ ...f.store.provider("on")!, budget: { monthlyUsd: 1, stop: true } });
+  const saved = f.store.addRule(ruleDraft("on/m"));
+  assert.ok(f.store.catalog().some(m => m.providerId === "on"));
+  f.store.upsertProvider({ ...f.store.provider("on")!, off: true });
+  for (const expectedCode of ["source_disabled", "budget_blocked"]) {
+    const before = readFileSync(join(f.dir, "state.json"), "utf8"), rules = f.store.rules();
+    const created = await f.api("/api/rules", ruleDraft("on/m"), "POST");
+    const changed = await f.api(`/api/rules/${saved.id}`, ruleDraft("on/another/model"));
+    for (const result of [created, changed]) { assert.equal(result.status, 409); assert.equal(result.body.uiError.code, expectedCode); }
+    assert.deepEqual(f.store.rules(), rules); assert.equal(readFileSync(join(f.dir, "state.json"), "utf8"), before);
+    if (expectedCode === "source_disabled") {
+      f.store.upsertProvider({ ...f.store.provider("on")!, off: false });
+      assert.ok(f.store.catalog().some(m => m.providerId === "on"));
+      f.ledger.append({ at: new Date().toISOString(), providerId: "on", model: "on/m", route: "chat-translate", status: 200, ms: 1, costUsd: 2 });
+    }
+  }
+});
+
+test("rule pool targets require one selectable member and accept a mixed pool", async t => {
+  const f = await fixture(t), saved = f.store.addRule(ruleDraft("old/m"));
+  f.store.upsertPool({ id: "unlisted", name: "unlisted", members: ["on/unlisted/upstream"], strategy: "order", createdAt: "" });
+  for (const pool of ["empty", "off", "blocked", "unsupported", "missing", "unlisted", "not-a-pool"]) {
+    const before = readFileSync(join(f.dir, "state.json"), "utf8"), rules = f.store.rules();
+    for (const method of ["POST", "PUT"]) {
+      const result = await f.api(method === "POST" ? "/api/rules" : `/api/rules/${saved.id}`, ruleDraft(`pool/${pool}`), method);
+      assert.equal(result.status, pool === "not-a-pool" ? 400 : 409);
+      assert.equal(result.body.uiError.code, pool === "not-a-pool" ? "invalid_input" : "model_unavailable");
+      if (pool !== "not-a-pool") assert.equal(result.body.code, "model_not_found");
+      assert.deepEqual(f.store.rules(), rules); assert.equal(readFileSync(join(f.dir, "state.json"), "utf8"), before);
+    }
+  }
+  const created = await f.api("/api/rules", ruleDraft("pool/mixed"), "POST");
+  assert.equal(created.status, 201); assert.equal(created.body.then.model, "pool/mixed");
+  const changed = await f.api(`/api/rules/${saved.id}`, ruleDraft("pool/mixed"));
+  assert.equal(changed.status, 200); assert.equal(changed.body.id, saved.id); assert.equal(changed.body.then.model, "pool/mixed");
+  // The last allowed pool member can disappear between opening the picker and saving.
+  f.store.upsertProvider({ ...f.store.provider("on")!, off: true });
+  const before = readFileSync(join(f.dir, "state.json"), "utf8");
+  assert.equal((await f.api("/api/rules", ruleDraft("pool/mixed"), "POST")).status, 409);
+  assert.equal(readFileSync(join(f.dir, "state.json"), "utf8"), before);
+});
+
+test("rule saves accept usable sources with unknown health and preserve unlisted slash-containing model IDs", async t => {
+  const f = await fixture(t);
+  for (const target of ["on/vendor/model", "on/unlisted/vendor/model", "qoder/unlisted/model"]) {
+    const created = await f.api("/api/rules", ruleDraft(`  ${target}  `), "POST");
+    assert.equal(created.status, 201); assert.equal(created.body.then.model, target);
+    const next = `${target}/v2`;
+    const changed = await f.api(`/api/rules/${created.body.id}`, ruleDraft(`  ${next}  `));
+    assert.equal(changed.status, 200); assert.equal(changed.body.then.model, next);
+    assert.equal(f.store.rules().find(r => r.id === created.body.id)!.then.model, next);
+    assert.equal(resolveModel(f.store, next)?.model, next.slice(next.indexOf("/") + 1));
+  }
+});
+
+test("unchanged unavailable rule targets remain editable, reorderable, toggleable and deletable", async t => {
+  const f = await fixture(t), first = f.store.addRule({ ...ruleDraft(), name: "first" });
+  for (const target of ["off/m", "budget/m", "droid/m", "missing/m", "pool/empty", "pool/not-a-pool", "legacy-invalid"]) {
+    const saved = f.store.addRule({ ...ruleDraft(target), enabled: false });
+    for (const enabled of [false, true, false]) {
+      const changed = await f.api(`/api/rules/${saved.id}`, { ...saved, name: "renamed", enabled, when: { minChars: 7 }, then: { agent: "codex", model: ` ${target} `, effort: "high" } });
+      assert.equal(changed.status, 200, target); assert.equal(changed.body.id, saved.id);
+      assert.deepEqual(changed.body, { id: saved.id, name: "renamed", enabled, when: { minChars: 7 }, then: { agent: "codex", model: target, effort: "high" } });
+      assert.deepEqual(f.store.rules().map(r => r.id), [first.id, saved.id]);
+    }
+    assert.equal((await f.api(`/api/rules/${saved.id}/move`, { direction: "up" }, "POST")).status, 200);
+    assert.deepEqual(f.store.rules().map(r => r.id), [saved.id, first.id]);
+    assert.equal((await f.api(`/api/rules/${saved.id}`, undefined, "DELETE")).status, 200);
+    assert.deepEqual(f.store.rules(), [first]);
+  }
+});
+
+test("rule model clearing and new own-model rules remain allowed without resolving a source", async t => {
+  const f = await fixture(t);
+  for (const model of [undefined, "", "   "]) {
+    const created = await f.api("/api/rules", ruleDraft(model), "POST");
+    assert.equal(created.status, 201); assert.deepEqual(created.body.then, { agent: "claude" });
+    const saved = f.store.addRule(ruleDraft("missing/model"));
+    const changed = await f.api(`/api/rules/${saved.id}`, ruleDraft(model));
+    assert.equal(changed.status, 200); assert.equal(changed.body.id, saved.id);
+    assert.deepEqual(changed.body.then, { agent: "claude" });
+    assert.deepEqual(f.store.rules().find(r => r.id === saved.id)!.then, { agent: "claude" });
+  }
+});
+
+test("rule save validation keeps console authorization and parse errors ahead of mutation", async t => {
+  const f = await fixture(t), saved = f.store.addRule(ruleDraft("on/m"));
+  const before = readFileSync(join(f.dir, "state.json"), "utf8"), rules = f.store.rules();
+  for (const method of ["POST", "PUT"]) {
+    const path = method === "POST" ? "/api/rules" : `/api/rules/${saved.id}`;
+    assert.equal((await f.api(path, ruleDraft("on/unlisted/model"), method, false)).status, 403);
+    assert.equal((await f.api(path, { ...ruleDraft("on/unlisted/model"), name: "" }, method)).status, 400);
+    assert.deepEqual(f.store.rules(), rules); assert.equal(readFileSync(join(f.dir, "state.json"), "utf8"), before);
+  }
 });

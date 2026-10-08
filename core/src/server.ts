@@ -165,6 +165,27 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/** Save-time source eligibility only: explicit upstream IDs need not be in the catalog. */
+function sourceTargetIssue(store: Store, providerId: unknown, model: string): { status: number; body: { code?: string; error: string } } | undefined {
+  const provider = providerId === "pool" && store.pool(model) ? { id: "pool" } : store.provider(String(providerId ?? ""));
+  if (!provider || !model) return { status: 400, body: { error: "需要选择模型来源和模型" } };
+  const source = provider.id === "pool" ? undefined : store.provider(provider.id);
+  const issue = provider.id === "pool"
+    ? store.catalog().some(m => m.providerId === "pool" && m.model === model) ? null : { code: "model_not_found", error: "模型池没有可选择的成员" }
+    : source?.off ? { code: "provider_disabled", error: "所选来源已关闭" }
+    : source && store.providerBudgetStopped(source) ? { code: "provider_budget_exceeded", error: "所选来源被预算阻断，请检查来源预算和记账状态" }
+    : source?.cliTextBridge?.kind === "droid" ? { code: "capability_unavailable", error: "此文字桥暂未支持使用" }
+    : null;
+  return issue ? { status: 409, body: issue } : undefined;
+}
+
+/** Split only the source prefix; an upstream model ID may contain more slashes. */
+function ruleTargetIssue(store: Store, target: string | undefined) {
+  if (!target) return undefined; // The agent's own model remains a valid choice.
+  const slash = target.indexOf("/");
+  return sourceTargetIssue(store, slash > 0 ? target.slice(0, slash) : "", slash > 0 ? target.slice(slash + 1) : "");
+}
+
 /** Stamps an estimated cost on a finished call, using the price in force right now. */
 export function priceEntry(store: Store, entry: GatewayLogEntry): void {
   const provider = entry.providerId ? store.provider(entry.providerId) : undefined;
@@ -1181,6 +1202,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (path === "/api/rules" && method === "POST") {
       const parsed = parseRule(body, knownAgents);
       if ("error" in parsed) { json(res, 400, { error: parsed.error }); return; }
+      const issue = ruleTargetIssue(store, parsed.rule.then.model);
+      if (issue) { json(res, issue.status, issue.body); return; }
       json(res, 201, store.addRule(parsed.rule));
       return;
     }
@@ -1198,7 +1221,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const ruleMatch = /^\/api\/rules\/(r-[a-f0-9]+)(?:\/(move))?$/.exec(path);
     if (ruleMatch) {
       const id = ruleMatch[1] ?? "";
-      if (!store.rules().some(r => r.id === id)) { json(res, 404, { error: "没有这条规则" }); return; }
+      const saved = store.rules().find(r => r.id === id);
+      if (!saved) { json(res, 404, { error: "没有这条规则" }); return; }
       if (method === "POST" && ruleMatch[2] === "move") {
         json(res, 200, { ok: store.moveRule(id, body.direction === "up" ? -1 : 1) });
         return;
@@ -1206,6 +1230,9 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (method === "PUT") {
         const parsed = parseRule(body, knownAgents);
         if ("error" in parsed) { json(res, 400, { error: parsed.error }); return; }
+        // Keep existing unavailable targets editable, including name/condition/toggle changes.
+        const issue = parsed.rule.then.model !== saved.then.model ? ruleTargetIssue(store, parsed.rule.then.model) : undefined;
+        if (issue) { json(res, issue.status, issue.body); return; }
         json(res, 200, store.updateRule(id, parsed.rule));
         return;
       }
@@ -1870,24 +1897,11 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (method === "PUT" && bindingMatch) {
       const harness = bindingMatch[1] as Harness;
       const model = String(body.model ?? "");
-      // A pool is a model like any other as far as an agent is concerned.
-      const provider = body.providerId === "pool" && store.pool(model) ? { id: "pool" } : store.provider(String(body.providerId ?? ""));
-      if (!provider || !model) {
-        json(res, 400, { error: "需要选择模型来源和模型" });
-        return;
-      }
-      // Recheck the source at save time: a picker may have opened before it was
-      // switched off or its budget stopped. Keep explicit upstream model IDs
-      // compatible; only pools require a member in the selectable catalog.
-      const source = provider.id === "pool" ? undefined : store.provider(provider.id);
-      const issue = provider.id === "pool"
-        ? store.catalog().some(m => m.providerId === "pool" && m.model === model) ? null : { code: "model_not_found", error: "模型池没有可选择的成员" }
-        : source?.off ? { code: "provider_disabled", error: "所选来源已关闭" }
-        : source && store.providerBudgetStopped(source) ? { code: "provider_budget_exceeded", error: "所选来源被预算阻断，请检查来源预算和记账状态" }
-        : source?.cliTextBridge?.kind === "droid" ? { code: "capability_unavailable", error: "此文字桥暂未支持使用" }
-        : null;
-      if (issue) { json(res, 409, issue); return; }
-      store.setBinding({ harness, providerId: provider.id, model });
+      const providerId = String(body.providerId ?? "");
+      // A picker may have opened before the source was switched off or budget-blocked.
+      const issue = sourceTargetIssue(store, body.providerId, model);
+      if (issue) { json(res, issue.status, issue.body); return; }
+      store.setBinding({ harness, providerId, model });
       json(res, 200, store.binding(harness));
       return;
     }
