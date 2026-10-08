@@ -192,6 +192,35 @@ const providerById = id => (id === "pool" ? POOL_PROVIDER : state?.providers?.fi
 const modelsOf = p => (Array.isArray(p?.models) && p.models.length ? p.models : p?.defaultModel ? [p.defaultModel] : []);
 const sessionsOf = h => (state.sessionDetails ?? []).filter(s => s.harness === h);
 
+/** The server's catalog is configuration eligibility, not a health/probe result. */
+function selectableModelNames() {
+  if (Array.isArray(state?.selectableModels)) return state.selectableModels;
+  // Compatibility with an older state response, using the same catalog rules.
+  const direct = (state?.providers ?? []).filter(p => !p.off && !p.budgetStatus?.blocked && p.cliTextBridge?.kind !== "droid")
+    .flatMap(p => modelsOf(p).map(m => `${p.id}/${m}`));
+  const have = new Set(direct);
+  return [...direct, ...(state?.pools ?? []).filter(p => (p.members ?? p.live ?? []).some(m => have.has(m))).map(p => `pool/${p.id}`)];
+}
+function modelSelectionReason(name) {
+  if (!name || selectableModelNames().includes(name)) return "";
+  const slash = name.indexOf("/"), id = name.slice(0, slash);
+  if (id === "pool") return (state?.pools ?? []).some(p => p.id === name.slice(slash + 1)) ? "模型池没有可选择的成员" : "模型池已不存在";
+  const p = providerById(id);
+  if (!p) return "模型来源已不存在";
+  if (p.off) return "来源已关闭";
+  if (p.budgetStatus?.blocked) return "来源预算阻断，请检查预算和记账状态";
+  if (p.cliTextBridge?.kind === "droid") return "此文字桥暂未支持使用";
+  return "模型未列入当前目录";
+}
+function savedModelNotice(name) {
+  const reason = modelSelectionReason(name);
+  return reason ? `<small class="hint">已保留：${esc(reason)}</small>` : "";
+}
+/** A stale saved/draft value stays selected; choosing the blank option is explicit. */
+function savedModelOption(name, names) {
+  return name && !names.includes(name) ? `<option value="${esc(name)}" selected disabled>${esc(name)}（已保留：${esc(modelSelectionReason(name) || "此处不能选择该模型")}）</option>` : "";
+}
+
 function closePopover() {
   popover?.remove();
   popover = null;
@@ -263,10 +292,10 @@ function agentControls(id) {
     const name = prefs.tiers?.[t.id];
     const slash = name ? name.indexOf("/") : -1;
     const provider = name && providerById(name.slice(0, slash));
-    const face = provider
-      ? `${icon(provider.icon)}<span class="label">${esc(name.slice(slash + 1))}</span>`
+    const face = name
+      ? `${provider ? icon(provider.icon) : ""}<span class="label">${esc(name.slice(slash + 1))}</span>`
       : `<span class="label">跟随主模型</span>`;
-    return `<div class="ctl" title="${esc(t.hint)}"><small>${esc(t.label)}</small><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}">${face}<span class="caret">▾</span></button></div>`;
+    return `<div class="ctl" title="${esc(t.hint)}"><small>${esc(t.label)}</small><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}">${face}<span class="caret">▾</span></button>${savedModelNotice(name)}</div>`;
   };
   const effort = levels.length
     ? `<div class="ctl"><small>想得多深</small><select data-effort-select="${esc(id)}" title="只对这个 agent 生效">
@@ -275,7 +304,8 @@ function agentControls(id) {
       // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
       ? `<div class="ctl"><small>想得多深</small><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="${esc(binding.model)} 没有已知的思考档位；告诉 EasySwitch 它有哪些">档位未知，设置</button></div>`
       : "";
-  const backup = `<div class="ctl"><small>备用模型</small><select data-fallback-select="${esc(id)}"><option value="">不设置备用</option>${(state.providers??[]).filter(p=>!p.off&&!p.budgetStatus?.blocked).flatMap(p=>modelsOf(p).map(m=>{const name=`${p.id}/${m}`;return `<option value="${esc(name)}" ${prefs.fallbackModel===name?"selected":""}>${esc(p.name)} / ${esc(m)}</option>`;})).join("")}</select><small>仅来源明确不可用或额度耗尽时，在发送前换用；不重放请求</small></div>`;
+  const backups = selectableModelNames().filter(name => !name.startsWith("pool/"));
+  const backup = `<div class="ctl"><small>备用模型</small><select data-fallback-select="${esc(id)}"><option value="">不设置备用</option>${savedModelOption(prefs.fallbackModel, backups)}${backups.map(name=>{const slash=name.indexOf("/"),p=providerById(name.slice(0,slash));return `<option value="${esc(name)}" ${prefs.fallbackModel===name?"selected":""}>${esc(p?.name ?? name.slice(0,slash))} / ${esc(name.slice(slash+1))}</option>`;}).join("")}</select><small>仅来源明确不可用或额度耗尽时，在发送前换用；不重放请求</small></div>`;
   return backup + effort + (modelKey && state.modelEffortNotes?.[modelKey] ? `<small class="hint">${esc(state.modelEffortNotes[modelKey])}</small>` : "") + (can0.tiers ?? []).map(tierCtl).join("");
 }
 
@@ -298,8 +328,8 @@ function agentRow(harness) {
   const provider = binding && providerById(binding.providerId);
   const binary = harness === "codex" ? state.codexPath : state.claudePath;
   const sessions = sessionsOf(harness).length;
-  const face = binding && provider
-    ? `${icon(provider.icon)}<span class="label" title="${esc(provider.name)}">${esc(binding.model)}</span>`
+  const face = binding
+    ? `${provider ? icon(provider.icon) : ""}<span class="label" title="${esc(provider?.name ?? binding.providerId)}">${esc(binding.model)}</span>`
     : `<span class="ic sm"></span><span class="label" title="不经过 EasySwitch">原生</span>`;
   const sub = !binary
     ? `没有找到 ${meta.name} 的命令`
@@ -313,7 +343,7 @@ function agentRow(harness) {
           <div class="sub">${sub}</div>
         </div>
       </div>
-      <div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button></div>
+      <div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button>${savedModelNotice(binding && `${binding.providerId}/${binding.model}`)}</div>
       ${agentControls(harness)}
       <div class="acts"><button class="btn launch" data-launch="${harness}" title="在 EasySwitch 上启动一个增强会话（只在那个终端窗口里生效）" ${(binding || (harness === "claude" && state.claudeLogin)) && binary ? "" : "disabled"}>启动</button></div>
     </div>${agentEditor(harness)}`;
@@ -351,20 +381,21 @@ function chatgptCard() {
 /** Desktop launches have their own lifecycle and must never use the CLI Terminal button. */
 function claudeDesktopCard() {
   const c = claudeDesktopInfo;
-  const models = [
-    ...(state?.providers ?? []).flatMap(p => modelsOf(p).map(m => ({ id: `${p.id}/${m}`, name: `${p.name} · ${m}` }))),
-    ...(state?.pools ?? []).filter(p => p.live?.length).map(p => ({ id: `pool/${p.id}`, name: `模型池 · ${p.name}` })),
-  ];
-  if (!models.some(m => m.id === claudeDesktopModel)) {
+  const names = selectableModelNames();
+  const models = names.map(id => {
+    const slash = id.indexOf("/"), source = id.slice(0, slash), model = id.slice(slash + 1);
+    return { id, name: source === "pool" ? `模型池 · ${state.pools?.find(p => p.id === model)?.name ?? model}` : `${providerById(source)?.name ?? source} · ${model}` };
+  });
+  if (!claudeDesktopModel) {
     const b = state?.bindings?.["claude-desktop"];
     const saved = b ? `${b.providerId}/${b.model}` : "";
-    claudeDesktopModel = models.find(m => m.id === saved)?.id ?? models[0]?.id ?? "";
+    claudeDesktopModel = saved || models[0]?.id || "";
     claudeDesktopConfirm = false;
   }
   const sessions = c?.sessions ?? [];
   const live = sessions.filter(s => !s.cleaned);
   const labels = { prepared: "等待启动", starting: "正在启动", running: "进程运行中", exited: "已退出", failed: "启动或运行失败", stopped: "已停止", "cleanup-blocked": "退出或清理待处理" };
-  const disabled = c?.launchBlocked !== false || !c?.installed || !models.length || claudeDesktopBusy || live.length >= 3;
+  const disabled = c?.launchBlocked !== false || !c?.installed || !names.includes(claudeDesktopModel) || claudeDesktopBusy || live.length >= 3;
   const agent = agentList?.find(a => a.id === "claude-desktop");
   return `<div class="section-head"><h2>Claude 桌面端独立窗口</h2><span class="chip warn">${c?.launchBlocked !== false ? "真实启动已暂停" : "实验性 · 仅模拟测试"}</span></div>
     <div class="card" data-claude-desktop-card>
@@ -373,7 +404,7 @@ function claudeDesktopCard() {
         <div class="sub">隔离启动与停止清理已通过模拟测试；官方签名版 2.19675.1 忽略数据目录覆盖变量，真实目录隔离、模型菜单和消息链路尚未实测</div>${agent ? capStrip(agent) : ""}
       </div></div><span class="chip">${c ? c.installed ? "已检测到应用" : "未检测到应用" : "状态读取中"}</span></div>
       <div class="controls"><label>默认模型 <select data-claude-desktop-model aria-label="Claude 桌面端默认模型" ${claudeDesktopBusy ? "disabled" : ""}>
-        ${models.length ? models.map(m => `<option value="${esc(m.id)}" ${m.id === claudeDesktopModel ? "selected" : ""}>${esc(m.name)}</option>`).join("") : `<option value="">先添加模型来源</option>`}
+        ${savedModelOption(claudeDesktopModel, names)}${models.length ? models.map(m => `<option value="${esc(m.id)}" ${m.id === claudeDesktopModel ? "selected" : ""}>${esc(m.name)}</option>`).join("") : !claudeDesktopModel ? `<option value="">先添加模型来源</option>` : ""}
       </select></label><button class="btn" data-claude-desktop-ask ${disabled ? "disabled" : ""}>${claudeDesktopBusy ? "正在处理…" : "打开独立窗口"}</button></div>
       <p class="hint" style="padding:0 18px">${live.length >= 3 ? "已有三个独立会话，请先停止一个。" : "这里只管理 EasySwitch 创建的独立进程；正常 Claude 窗口不需要退出。启动不等于已验证配置生效。"}</p>
       ${c?.launchBlocked !== false ? `<p class="hint" role="status" style="padding:0 18px">${esc(c?.note ?? "读取安全状态前不能启动")}</p>` : ""}
@@ -431,15 +462,15 @@ function genericAgentRow(a) {
   const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
   const binding = state.bindings?.[a.id];
   const provider = binding && providerById(binding.providerId);
-  const face = binding && provider
-    ? `${icon(provider.icon)}<span class="label" title="${esc(provider.name)}">${esc(binding.model)}</span>`
+  const face = binding
+    ? `${provider ? icon(provider.icon) : ""}<span class="label" title="${esc(provider?.name ?? binding.providerId)}">${esc(binding.model)}</span>`
     : `<span class="label">选个模型</span>`;
   return `
   <div class="row agent">
     <div class="id">${icon(a.icon, "lg")}
       <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div>${capStrip(a)}</div>
     </div>
-    ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button></div>` : ""}
+    ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>${savedModelNotice(binding && `${binding.providerId}/${binding.model}`)}</div>` : ""}
     ${can ? agentControls(a.id) : ""}
     <div class="acts">
       ${a.guide ? `<button class="btn" data-guide="${esc(a.id)}">配置向导</button>` : ""}
@@ -475,7 +506,7 @@ const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], fail
 
 function renderTasks() {
   const agents = (agentList ?? []).filter(a => a.installed && a.can?.headless && (!a.where?.endsWith(".app") || ["codex", "claude"].includes(a.id)));
-  const models = (state.providers ?? []).flatMap(p => modelsOf(p).map(m => `${p.id}/${m}`));
+  const models = selectableModelNames();
   const allTasks = taskList?.tasks ?? [];
   const list = typeof taskProgressCard === "function" ? allTasks.filter(t=>t.status!=="running"&&!t.cleanupPending&&!t.cleanupFailed) : allTasks;
   const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
@@ -500,7 +531,7 @@ function renderTasks() {
       ${!auto && levels.length ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><span class="hint">想得多深</span>
         ${["", ...levels].map(l => `<button type="button" class="btn ${l === effort ? "" : "secondary"}" data-task-effort="${esc(l)}" title="${l ? `${esc(chosen?.name ?? "")} 的「${esc(l)}」档` : "不指定，用它自己的默认"}">${EFFORT_LABEL[l] ?? l}</button>`).join("")}</div>` : ""}
       <details data-keep="task-more" ${keepOpen("task-more")} style="margin-top:10px"><summary class="hint" style="cursor:pointer">更多选项（模型、工作目录）</summary>
-        <div class="field"><label>用哪个模型</label><select name="model"><option value="">${auto ? "按规则（没写就用它自己的）" : state.bindings?.[chosen.id] ? "它自己的模型" : "自动选一个"}</option>${models.map(m => `<option value="${esc(m)}" ${m === taskForm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
+        <div class="field"><label>用哪个模型</label><select name="model"><option value="">${auto ? "按规则（没写就用它自己的）" : state.bindings?.[chosen.id] ? "它自己的模型" : "自动选一个"}</option>${savedModelOption(taskForm.model, models)}${models.map(m => `<option value="${esc(m)}" ${m === taskForm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
         <div class="field"><label>在哪个文件夹里干活（绝对路径；不填是一个空的临时文件夹）</label><input type="text" name="cwd" value="${esc(taskForm.cwd)}" placeholder="/Users/你/项目"></div>
       </details>
       ${taskNote ? `<p class="hint" style="color:var(--bad)">${esc(taskNote)}</p>` : ""}
@@ -559,7 +590,7 @@ function rulesCard(agents, models) {
         <span class="hint">就交给</span>
         <select name="agent">${agents.map(a => `<option value="${esc(a.id)}" ${a.id === f.agent ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
         <span class="hint">用</span>
-        <select name="model"><option value="">它自己的模型</option>${models.map(m => `<option value="${esc(m)}" ${m === f.model ? "selected" : ""}>${esc(m)}</option>`).join("")}${(state.pools ?? []).map(p => `<option value="pool/${esc(p.id)}" ${f.model === `pool/${p.id}` ? "selected" : ""}>pool/${esc(p.id)}（模型池）</option>`).join("")}</select>
+        <select name="model"><option value="">它自己的模型</option>${savedModelOption(f.model, models)}${models.map(m => `<option value="${esc(m)}" ${m === f.model ? "selected" : ""}>${esc(m)}${m.startsWith("pool/") ? "（模型池）" : ""}</option>`).join("")}</select>
         <span class="hint">想得</span>
         <select name="effort"><option value="">默认</option>${["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(l => `<option value="${l}" ${f.effort === l ? "selected" : ""}>${EFFORT_LABEL[l]}（${l}）</option>`).join("")}</select>
       </div>
@@ -734,12 +765,14 @@ function openPicker(anchor, target) {
   closePopover();
   const [harness, tier] = target.split("@");
   const main = state.bindings?.[harness];
-  const tierName = tier ? main?.tiers?.[tier] : undefined;
+  const tierName = tier ? state.prefs?.[harness]?.tiers?.[tier] : undefined;
   const binding = tier ? (tierName ? { providerId: tierName.slice(0, tierName.indexOf("/")), model: tierName.slice(tierName.indexOf("/") + 1) } : undefined) : main;
+  const savedName = binding ? `${binding.providerId}/${binding.model}` : "";
   const el = document.createElement("div");
   el.className = "popover";
   el.innerHTML = `
     <div class="search"><span>🔍</span><input placeholder="搜索模型或来源…" autocomplete="off"></div>
+    ${modelSelectionReason(savedName) ? `<div class="hint" role="status">已保留 ${esc(savedName)}：${esc(modelSelectionReason(savedName))}。可重新选择或保留原设置。</div>` : ""}
     <div class="body"><div class="rail"></div><div class="list"></div></div>`;
   document.body.append(el);
   popover = el;
@@ -752,18 +785,21 @@ function openPicker(anchor, target) {
 
   const options = () => {
     const q = filter.trim().toLowerCase();
+    const allowed = new Set(selectableModelNames());
     const out = [];
     if (!only && (!q || "原生 native".includes(q))) out.push({ native: true });
     for (const p of state.providers) {
       if (only && p.id !== only) continue;
       const route = harness === "codex" ? p.route : harness === "claude" ? p.messagesRoute ?? "chat-translate" : "chat-translate";
       for (const m of modelsOf(p)) {
+        if (!allowed.has(`${p.id}/${m}`)) continue;
         if (q && !m.toLowerCase().includes(q) && !p.name.toLowerCase().includes(q)) continue;
         out.push({ provider: p, model: m, route });
       }
     }
     // Pools are models too: they sit at the end of the list.
     if (!only) for (const pool of state.pools ?? []) {
+      if (!allowed.has(`pool/${pool.id}`)) continue;
       if (q && !pool.name.toLowerCase().includes(q) && !"模型池 pool".includes(q)) continue;
       out.push({ provider: POOL_PROVIDER, model: pool.id, route: "pool" });
     }
@@ -791,6 +827,10 @@ function openPicker(anchor, target) {
   };
 
   const choose = async o => {
+    if (!o) return;
+    if (!o.native && !selectableModelNames().includes(`${o.provider.id}/${o.model}`)) {
+      toast("模型状态已改变，请重新选择；原设置已保留"); closePopover(); await refresh(true); return;
+    }
     closePopover();
     try {
       if (tier) {
@@ -1395,7 +1435,7 @@ function syncTaskForm() {
   taskForm.cwd = f.elements.cwd?.value ?? "";
 }
 document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
-for(const name of ["input","change"])document.addEventListener(name,e=>{const form=e.target.closest?.("form[data-rule-form]");if(!form||!ruleForm||ruleForm.saving)return;const f=new FormData(form);for(const key of ["name","words","minChars","maxChars","cwdPrefix","agent","model","effort"])ruleForm[key]=String(f.get(key)??"");});
+for(const name of ["input","change"])document.addEventListener(name,e=>{const form=e.target.closest?.("form[data-rule-form]");if(!form||!ruleForm||ruleForm.saving)return;const f=new FormData(form);for(const key of ["name","words","minChars","maxChars","cwdPrefix","agent","model","effort"])ruleForm[key]=String(key==="model" ? form.elements?.model?.value ?? f.get(key) ?? ruleForm.model ?? "" : f.get(key)??"");});
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
   if(fallback){fallback.disabled=true;try{await call("PUT",`/api/bindings/${encodeURIComponent(fallback.dataset.fallbackSelect)}/fallback`,{model:fallback.value});toast(fallback.value?"已保存备用模型":"已取消备用模型");}catch(error){showError(error);}finally{fallback.disabled=false;await refresh(true);}return;}
@@ -1556,14 +1596,14 @@ document.addEventListener("click", async e => {
   }
 
   if (t.closest("[data-claude-desktop-ask]")) {
-    if (claudeDesktopBusy || claudeDesktopInfo?.launchBlocked !== false || !claudeDesktopInfo?.installed || !claudeDesktopModel) return;
+    if (claudeDesktopBusy || claudeDesktopInfo?.launchBlocked !== false || !claudeDesktopInfo?.installed || !selectableModelNames().includes(claudeDesktopModel)) return;
     claudeDesktopConfirm = true; claudeDesktopError = ""; render(); return;
   }
   if (t.closest("[data-claude-desktop-cancel]")) { claudeDesktopConfirm = false; render(); return; }
   const desktopStart = t.closest("[data-claude-desktop-start]");
   const desktopStop = t.closest("[data-claude-desktop-stop]");
   if (desktopStart || desktopStop) {
-    if (claudeDesktopBusy || (desktopStart && (!claudeDesktopConfirm || claudeDesktopInfo?.launchBlocked !== false))) return;
+    if (claudeDesktopBusy || (desktopStart && (!claudeDesktopConfirm || claudeDesktopInfo?.launchBlocked !== false || !selectableModelNames().includes(claudeDesktopModel)))) return;
     claudeDesktopBusy = true; claudeDesktopConfirm = false; claudeDesktopError = ""; render();
     try {
       if (desktopStop) {
@@ -2019,12 +2059,17 @@ document.addEventListener("submit", async e => {
   if (ruleFormEl) {
     e.preventDefault();
     if(ruleForm?.saving)return;
+    const selectedModel = ruleFormEl.elements?.model?.value ?? String(new FormData(ruleFormEl).get("model") ?? ruleForm?.model ?? "");
+    if (selectedModel && !selectableModelNames().includes(selectedModel)) {
+      if (ruleForm) { ruleForm.model = selectedModel; ruleForm.error = `请重新选择模型：${modelSelectionReason(selectedModel)}`; }
+      render(); return;
+    }
     const previous={...ruleForm};if(ruleForm)ruleForm.saving=true;
     const f = new FormData(ruleFormEl);
     const body = {
       name: f.get("name"), enabled: previous.enabled ?? true,
       when: { ...previous.originalWhen, anyWords: f.get("words"), minChars: f.get("minChars"), maxChars: f.get("maxChars"), cwdPrefix: f.get("cwdPrefix") },
-      then: { agent: f.get("agent"), model: f.get("model"), effort: f.get("effort") },
+      then: { agent: f.get("agent"), model: selectedModel, effort: f.get("effort") },
     };
     try {
       await call(previous.id ? "PUT" : "POST", previous.id ? `/api/rules/${encodeURIComponent(previous.id)}` : "/api/rules", body);
@@ -2055,10 +2100,16 @@ document.addEventListener("submit", async e => {
   if (runForm) {
     e.preventDefault();
     const f = new FormData(runForm);
+    const selectedModel = runForm.elements?.model?.value ?? String(f.get("model") ?? taskForm.model ?? "");
+    if (selectedModel && !selectableModelNames().includes(selectedModel)) {
+      taskForm.model = selectedModel;
+      taskNote = `没有派出去，请重新选择模型：${modelSelectionReason(selectedModel)}`;
+      render(); return;
+    }
     taskNote = "";
     try {
       const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || ((state.rules ?? []).length ? AUTO : runForm.querySelector('[data-task-agent]:not([data-task-agent="auto"])')?.dataset.taskAgent);
-      const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(f.get("model") ? { model: f.get("model") } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
+      const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(selectedModel ? { model: selectedModel } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
       const r = await call("POST", "/api/tasks", body);
       taskOpenIds.add(r.task.id);
       taskForm.task = "";

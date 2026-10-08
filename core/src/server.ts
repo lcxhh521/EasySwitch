@@ -815,6 +815,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudePath: (await findClaude()) ?? null,
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
+        selectableModels: store.catalog().map(m => `${m.providerId}/${m.model}`),
         rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })),
         pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
         poolSuggestions: poolSuggestions(),
@@ -1875,6 +1876,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 400, { error: "需要选择模型来源和模型" });
         return;
       }
+      // Recheck the source at save time: a picker may have opened before it was
+      // switched off or its budget stopped. Keep explicit upstream model IDs
+      // compatible; only pools require a member in the selectable catalog.
+      const source = provider.id === "pool" ? undefined : store.provider(provider.id);
+      const issue = provider.id === "pool"
+        ? store.catalog().some(m => m.providerId === "pool" && m.model === model) ? null : { code: "model_not_found", error: "模型池没有可选择的成员" }
+        : source?.off ? { code: "provider_disabled", error: "所选来源已关闭" }
+        : source && store.providerBudgetStopped(source) ? { code: "provider_budget_exceeded", error: "所选来源被预算阻断，请检查来源预算和记账状态" }
+        : source?.cliTextBridge?.kind === "droid" ? { code: "capability_unavailable", error: "此文字桥暂未支持使用" }
+        : null;
+      if (issue) { json(res, 409, issue); return; }
       store.setBinding({ harness, providerId: provider.id, model });
       json(res, 200, store.binding(harness));
       return;

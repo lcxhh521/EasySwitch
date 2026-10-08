@@ -30,7 +30,7 @@ test('advice shows sample and price evidence as escaped text with uncertainty ca
  const html=app.run('ruleSuggestionsCard()');assert.match(html,/5次评价/);assert.match(html,/观察样本，不证明质量相同/);assert.match(html,/&lt;img/);assert.doesNotMatch(html,/<img|<script>/);assert.match(html,/生成这条规则/);
 });
 test('generated rules remain editable without dropping hidden filters or re-enabling disabled rules',async()=>{
- const app=ui();app.run("state.rules=[{id:'r-abc',name:'Original',enabled:false,when:{anyWords:['class'],from:'console',regex:'safe'},then:{agent:'hermes',model:'p/a'}}]");await app.dispatch('click',app.button('[data-rule-edit]',{ruleEdit:'r-abc'}));assert.equal(app.run('ruleForm.id'),'r-abc');
+ const app=ui();app.run("state.selectableModels=['p/a','p/b'];state.rules=[{id:'r-abc',name:'Original',enabled:false,when:{anyWords:['class'],from:'console',regex:'safe'},then:{agent:'hermes',model:'p/a'}}]");await app.dispatch('click',app.button('[data-rule-edit]',{ruleEdit:'r-abc'}));assert.equal(app.run('ruleForm.id'),'r-abc');
  const form:any={values:{name:'Edited',words:'class',minChars:'',maxChars:'',cwdPrefix:'',agent:'aider',model:'p/b',effort:''},matches:()=>false,closest:(s:string)=>s==='form[data-rule-form]'?form:null};await app.dispatch('submit',form);
  assert.equal(app.run('requests[0].m'),'PUT');assert.equal(app.run('requests[0].p'),'/api/rules/r-abc');assert.equal(app.run('requests[0].b.enabled'),false);assert.equal(app.run('requests[0].b.when.from'),'console');assert.equal(app.run('requests[0].b.when.regex'),'safe');assert.equal(app.run('requests[0].b.then.model'),'p/b');
 });
