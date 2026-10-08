@@ -41,6 +41,24 @@ const choices: EditorialChoice[] = [
   { id: "stepfun", name: "阶跃星辰", category: "国内官方", icon: "stepfun-color", selectDocumentedModel: true, exposeGuidance: false },
   { id: "siliconflow", name: "硅基流动", category: "国内官方", icon: "siliconcloud-color" },
   { id: "xiaomi", name: "小米 MiMo 官方 API", category: "国内官方", icon: "xiaomi-color", selectDocumentedModel: true, useDocumentedAuthOverride: true },
+  // Optional public fields are explicit choices; collecting evidence alone
+  // must not introduce guidance, key links or alternate protocol surfaces.
+  { id: "groq", name: "Groq", category: "推理平台", icon: "groq-color", exposeGuidance: true, exposeKeyGuide: true },
+  { id: "cerebras", name: "Cerebras", category: "推理平台", icon: "cerebras", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "together", name: "Together", category: "推理平台", icon: "together", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "fireworks", name: "Fireworks", category: "推理平台", icon: "fireworks-color", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "deepinfra", name: "DeepInfra", category: "推理平台", icon: "deepinfra", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "sambanova", name: "SambaNova", category: "推理平台", icon: "sambanova", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "nebius", name: "Nebius Token Factory", category: "推理平台", icon: "nebius", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "nvidia", name: "NVIDIA NIM", category: "推理平台", icon: "nvidia-color", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "baseten", name: "Baseten", category: "推理平台", icon: "baseten", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "scaleway", name: "Scaleway", category: "推理平台", icon: "scaleway", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "digitalocean", name: "DigitalOcean", category: "推理平台", icon: "digitalocean", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "vultr", name: "Vultr", category: "推理平台", icon: "vultr", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "nscale", name: "Nscale", category: "推理平台", icon: "letter:N", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "venice", name: "Venice", category: "推理平台", icon: "venice", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "neuralwatt", name: "Neuralwatt", category: "推理平台", icon: "neuralwatt", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "synthetic", name: "Synthetic", category: "推理平台", icon: "synthetic", exposeGuidance: false, exposeKeyGuide: false },
 ];
 
 export interface PresetFieldOrigin {

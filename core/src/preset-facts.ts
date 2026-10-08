@@ -1,11 +1,13 @@
 /**
  * Independently collected official documentation facts, checked 2026-10-08.
- * This is a bounded nineteen-provider input, not a verification of the legacy table.
+ * This is a bounded 35-provider input, not a verification of the legacy table.
  * Documentation establishes endpoint/model syntax, never account entitlement,
  * a successful live request, or a complete negotiated protocol capability set.
  * No third-party registry or implementation is copied; only public protocol
  * facts are recorded, including official SDK URL joining where noted.
  */
+import { INFERENCE_PRESET_FACTS, type InferencePresetId } from "./preset-facts-inference.ts";
+
 export interface PresetFact<T> {
   value: T;
   checkedAt: string;
@@ -76,9 +78,10 @@ function guide(id: keyof typeof sources): PresetFact<string> {
 }
 
 export type IndependentPresetId = "openai" | "anthropic" | "gemini" | "azure-openai" | "openrouter" | "cloudflare-workers-ai" | "ollama" | "lmstudio" | "vllm" | "litellm"
-  | "deepseek" | "kimi" | "zhipu" | "qwen" | "volcengine" | "qianfan" | "stepfun" | "siliconflow" | "xiaomi";
+  | "deepseek" | "kimi" | "zhipu" | "qwen" | "volcengine" | "qianfan" | "stepfun" | "siliconflow" | "xiaomi" | InferencePresetId;
 
 export const OFFICIAL_PRESET_FACTS: Record<IndependentPresetId, PresetFacts> = {
+  ...INFERENCE_PRESET_FACTS,
   openai: {
     baseUrl: fact("https://api.openai.com/v1", ["openai"], "API base; documented models, Chat Completions and Responses paths. No capability flags are inferred."),
     modelId: fact("gpt-5.5", ["openaiModel"], "Documented model alias; account access is not established."),

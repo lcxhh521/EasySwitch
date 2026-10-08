@@ -8,14 +8,23 @@ import { test } from "node:test";
 import { PRESETS, PRESET_CATEGORIES, PRESET_PROVENANCE, letterIcon, iconForBaseUrl } from "../src/presets.ts";
 import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "../src/presets-official.ts";
 import { OFFICIAL_PRESET_FACTS, type IndependentPresetId } from "../src/preset-facts.ts";
+import { INFERENCE_PRESET_FACTS, INFERENCE_RESEARCH_ONLY, type InferencePresetId } from "../src/preset-facts-inference.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { prepareOutbound } from "../src/outbound.ts";
 import type { Provider, ProviderPreset } from "../src/types.ts";
 import { endpointUrl, expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "../src/upstream.ts";
 
+const inferenceIds = ["groq", "cerebras", "together", "fireworks", "deepinfra", "sambanova", "nebius", "nvidia", "baseten", "scaleway", "digitalocean", "vultr", "nscale", "venice", "neuralwatt", "synthetic"] as const;
+const inferenceDomains: Record<InferencePresetId, string[]> = {
+  groq: ["console.groq.com"], cerebras: ["inference-docs.cerebras.ai"], together: ["docs.together.ai", "www.together.ai"],
+  fireworks: ["docs.fireworks.ai"], deepinfra: ["docs.deepinfra.com"], sambanova: ["docs.sambanova.ai"],
+  nebius: ["docs.tokenfactory.nebius.com"], nvidia: ["docs.api.nvidia.com", "docs.nvidia.com"], baseten: ["docs.baseten.co"],
+  scaleway: ["www.scaleway.com"], digitalocean: ["docs.digitalocean.com"], vultr: ["docs.vultr.com"],
+  nscale: ["docs.nscale.com"], venice: ["docs.venice.ai"], neuralwatt: ["docs.neuralwatt.com", "portal.neuralwatt.com"], synthetic: ["dev.synthetic.new"],
+};
 const domesticIds = ["deepseek", "kimi", "zhipu", "qwen", "volcengine", "qianfan", "stepfun", "siliconflow", "xiaomi"] as const;
-const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds] as const;
+const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds, ...inferenceIds] as const;
 const reconstructed = new Set<string>(independentIds);
 const preset = (id: string): ProviderPreset => { const p = PRESETS.find(p => p.id === id); assert.ok(p, id); return p; };
 // Deliberate, documented exceptions to the old operational contract. The SDK
@@ -36,7 +45,7 @@ function canonical(value: unknown): unknown {
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
-test("preset reconstruction is exactly nineteen disjoint entries, with 48 explicitly attributed legacy rows", () => {
+test("preset reconstruction is exactly 35 disjoint entries, with 32 explicitly attributed legacy rows", () => {
   assert.equal(PRESETS.length, 67);
   assert.equal(new Set(PRESETS.map(p => p.id)).size, 67);
   assert.deepEqual(INDEPENDENT_PRESETS.map(p => p.id), independentIds);
@@ -51,12 +60,12 @@ test("preset reconstruction is exactly nineteen disjoint entries, with 48 explic
       assert.match(origin.scope, /Not independently reconstructed or verified/);
     }
   }
-  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 48);
+  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 32);
 });
 
-test("all 67 rows retain the baseline contract except five documented Messages bases and DeepSeek's canonical Chat root", () => {
+test("all 67 rows retain the baseline contract except explicit documented endpoint corrections", () => {
   // Preserve the original operational hash: normalize only the five explicitly
-  // checked Messages fixes and DeepSeek's canonical root to their old values.
+  // checked Messages fixes and DeepSeek/Together canonical bases to old values.
   const originalOperations = PRESETS.map(({ note, keyUrl, ...p }) => {
     const correction = messagesCorrections[p.id];
     if (correction) {
@@ -69,12 +78,16 @@ test("all 67 rows retain the baseline contract except five documented Messages b
       assert.equal(p.baseUrl, "https://api.deepseek.com");
       p.baseUrl = "https://api.deepseek.com/v1";
     }
+    if (p.id === "together") {
+      assert.equal(p.baseUrl, "https://api.together.ai/v1");
+      p.baseUrl = "https://api.together.xyz/v1";
+    }
     return p;
   });
   assert.equal(digest(originalOperations), "f09d4033eb89b4f8905563a8e4e92e9c62fd09246ad8538d74cf6ef259493d4b");
   assert.equal(digest(PRESETS.map(p => ({ id: p.id, fields: Object.keys(p).sort() }))), "ba74f5e07c68d0008451810cc3420d8712891236b5b9df64af7eb6f95e45e60e");
-  // Independently captured from the unchanged 48-row subset before this batch.
-  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "12bd16ba25ad6452c4055d193ac839bea3ed94cc13e8029b9d1e02814e5c4721");
+  // Independently captured from the unchanged 32-row subset before this batch.
+  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "6b45ea0dd67a14f87b3b8b242a86f5b1b59cdcef0a61bea9fe7de39db69c2fb1");
   assert.deepEqual(PRESET_CATEGORIES, ["编程套餐", "国内官方", "国际官方", "中转与聚合", "推理平台", "本地", "自定义"]);
   assert.deepEqual(PRESETS.filter(p => p.category === "编程套餐").map(p => p.id), ["zhipu-coding", "zai", "kimi-coding", "minimax-coding-cn", "minimax-coding", "volcengine-coding", "tencent-coding", "alibaba-token-plan", "mimo-token-plan", "opencode-go"]);
 });
@@ -106,6 +119,7 @@ test("each reconstructed output field distinguishes official facts from EasySwit
 
 test("every fact has dated field-level official evidence and a bounded verification scope", () => {
   const domains: Record<IndependentPresetId, string[]> = {
+    ...inferenceDomains,
     openai: ["developers.openai.com"], anthropic: ["platform.claude.com"], gemini: ["ai.google.dev"],
     "azure-openai": ["learn.microsoft.com"], openrouter: ["openrouter.ai"], "cloudflare-workers-ai": ["developers.cloudflare.com"],
     ollama: ["docs.ollama.com"], lmstudio: ["lmstudio.ai"], vllm: ["docs.vllm.ai"], litellm: ["docs.litellm.ai"],
@@ -214,7 +228,7 @@ test("Messages production adapter sends the five corrected preset URLs to an in-
 });
 
 test("documentation facts do not expand protocol, authentication, model or subscription behavior", () => {
-  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"]]);
+  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"], ["cerebras", "gpt-oss-120b"], ["vultr", "kimi-k2-instruct"], ["neuralwatt", "glm-5.3"]]);
   for (const id of unexposedGuidanceIds) {
     assert.ok(OFFICIAL_PRESET_FACTS[id].guidance.value);
     assert.equal(Object.hasOwn(preset(id), "note"), false, id);
@@ -248,6 +262,75 @@ test("local host selection and LM Studio configurable authentication remain expl
   assert.equal(iconForBaseUrl("http://127.0.0.1:11434/v1"), "ollama-color");
   assert.equal(iconForBaseUrl("http://127.0.0.1:1234/v1"), "newapi-color");
   assert.equal(letterIcon("  example"), "letter:E");
+});
+
+test("inference reconstruction retains optional-field absence, exact defaults, icons and ordinary routing", () => {
+  assert.deepEqual(Object.keys(INFERENCE_PRESET_FACTS), [...inferenceIds]);
+  assert.deepEqual(inferenceIds.filter(id => preset(id).defaultModel).map(id => [id, preset(id).defaultModel]), [
+    ["cerebras", "gpt-oss-120b"], ["vultr", "kimi-k2-instruct"], ["neuralwatt", "glm-5.3"],
+  ]);
+  for (const id of inferenceIds) {
+    const p = preset(id), facts = INFERENCE_PRESET_FACTS[id], fields = INDEPENDENT_PRESET_PROVENANCE[id].fields;
+    assert.equal(p.category, "推理平台", id);
+    assert.equal(p.baseUrl, facts.baseUrl.value, id);
+    assert.equal(endpointUrl({ baseUrl: p.baseUrl, wire: p.wire }, "chat"), `${facts.baseUrl.value}/chat/completions`, id);
+    assert.deepEqual(upstreamHeaders(p, "fixture-inference-key"), { authorization: "Bearer fixture-inference-key" }, id);
+    for (const field of ["anthropicBaseUrl", "wire", "protocols", "urlParams", "models", "vertexMode"] as const) {
+      assert.equal(Object.hasOwn(p, field), false, `${id}.${field}`);
+      assert.equal(Object.hasOwn(fields, field), false, `${id}.${field} origin`);
+    }
+    // Research can establish guides and useful guidance without adding them to
+    // the existing console contract. Absence differs from an undefined value.
+    assert.ok(facts.keyGuide?.value && facts.guidance.value, id);
+    assert.equal(Object.hasOwn(p, "keyUrl"), id === "groq", id);
+    assert.equal(Object.hasOwn(p, "note"), id === "groq", id);
+    assert.equal(Object.hasOwn(fields, "keyUrl"), id === "groq", id);
+    assert.equal(Object.hasOwn(fields, "note"), id === "groq", id);
+    assert.deepEqual(facts.placeholders?.value, [], id);
+  }
+  assert.equal(preset("nscale").icon, letterIcon("Nscale"));
+  assert.match(preset("groq").note!, /API Key/);
+  const origins: Record<string, { status: string }> = PRESET_PROVENANCE;
+  for (const id of ["hyperbolic", "ollama-cloud"]) {
+    assert.equal(Object.hasOwn(INFERENCE_PRESET_FACTS, id), false, id);
+    assert.equal(origins[id]!.status, "legacy-attributed", id);
+  }
+});
+
+test("inference research-only alternate surfaces stay outside emitted presets and field origins", () => {
+  assert.deepEqual(Object.keys(INFERENCE_RESEARCH_ONLY), ["together", "fireworks", "deepinfra", "baseten", "scaleway", "digitalocean", "neuralwatt", "synthetic"]);
+  for (const [id, research] of Object.entries(INFERENCE_RESEARCH_ONLY)) {
+    const domains = inferenceDomains[id as InferencePresetId];
+    for (const fact of research.alternates) {
+      assert.equal(fact.checkedAt, "2026-10-08", id);
+      assert.ok(fact.scope.length > 10 && fact.sources.length > 0, id);
+      for (const source of fact.sources) {
+        const url = new URL(source.url);
+        assert.equal(url.protocol, "https:");
+        assert.equal(url.username + url.password, "");
+        assert.ok(domains.includes(url.hostname), `${id}: ${url.hostname}`);
+        assert.ok(source.title.length > 0);
+      }
+    }
+    assert.equal(Object.hasOwn(preset(id), "alternates"), false);
+    assert.equal(Object.hasOwn(preset(id), "caveats"), false);
+  }
+  const implementation = readFileSync(new URL("../src/presets-official.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(implementation, /INFERENCE_RESEARCH_ONLY/);
+  assert.match(INFERENCE_RESEARCH_ONLY.synthetic!.caveats.join(" "), /hf:.*syn:/);
+});
+
+test("Together uses the documented canonical host for new presets with only an exact historical icon fallback", () => {
+  assert.equal(preset("together").baseUrl, "https://api.together.ai/v1");
+  assert.equal(endpointUrl({ baseUrl: preset("together").baseUrl }, "chat"), "https://api.together.ai/v1/chat/completions");
+  const oldBase = "https://api.together.xyz/v1";
+  assert.equal(INFERENCE_RESEARCH_ONLY.together!.alternates[0]!.value.baseUrl, oldBase);
+  assert.match(INFERENCE_RESEARCH_ONLY.together!.alternates[0]!.scope, /does not prove .xyz is broken/);
+  assert.equal(endpointUrl({ baseUrl: oldBase }, "chat"), `${oldBase}/chat/completions`);
+  for (const base of [oldBase, "https://api.together.ai/v1"]) assert.equal(iconForBaseUrl(base), "together");
+  for (const host of ["api.together.xyz.example.invalid", "api.together.ai.example.invalid", "not-api.together.xyz", "api-together.xyz"]) {
+    assert.equal(iconForBaseUrl(`https://${host}/v1`, "Fixture"), "letter:F", host);
+  }
 });
 
 const listen = async (server: Server) => {
@@ -298,6 +381,11 @@ test("serving revised presets never migrates saved providers or user-defined Mes
     wire: { paths: { messages: "v7/messages" } }, route: "chat-translate", routePinned: true,
     streamUsage: false, createdAt: "2026-10-01T00:00:00.000Z",
   });
+  saved.push({
+    id: "saved-together", name: "Saved Together historical host", baseUrl: "https://api.together.xyz/v1",
+    models: ["saved-model"], route: "chat-translate", routePinned: true,
+    streamUsage: false, createdAt: "2026-10-01T00:00:00.000Z",
+  });
   for (const provider of saved) store.upsertProvider(provider);
   const before = readFileSync(join(root, "state.json"), "utf8");
   const api = createEasySwitchServer({ store, port: 0, secrets: { get: async () => undefined, set: async () => {}, delete: async () => {} } });
@@ -310,6 +398,7 @@ test("serving revised presets never migrates saved providers or user-defined Mes
   assert.equal(readFileSync(join(root, "state.json"), "utf8"), before);
   const reloaded = new Store(root);
   assert.deepEqual(reloaded.providers(), saved);
+  assert.equal(endpointUrl(reloaded.provider("saved-together")!, "chat"), "https://api.together.xyz/v1/chat/completions");
   assert.equal(endpointUrl(reloaded.provider("saved-deepseek")!, "chat"), "https://api.deepseek.com/v1/chat/completions");
   for (const [id, base] of previousMessagesBases) assert.equal(endpointUrl(reloaded.provider(`saved-${id}`)!, "messages"), `${base}/messages`);
   assert.equal(endpointUrl(reloaded.provider("saved-custom")!, "messages"), "https://fixture.example.invalid/private/anthropic/v7/messages");

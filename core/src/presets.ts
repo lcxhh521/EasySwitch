@@ -3,8 +3,8 @@ import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "./presets-of
 
 /**
  * One-click starting points, preserving EasySwitch's public picker contract.
- * Nineteen entries are freshly reconstructed from official facts in preset-facts.ts
- * and presets-official.ts. The remaining 48 below are explicitly legacy:
+ * 35 entries are freshly reconstructed from official facts in preset-facts.ts
+ * and presets-official.ts. The remaining 32 below are explicitly legacy:
  * Historical repository attribution: adapted from opencodex (MIT),
  * src/providers/registry/entries-core.ts and
  * entries-extended.ts, read 2026-10-05; upstream commit was not recorded by
@@ -120,23 +120,7 @@ const LEGACY_PRESETS: ProviderPreset[] = [
   }),
 
   // 推理平台
-  p("推理平台", "groq", "Groq", "https://api.groq.com/openai/v1", { key: "https://console.groq.com/keys", note: "跑得快；有开源模型" }),
-  p("推理平台", "cerebras", "Cerebras", "https://api.cerebras.ai/v1", { model: "gpt-oss-120b" }),
-  p("推理平台", "together", "Together", "https://api.together.xyz/v1"),
-  p("推理平台", "fireworks", "Fireworks", "https://api.fireworks.ai/inference/v1"),
-  p("推理平台", "deepinfra", "DeepInfra", "https://api.deepinfra.com/v1/openai"),
-  p("推理平台", "sambanova", "SambaNova", "https://api.sambanova.ai/v1"),
-  p("推理平台", "nebius", "Nebius Token Factory", "https://api.tokenfactory.nebius.com/v1"),
   p("推理平台", "hyperbolic", "Hyperbolic", "https://api.hyperbolic.xyz/v1"),
-  p("推理平台", "nvidia", "NVIDIA NIM", "https://integrate.api.nvidia.com/v1"),
-  p("推理平台", "baseten", "Baseten", "https://inference.baseten.co/v1"),
-  p("推理平台", "scaleway", "Scaleway", "https://api.scaleway.ai/v1"),
-  p("推理平台", "digitalocean", "DigitalOcean", "https://inference.do-ai.run/v1"),
-  p("推理平台", "vultr", "Vultr", "https://api.vultrinference.com/v1", { model: "kimi-k2-instruct" }),
-  p("推理平台", "nscale", "Nscale", "https://inference.api.nscale.com/v1"),
-  p("推理平台", "venice", "Venice", "https://api.venice.ai/api/v1"),
-  p("推理平台", "neuralwatt", "Neuralwatt", "https://api.neuralwatt.com/v1", { model: "glm-5.3" }),
-  p("推理平台", "synthetic", "Synthetic", "https://api.synthetic.new/openai/v1"),
   p("推理平台", "ollama-cloud", "Ollama Cloud", "https://ollama.com/v1", { model: "glm-5.3" }),
 
   // 自定义
@@ -203,6 +187,9 @@ export function iconForBaseUrl(baseUrl: string, name?: string): string {
     }
   });
   if (sameHost && sameHost.id !== "relay") return sameHost.icon;
+  // Historical Together URLs keep their icon only. This is neither an alias
+  // support claim nor a request-address rewrite for saved/custom providers.
+  if (host === "api.together.xyz") return "together";
   const table: Array<[RegExp, string]> = [
     [/deepseek/, "deepseek-color"], [/moonshot|kimi/, "kimi-color"], [/bigmodel|zhipu/, "zhipu-color"],
     [/dashscope|aliyun|qwen/, "qwen-color"], [/minimax/, "minimax-color"], [/openrouter/, "openrouter-color"],
