@@ -10,12 +10,25 @@ import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "../src/prese
 import { OFFICIAL_PRESET_FACTS, type IndependentPresetId } from "../src/preset-facts.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
-import type { ProviderPreset } from "../src/types.ts";
+import { prepareOutbound } from "../src/outbound.ts";
+import type { Provider, ProviderPreset } from "../src/types.ts";
 import { endpointUrl, expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "../src/upstream.ts";
 
-const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm"] as const;
+const domesticIds = ["deepseek", "kimi", "zhipu", "qwen", "volcengine", "qianfan", "stepfun", "siliconflow", "xiaomi"] as const;
+const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds] as const;
 const reconstructed = new Set<string>(independentIds);
 const preset = (id: string): ProviderPreset => { const p = PRESETS.find(p => p.id === id); assert.ok(p, id); return p; };
+// Deliberate, documented exceptions to the old operational contract. The SDK
+// roots omitted /v1, but EasySwitch appends /messages itself. These corrections
+// apply only to new preset selections, never to already-saved/custom providers.
+const messagesCorrections: Record<string, { previous: string; corrected: string; endpoint: string }> = {
+  deepseek: { previous: "https://api.deepseek.com/anthropic", corrected: "https://api.deepseek.com/anthropic/v1", endpoint: "https://api.deepseek.com/anthropic/v1/messages" },
+  kimi: { previous: "https://api.moonshot.cn/anthropic", corrected: "https://api.moonshot.cn/anthropic/v1", endpoint: "https://api.moonshot.cn/anthropic/v1/messages" },
+  zhipu: { previous: "https://open.bigmodel.cn/api/anthropic", corrected: "https://open.bigmodel.cn/api/anthropic/v1", endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages" },
+  qwen: { previous: "https://dashscope.aliyuncs.com/apps/anthropic", corrected: "https://dashscope.aliyuncs.com/apps/anthropic/v1", endpoint: "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages" },
+  xiaomi: { previous: "https://api.xiaomimimo.com/anthropic", corrected: "https://api.xiaomimimo.com/anthropic/v1", endpoint: "https://api.xiaomimimo.com/anthropic/v1/messages" },
+};
+const unexposedGuidanceIds = ["zhipu", "qianfan", "stepfun"] as const;
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => [k, canonical(v)]));
@@ -23,7 +36,7 @@ function canonical(value: unknown): unknown {
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
-test("preset reconstruction is exactly ten disjoint entries, with 57 explicitly attributed legacy rows", () => {
+test("preset reconstruction is exactly nineteen disjoint entries, with 48 explicitly attributed legacy rows", () => {
   assert.equal(PRESETS.length, 67);
   assert.equal(new Set(PRESETS.map(p => p.id)).size, 67);
   assert.deepEqual(INDEPENDENT_PRESETS.map(p => p.id), independentIds);
@@ -38,14 +51,30 @@ test("preset reconstruction is exactly ten disjoint entries, with 57 explicitly 
       assert.match(origin.scope, /Not independently reconstructed or verified/);
     }
   }
-  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 57);
+  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 48);
 });
 
-test("all 67 IDs, order, labels, billing categories, icons and operational values retain the baseline contract", () => {
-  // These hashes pin EasySwitch's pre-migration contract, not official verification.
-  assert.equal(digest(PRESETS.map(({ note, keyUrl, ...p }) => p)), "f09d4033eb89b4f8905563a8e4e92e9c62fd09246ad8538d74cf6ef259493d4b");
+test("all 67 rows retain the baseline contract except five documented Messages bases and DeepSeek's canonical Chat root", () => {
+  // Preserve the original operational hash: normalize only the five explicitly
+  // checked Messages fixes and DeepSeek's canonical root to their old values.
+  const originalOperations = PRESETS.map(({ note, keyUrl, ...p }) => {
+    const correction = messagesCorrections[p.id];
+    if (correction) {
+      assert.equal(p.anthropicBaseUrl, correction.corrected, p.id);
+      p.anthropicBaseUrl = correction.previous;
+    }
+    if (p.id === "deepseek") {
+      // The old /v1 alias is unverified, not proven invalid. Select the official
+      // canonical root for new selections without silently migrating old URLs.
+      assert.equal(p.baseUrl, "https://api.deepseek.com");
+      p.baseUrl = "https://api.deepseek.com/v1";
+    }
+    return p;
+  });
+  assert.equal(digest(originalOperations), "f09d4033eb89b4f8905563a8e4e92e9c62fd09246ad8538d74cf6ef259493d4b");
   assert.equal(digest(PRESETS.map(p => ({ id: p.id, fields: Object.keys(p).sort() }))), "ba74f5e07c68d0008451810cc3420d8712891236b5b9df64af7eb6f95e45e60e");
-  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "1ef3f5e2fcd1e4ce13f2f5a3c5e12ee775ec83e8ecda4f7992bd998dd2799cb1");
+  // Independently captured from the unchanged 48-row subset before this batch.
+  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "12bd16ba25ad6452c4055d193ac839bea3ed94cc13e8029b9d1e02814e5c4721");
   assert.deepEqual(PRESET_CATEGORIES, ["编程套餐", "国内官方", "国际官方", "中转与聚合", "推理平台", "本地", "自定义"]);
   assert.deepEqual(PRESETS.filter(p => p.category === "编程套餐").map(p => p.id), ["zhipu-coding", "zai", "kimi-coding", "minimax-coding-cn", "minimax-coding", "volcengine-coding", "tencent-coding", "alibaba-token-plan", "mimo-token-plan", "opencode-go"]);
 });
@@ -67,7 +96,7 @@ test("each reconstructed output field distinguishes official facts from EasySwit
       if (evidence.kind === "official-fact+editorial") assert.ok(evidence.choice, `${id}.${field}`);
     }
     for (const field of ["id", "name", "category", "icon"] as const) assert.equal(origin.fields[field]!.kind, "editorial");
-    assert.equal(origin.fields.note!.kind, "official-fact+editorial");
+    if (Object.hasOwn(p, "note")) assert.equal(origin.fields.note!.kind, "official-fact+editorial");
     if (p.defaultModel) {
       assert.equal(origin.fields.defaultModel!.kind, "official-fact+editorial");
       assert.equal(p.defaultModel, facts.modelId!.value);
@@ -80,6 +109,8 @@ test("every fact has dated field-level official evidence and a bounded verificat
     openai: ["developers.openai.com"], anthropic: ["platform.claude.com"], gemini: ["ai.google.dev"],
     "azure-openai": ["learn.microsoft.com"], openrouter: ["openrouter.ai"], "cloudflare-workers-ai": ["developers.cloudflare.com"],
     ollama: ["docs.ollama.com"], lmstudio: ["lmstudio.ai"], vllm: ["docs.vllm.ai"], litellm: ["docs.litellm.ai"],
+    deepseek: ["api-docs.deepseek.com", "raw.githubusercontent.com"], kimi: ["platform.kimi.com"], zhipu: ["docs.bigmodel.cn"], qwen: ["help.aliyun.com"], volcengine: ["docs.volcengine.com"],
+    qianfan: ["cloud.baidu.com"], stepfun: ["platform.stepfun.com"], siliconflow: ["docs.siliconflow.cn"], xiaomi: ["mimo.mi.com"],
   };
   for (const id of independentIds) for (const [field, fact] of Object.entries(OFFICIAL_PRESET_FACTS[id])) {
     assert.equal(fact.checkedAt, "2026-10-08", `${id}.${field}`);
@@ -126,17 +157,80 @@ test("all placeholder declarations agree with URL templates and concrete routes 
   assert.equal(call("litellm", "chat"), "http://127.0.0.1:4000/v1/chat/completions");
 });
 
+test("domestic reconstructed bases yield the exact documented Chat and Messages request URLs", () => {
+  const chatEndpoints = {
+    deepseek: "https://api.deepseek.com/chat/completions",
+    kimi: "https://api.moonshot.cn/v1/chat/completions",
+    zhipu: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    volcengine: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    qianfan: "https://qianfan.baidubce.com/v2/chat/completions",
+    stepfun: "https://api.stepfun.com/v1/chat/completions",
+    siliconflow: "https://api.siliconflow.cn/v1/chat/completions",
+    xiaomi: "https://api.xiaomimimo.com/v1/chat/completions",
+  };
+  for (const id of domesticIds) {
+    const p = preset(id);
+    const provider = { baseUrl: p.baseUrl, anthropicBaseUrl: p.anthropicBaseUrl, wire: p.wire };
+    assert.equal(endpointUrl(provider, "chat"), chatEndpoints[id], id);
+    const correction = messagesCorrections[id];
+    if (correction) {
+      assert.equal(p.anthropicBaseUrl, correction.corrected, id);
+      assert.equal(endpointUrl(provider, "messages"), correction.endpoint, id);
+      assert.equal(OFFICIAL_PRESET_FACTS[id].anthropicBaseUrl!.value, correction.corrected, id);
+      assert.match(OFFICIAL_PRESET_FACTS[id].anthropicBaseUrl!.scope, /\/v1/);
+    } else assert.equal(p.anthropicBaseUrl, undefined, id);
+    assert.equal(p.urlParams, undefined, id);
+  }
+  // Do not fix SDK roots by changing generic joining: existing version-complete
+  // and user-defined paths must remain literal, without another inserted /v1.
+  assert.equal(endpointUrl({ baseUrl: "https://fixture.example.invalid/private/v1" }, "messages"), "https://fixture.example.invalid/private/v1/messages");
+  assert.equal(endpointUrl({ baseUrl: "https://fixture.example.invalid/custom" }, "messages"), "https://fixture.example.invalid/custom/messages");
+});
+
+test("Messages production adapter sends the five corrected preset URLs to an in-memory fetch fixture", async t => {
+  const sent: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    sent.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    return Response.json({ id: "fixture-message", content: [] });
+  });
+  for (const [id, correction] of Object.entries(messagesCorrections)) {
+    const p = preset(id);
+    // Protocol selection is an explicit synthetic fixture, not a new preset
+    // capability claim. No request leaves this in-memory fetch implementation.
+    const provider: Provider = {
+      id: `fixture-${id}`, name: `Fixture ${id}`, baseUrl: p.baseUrl,
+      anthropicBaseUrl: p.anthropicBaseUrl, wire: p.wire, models: [], protocols: ["messages"],
+      route: "chat-translate", routePinned: true, streamUsage: false, createdAt: "2026-10-08T00:00:00.000Z",
+    };
+    const prepared = prepareOutbound(provider, { protocol: "messages", model: "fixture-model", stream: false, body: { messages: [{ role: "user", content: "fixture" }], max_tokens: 1 } });
+    assert.equal(prepared.protocol, "messages", id);
+    const response = await prepared.send("fixture-only-key", new AbortController().signal);
+    assert.ok(response instanceof Response, id);
+    assert.equal(response.status, 200, id);
+    assert.equal(sent.at(-1), correction.endpoint, id);
+  }
+  assert.equal(sent.length, 5);
+});
+
 test("documentation facts do not expand protocol, authentication, model or subscription behavior", () => {
-  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"]]);
+  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"]]);
+  for (const id of unexposedGuidanceIds) {
+    assert.ok(OFFICIAL_PRESET_FACTS[id].guidance.value);
+    assert.equal(Object.hasOwn(preset(id), "note"), false, id);
+    assert.equal(Object.hasOwn(INDEPENDENT_PRESET_PROVENANCE[id].fields, "note"), false, id);
+  }
   for (const p of INDEPENDENT_PRESETS) {
     assert.equal(p.protocols, undefined, p.id);
     assert.equal(p.models, undefined, p.id);
     assert.equal(p.vertexMode, undefined, p.id);
     assert.notEqual(p.category, "编程套餐", p.id);
-    if (p.id !== "azure-openai") assert.equal(p.wire, undefined, p.id);
+    if (p.id !== "azure-openai" && p.id !== "xiaomi") assert.equal(p.wire, undefined, p.id);
   }
   assert.deepEqual(preset("azure-openai").wire, { authHeader: "api-key", authScheme: "raw" });
   assert.deepEqual(upstreamHeaders(preset("azure-openai"), "fixture-only-key"), { "api-key": "fixture-only-key" });
+  assert.deepEqual(preset("xiaomi").wire, { authHeader: "api-key", authScheme: "raw" });
+  assert.deepEqual(upstreamHeaders(preset("xiaomi"), "fixture-only-key"), { "api-key": "fixture-only-key" });
   assert.match(OFFICIAL_PRESET_FACTS["cloudflare-workers-ai"].guidance.scope, /two GPT-OSS models and non-streaming/);
   assert.doesNotMatch(preset("cloudflare-workers-ai").note!, /免费|llama-3/);
 });
@@ -181,4 +275,42 @@ test("loopback console API preserves public preset shape and category-driven bil
     assert.equal(body.icon, preset(id).icon);
     assert.deepEqual(body.models, ["fixture-model"]);
   }
+});
+
+test("serving revised presets never migrates saved providers or user-defined Messages paths", async t => {
+  const root = mkdtempSync(join(tmpdir(), "es-preset-saved-"));
+  const store = new Store(root);
+  const previousMessagesBases = [
+    ["deepseek", "https://api.deepseek.com/anthropic"],
+    ["kimi", "https://api.moonshot.cn/anthropic"],
+    ["zhipu", "https://open.bigmodel.cn/api/anthropic"],
+    ["qwen", "https://dashscope.aliyuncs.com/apps/anthropic"],
+    ["xiaomi", "https://api.xiaomimimo.com/anthropic"],
+  ] as const;
+  const saved: Provider[] = previousMessagesBases.map(([id, anthropicBaseUrl]) => ({
+    id: `saved-${id}`, name: `Saved ${id}`, baseUrl: id === "deepseek" ? "https://api.deepseek.com/v1" : preset(id).baseUrl,
+    anthropicBaseUrl, models: [], route: "chat-translate", routePinned: true,
+    streamUsage: false, createdAt: "2026-10-01T00:00:00.000Z",
+  }));
+  saved.push({
+    id: "saved-custom", name: "User-specified custom path", baseUrl: "https://fixture.example.invalid/api",
+    anthropicBaseUrl: "https://fixture.example.invalid/private/anthropic", models: [],
+    wire: { paths: { messages: "v7/messages" } }, route: "chat-translate", routePinned: true,
+    streamUsage: false, createdAt: "2026-10-01T00:00:00.000Z",
+  });
+  for (const provider of saved) store.upsertProvider(provider);
+  const before = readFileSync(join(root, "state.json"), "utf8");
+  const api = createEasySwitchServer({ store, port: 0, secrets: { get: async () => undefined, set: async () => {}, delete: async () => {} } });
+  t.after(async () => { await close(api); rmSync(root, { recursive: true, force: true }); });
+  const apiBase = await listen(api);
+  const response = await fetch(`${apiBase}/api/presets`, { headers: { "x-easyswitch": "1" } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), PRESETS);
+  assert.deepEqual(store.providers(), saved);
+  assert.equal(readFileSync(join(root, "state.json"), "utf8"), before);
+  const reloaded = new Store(root);
+  assert.deepEqual(reloaded.providers(), saved);
+  assert.equal(endpointUrl(reloaded.provider("saved-deepseek")!, "chat"), "https://api.deepseek.com/v1/chat/completions");
+  for (const [id, base] of previousMessagesBases) assert.equal(endpointUrl(reloaded.provider(`saved-${id}`)!, "messages"), `${base}/messages`);
+  assert.equal(endpointUrl(reloaded.provider("saved-custom")!, "messages"), "https://fixture.example.invalid/private/anthropic/v7/messages");
 });

@@ -8,7 +8,7 @@
 | Token Plan | 既有 `mimo-token-plan` 预设已补 Anthropic 地址和认证/Key 页面 | 专用 `tp-` 或团队 `ttp-` Key；扣套餐权益 |
 | MiMo Free 历史入口 | 生产停用，仅保留严格本地假服务测试 | 无官方第三方通用 API 支持依据；不能承诺免费、无限或绕过配额 |
 
-官方按量 Chat base 为 `https://api.xiaomimimo.com/v1`，Messages base 为 `https://api.xiaomimimo.com/anthropic`；套餐分别为 `https://token-plan-cn.xiaomimimo.com/v1` 和 `https://token-plan-cn.xiaomimimo.com/anthropic`。以用户后台展示的区域与专用 Key 为准，不把普通 API Key 和订阅 Key 自动调换。
+官方按量 Chat base 为 `https://api.xiaomimimo.com/v1`，EasySwitch Messages base 为 `https://api.xiaomimimo.com/anthropic/v1`（拼接 `/messages` 后为官方完整端点）；套餐分别为 `https://token-plan-cn.xiaomimimo.com/v1` 和 `https://token-plan-cn.xiaomimimo.com/anthropic`。以用户后台展示的区域与专用 Key 为准，不把普通 API Key 和订阅 Key 自动调换。
 
 现有默认模型 `mimo-v2.6-flash`、`mimo-v2.6-pro` 均在当前官方文档中。它们存在不等于本项目已成功调用；预设与请求构造本地通过，账号权限、费用、限额、实际工具/流兼容性仍待明确授权后验收。
 
@@ -22,3 +22,5 @@
 - [Token Plan 快速接入](https://platform.xiaomimimo.com/docs/en-US/tokenplan/quick-access)
 - [Token Plan 订阅说明](https://platform.xiaomimimo.com/docs/tokenplan/subscription)
 - [官方平台](https://platform.xiaomimimo.com/)
+
+2026-10-08核对：SDK示例的 Anthropic base 可能省略 `/v1`，但EasySwitch直接拼接 `/messages`。本轮修正普通按量新预设；已存来源及套餐预设分别核对，不自动改写用户地址。普通按量证据：https://mimo.mi.com/docs/en-US/api/chat/anthropic-api 。

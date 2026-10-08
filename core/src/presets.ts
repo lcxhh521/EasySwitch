@@ -3,8 +3,8 @@ import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "./presets-of
 
 /**
  * One-click starting points, preserving EasySwitch's public picker contract.
- * Ten entries are freshly reconstructed from official facts in preset-facts.ts
- * and presets-official.ts. The remaining 57 below are explicitly legacy:
+ * Nineteen entries are freshly reconstructed from official facts in preset-facts.ts
+ * and presets-official.ts. The remaining 48 below are explicitly legacy:
  * Historical repository attribution: adapted from opencodex (MIT),
  * src/providers/registry/entries-core.ts and
  * entries-extended.ts, read 2026-10-05; upstream commit was not recorded by
@@ -81,17 +81,6 @@ const LEGACY_PRESETS: ProviderPreset[] = [
   p("编程套餐", "alibaba-token-plan", "阿里云 Token Plan（北京）", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", { model: "qwen3.8-max" }),
   p("编程套餐", "mimo-token-plan", "小米 MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", { anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic", model: "mimo-v2.6-pro", key: "https://platform.xiaomimimo.com/#/console/plan-manage", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方订阅，使用专用 tp-/ttp- Key 和套餐端点；扣套餐额度，不与按量 API Key 或 MiMo Free 混用" }),
   p("编程套餐", "opencode-go", "opencode Go", "https://opencode.ai/zen/go/v1", { model: "kimi-k2.7-code" }),
-
-  // 国内官方：按量计费的开放平台
-  p("国内官方", "deepseek", "DeepSeek", "https://api.deepseek.com/v1", { anthropic: "https://api.deepseek.com/anthropic", model: "deepseek-flash", key: "https://platform.deepseek.com/api_keys", note: "官方 API，也有 Anthropic 兼容地址" }),
-  p("国内官方", "kimi", "Kimi 开放平台", "https://api.moonshot.cn/v1", { anthropic: "https://api.moonshot.cn/anthropic", key: "https://platform.moonshot.cn/console/api-keys", note: "moonshot.cn；用 API Key，不是会员账号" }),
-  p("国内官方", "zhipu", "智谱 GLM 开放平台", "https://open.bigmodel.cn/api/paas/v4", { anthropic: "https://open.bigmodel.cn/api/anthropic", model: "glm-4.6", key: "https://bigmodel.cn/console/usercenter/apikeys" }),
-  p("国内官方", "qwen", "通义千问（百炼）", "https://dashscope.aliyuncs.com/compatible-mode/v1", { anthropic: "https://dashscope.aliyuncs.com/apps/anthropic", key: "https://bailian.console.aliyun.com/", note: "阿里云百炼兼容模式" }),
-  p("国内官方", "volcengine", "火山方舟", "https://ark.cn-beijing.volces.com/api/v3", { model: "doubao-seed-2-1-pro-260628", key: "https://console.volcengine.com/ark/", note: "豆包 / 火山引擎；模型填接入点 ID" }),
-  p("国内官方", "qianfan", "百度千帆", "https://qianfan.baidubce.com/v2", { key: "https://console.bce.baidu.com/iam/#/iam/apikey/list" }),
-  p("国内官方", "stepfun", "阶跃星辰", "https://api.stepfun.com/v1", { model: "step-5-preview", key: "https://platform.stepfun.com/" }),
-  p("国内官方", "siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", { key: "https://cloud.siliconflow.cn/account/ak", note: "聚合平台：DeepSeek、Qwen、GLM 都有" }),
-  p("国内官方", "xiaomi", "小米 MiMo 官方 API", "https://api.xiaomimimo.com/v1", { anthropic: "https://api.xiaomimimo.com/anthropic", model: "mimo-v2.6-flash", key: "https://platform.xiaomimimo.com/#/console/api-keys", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方按量 API，使用 sk- API Key；已有预设，真实账号调用尚未验收，与 Token Plan / MiMo Free 分开" }),
 
   // 国际官方
   p("国际官方", "xai", "xAI", "https://api.x.ai/v1", { key: "https://console.x.ai", note: "Grok 官方 API" }),
