@@ -102,6 +102,41 @@ test("partial protocol support is distinct from total failure, and model listing
   assert.equal(buildDoctorReport(data).findings.find(r=>r.area==="provider")!.code,"source_not_checked");
 });
 
+test("saved stale Messages routes add independent read-only guidance without hiding source faults",()=>{
+  const data=input();const provider=data.providers![0]!;
+  provider.off=true;provider.endpoints={baseUrl:"https://api.deepseek.com",anthropicBaseUrl:"https://api.deepseek.com/anthropic"};
+  const before=JSON.stringify(data);const report=buildDoctorReport(data);
+  assert.ok(report.findings.some(r=>r.code==="source_disabled"));
+  const row=report.findings.find(r=>r.code==="source_messages_endpoint_stale")!;
+  assert.equal(row.status,"warn");assert.equal(row.evidence,"metadata");assert.equal(row.targetId,"fixture-source");
+  assert.match(row.message,/https:\/\/api\.deepseek\.com\/anthropic\/v1\/messages/);
+  assert.match(row.nextStep,/anthropicBaseUrl.*https:\/\/api\.deepseek\.com\/anthropic\/v1/);
+  assert.match(row.nextStep,/此地址检查没有修改.*没有为检查地址发送请求/);
+  assert.deepEqual(row.actions,[{kind:"open-providers",label:"查看来源配置",targetId:"fixture-source"}]);
+  assert.equal(JSON.stringify(data),before);
+  provider.endpoints.wire={paths:{messages:"v1/messages"}};
+  assert.ok(!buildDoctorReport(data).findings.some(r=>r.code==="source_messages_endpoint_stale"));
+  provider.endpoints.wire.paths!.messages="messages";
+  assert.match(buildDoctorReport(data).findings.find(r=>r.code==="source_messages_endpoint_stale")!.nextStep,/删除 wire\.paths\.messages.*设为 messages/);
+});
+
+test("active provider success or failure never reclassifies or replaces endpoint metadata warnings",async()=>{
+  for(const fail of [false,true]) {
+    const data=input();data.providers![0]!.endpoints={baseUrl:"https://api.deepseek.com/anthropic"};
+    const report=await runDoctorChecks(data,providerRequest,{probeProvider:async()=>{if(fail)throw new Error(SECRET);return {probe:data.providers![0]!.probe!};}});
+    const rows=report.findings.filter(r=>r.area==="provider");assert.equal(rows.length,2);
+    assert.equal(rows[0]!.code,fail ? "diagnostic_failed" : "source_probe_passed");
+    assert.equal(rows[1]!.code,"source_messages_endpoint_stale");assert.equal(rows[1]!.evidence,"metadata");assert.equal(rows[1]!.checkedAt,undefined);
+    assert.doesNotMatch(JSON.stringify(rows),new RegExp(SECRET));
+  }
+});
+
+test("endpoint warnings obey the provider inventory limit",()=>{
+  const data=input();data.providers=Array.from({length:201},(_,i)=>({id:`source-${i}`,endpoints:{baseUrl:"https://api.deepseek.com/anthropic"}}));
+  const report=buildDoctorReport(data);assert.equal(report.findings.filter(r=>r.code==="source_messages_endpoint_stale").length,200);
+  assert.ok(report.findings.some(r=>r.code==="source_inventory_truncated"));assert.ok(!report.findings.some(r=>r.targetId==="source-200"));
+});
+
 test("only explicit selected and acknowledged checks validate, with no duplicate or unbounded batches",()=>{
   const data=input();assert.deepEqual(validateDoctorChecks(data,providerRequest),providerRequest);
   const bad:unknown[]=[undefined,{},[],{checks:[]},{checks:providerRequest.checks},{checks:agentRequest.checks},

@@ -26,6 +26,21 @@ test('doctor metadata requires console header and never reads keys, calls source
  assert.deepEqual(f.counts(),{reads:0,probes:0,helps:0});assert.doesNotMatch(JSON.stringify(r.body),/secret-label|secret-host|PRIVATE KEY/);
  f.setHelper(false);const missing=await f.http('/api/doctor');assert.ok(missing.body.findings.some((x:any)=>x.code==='helper_missing'));
 });
+test('HTTP doctor warns about saved stale effective Messages URLs without editing or probing sources',async t=>{
+ const f=await fixture(t);const original=f.store.provider('p')!;
+ f.store.upsertProvider({...original,anthropicBaseUrl:'https://api.deepseek.com/anthropic'});
+ const before=JSON.stringify(f.store.provider('p'));const result=await f.http('/api/doctor');
+ assert.equal(result.status,200);const warning=result.body.findings.find((x:any)=>x.code==='source_messages_endpoint_stale');
+ assert.equal(warning.targetId,'p');assert.equal(warning.evidence,'metadata');assert.equal(warning.status,'warn');assert.match(warning.nextStep,/https:\/\/api\.deepseek\.com\/anthropic\/v1/);
+ assert.equal(JSON.stringify(f.store.provider('p')),before);assert.deepEqual(f.counts(),{reads:0,probes:0,helps:0});assert.doesNotMatch(JSON.stringify(result.body),/secret-label|secret-host|PRIVATE KEY/);
+ f.store.upsertProvider({...f.store.provider('p')!,wire:{paths:{messages:'v1/messages'}}});
+ assert.ok(!(await f.http('/api/doctor')).body.findings.some((x:any)=>x.code==='source_messages_endpoint_stale'));
+ f.store.upsertProvider({...f.store.provider('p')!,wire:{paths:{messages:'messages'}}});
+ assert.match((await f.http('/api/doctor')).body.findings.find((x:any)=>x.code==='source_messages_endpoint_stale').nextStep,/wire\.paths\.messages/);
+ f.store.upsertProvider({...f.store.provider('p')!,anthropicBaseUrl:'https://api.deepseek.com/anthropic/v1'});
+ assert.ok(!(await f.http('/api/doctor')).body.findings.some((x:any)=>x.code==='source_messages_endpoint_stale'));
+ assert.deepEqual(f.counts(),{reads:0,probes:0,helps:0});
+});
 test('active checks need separate consent, enforce disabled/budget/helper guards, and report only safe evidence',async t=>{
  const f=await fixture(t);const checks=[{kind:'provider',id:'p'}];
  assert.equal((await f.http('/api/doctor/checks','POST',{checks})).status,400);

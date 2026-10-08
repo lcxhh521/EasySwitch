@@ -2,6 +2,7 @@ import type { SecretStoreHealth } from "./secrets.ts";
 import type { ProbeReport } from "./types.ts";
 import type { Verdict } from "./verify-launchers.ts";
 import { humanError } from "./user-errors.ts";
+import { diagnoseMessagesEndpoint, type ProviderEndpointMetadata } from "./endpoint-diagnostics.ts";
 
 /** Diagnostics consume metadata only. No filesystem, credential store, process, or network imports. */
 export type DoctorStatus = "ok" | "warn" | "error" | "unchecked";
@@ -25,6 +26,8 @@ export interface DoctorFinding {
 export interface DoctorFailure { code?: string; status?: number; at?: string }
 export interface DoctorProvider {
   id: string;
+  /** Route metadata only; never credentials or authentication headers. */
+  endpoints?: ProviderEndpointMetadata;
   off?: boolean;
   authKind?: "key" | "subscription" | "none";
   /** Structured status from the latest relevant attempt; never a raw error string. */
@@ -101,6 +104,15 @@ function providerFinding(p: DoctorProvider): DoctorFinding {
   return result;
 }
 
+function providerEndpointFinding(p: DoctorProvider): DoctorFinding | undefined {
+  const diagnostic = diagnoseMessagesEndpoint(p.endpoints);
+  if (!diagnostic) return undefined;
+  return finding("provider", diagnostic.code, "warn", "Messages 地址缺少 /v1",
+    `${diagnostic.service} 的有效 Messages 请求地址为 ${diagnostic.staleEndpoint}，与已核实的官方地址 ${diagnostic.recommendedEndpoint} 不一致。`,
+    `查看这个来源的配置，将 Anthropic 地址（anthropicBaseUrl）设为 ${diagnostic.recommendedBaseUrl}。${diagnostic.hasPathOverride ? "同时删除 wire.paths.messages 覆盖，或将它设为 messages。" : "EasySwitch 会追加 /messages。"}此地址检查没有修改已保存的来源，也没有为检查地址发送请求；如需验证，修正后再另行确认检测。`,
+    [action("open-providers", "查看来源配置", p.id)], p.id);
+}
+
 function agentFinding(a: DoctorAgent): DoctorFinding {
   if (a.installed === false) return finding("agent","agent_not_installed",a.required ? "error" : "warn","没有检测到这个 agent","目前不能用这个程序启动增强会话。","先在自己的电脑安装该程序，或选一个已安装的 agent。",[action("open-agents","选择或安装 agent",a.id)],a.id);
   if (a.installed !== true) return finding("agent","agent_not_checked","unchecked","agent 安装状态待确认","尚无安装检测结果。","到 Agent 页刷新已安装程序，再选择要用的 agent。",[action("open-agents","查看 Agent",a.id)],a.id);
@@ -113,7 +125,7 @@ function agentFinding(a: DoctorAgent): DoctorFinding {
   result.evidence="saved-help"; const at=iso(a.help?.checkedAt); if(at) result.checkedAt=at; return result;
 }
 
-/** Fixed strings and validated public IDs only; never spread raw diagnostics into a report. */
+/** Fixed strings, allowlisted public endpoints and validated IDs only; never spread raw diagnostics. */
 export function buildDoctorReport(input: DoctorInput): DoctorReport {
   const findings: DoctorFinding[]=[];
   const now=Number.isFinite(input.now) ? input.now! : Date.now();
@@ -124,7 +136,10 @@ export function buildDoctorReport(input: DoctorInput): DoctorReport {
   else if (h.status === "helper_signature_unchecked") findings.push(finding("helper","helper_signature_unchecked","unchecked","钥匙串小程序签名尚未检查","已发现程序文件，但被动自检没有运行签名检查，也没有读取密钥。","在自己的 Mac 前台明确启动或检查 EasySwitch 后，再重新自检。",[action("open-helper-help","查看前台检查方法")]));
   else if (!h.ready) findings.push(finding("helper",h.status === "helper_missing" ? "helper_missing" : "helper_unavailable","error",h.status === "helper_missing" ? "钥匙串小程序缺失" : "钥匙串小程序不可用","密钥读取暂时可能无法完成；自检没有读取密钥。","在自己的 Mac 前台按说明重新构建或检查签名；不要放宽安全设置。",[action("open-helper-help","查看重新构建方法")]));
   else findings.push(finding("helper","helper_ready","ok","钥匙串小程序已就绪","文件和签名检查通过；没有弹窗，也没有读取任何密钥。","这不代表已存密钥有效；需要时单独检测来源。"));
-  for (const p of (input.providers ?? []).slice(0,200)) findings.push(providerFinding(p));
+  for (const p of (input.providers ?? []).slice(0,200)) {
+    findings.push(providerFinding(p));
+    const endpoint = providerEndpointFinding(p); if (endpoint) findings.push(endpoint);
+  }
   if ((input.providers?.length ?? 0)>200) findings.push(finding("provider","source_inventory_truncated","warn","部分来源尚未列出","本次报告最多列出二百个来源。","请精简不再使用的来源后重新自检。",[action("open-providers","查看全部来源")]));
   if (!input.providers?.length) findings.push(finding("provider","source_none","unchecked","还没有模型来源","没有来源可供检查。","先添加一个模型来源或订阅。",[action("open-providers","添加来源")]));
   for (const a of (input.agents ?? []).slice(0,100)) findings.push(agentFinding(a));
@@ -263,6 +278,9 @@ export async function runDoctorChecks(input: DoctorInput, request: unknown, runn
   }
   const report=buildDoctorReport(updated);
   const findings=report.findings.map(row=>{
+    // Route advice remains metadata even if this source's separate active check
+    // succeeds, fails or is cancelled. Never replace it with probe evidence.
+    if(row.code === "source_messages_endpoint_stale") return row;
     const key=`${row.area}:${row.targetId}`; const replacement=overrides.get(key); if(replacement) return replacement;
     if(active.has(key)) return {...row,evidence:row.area==="provider" ? "active-probe" as const : "active-help" as const,title:row.title.replace(/^上次/,"此次"),...(row.code==="source_probe_passed" || row.code==="source_probe_partial" ? {nextStep:"本次检测只覆盖列出的能力，不保证后续请求或所有模型都能使用。"} : {}),checkedAt:iso(row.checkedAt) ?? report.checkedAt};
     return row;

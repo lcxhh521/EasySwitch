@@ -690,7 +690,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     });
     const recent=log.find(e=>e.status>=400);
     return {gateway:{reachable:true},helper:secrets.health?.({passive:true}) ?? null,tokens,agents,
-      providers:store.providers().map(p=>({id:p.id,off:p.off,authKind:p.plan||p.kiro||p.antigravity||p.cursor||p.kimi ? "subscription" : "key",probe:p.probe,lastStatus:probeStatus(p.probe) ?? log.find(e=>e.providerId===p.id)?.status,budgetBlocked:providerBudgets.isBudgetStopped(p),probeAllowed:!p.plan&&!p.kiro&&!p.antigravity&&!p.cursor&&!p.kimi&&!p.vertex&&!p.cliTextBridge&&!p.mimoFree})),
+      providers:store.providers().map(p=>({id:p.id,off:p.off,authKind:p.plan||p.kiro||p.antigravity||p.cursor||p.kimi ? "subscription" : "key",probe:p.probe,lastStatus:probeStatus(p.probe) ?? log.find(e=>e.providerId===p.id)?.status,budgetBlocked:providerBudgets.isBudgetStopped(p),probeAllowed:!p.plan&&!p.kiro&&!p.antigravity&&!p.cursor&&!p.kimi&&!p.vertex&&!p.cliTextBridge&&!p.mimoFree,
+        endpoints:{baseUrl:p.baseUrl,anthropicBaseUrl:p.anthropicBaseUrl,urlParams:p.urlParams,wire:{paths:{messages:p.wire?.paths?.messages},query:p.wire?.query}}})),
       budget:{blocked:b.blocked,configurationInvalid:b.configurationInvalid,accountingUnavailable:b.accountingUnavailable,probeBlocked:b.settings.enabled&&b.settings.action==="stop"},
       ...(recent ? {recentFailure:{status:recent.status,at:recent.at}} : {})};
   }
