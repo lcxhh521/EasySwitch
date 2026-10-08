@@ -36,7 +36,7 @@ document.addEventListener("click", async event => {
     doctorConfirmation={kind:action==="probe-provider"?"provider":"agent-help",id};render();return;
   }
   const targets={"open-providers":"providers","open-login":"providers","open-agents":"agents","open-sessions":"sessions","open-budget":"usage"};
-  if(targets[action]){page=targets[action];history.replaceState(null,"",`#${page}`);doctorConfirmation=null;await refresh(true);}
+  if(targets[action]){pageNavigationVersion++;page=targets[action];history.replaceState(null,"",`#${page}`);doctorConfirmation=null;await refresh(true);}
 });
 document.addEventListener("submit", async event=>{
   if(!event.target.matches?.("[data-doctor-confirm]"))return;

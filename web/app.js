@@ -39,6 +39,11 @@ const taskCancelPending = new Set();
 let taskList = null; // /api/tasks
 const taskOpenIds = new Set(); // task ids whose output is expanded
 let taskNote = "";
+let quickTaskDraft = "";
+let quickTaskNote = "";
+let taskDraftVersion = 0; // User edits must keep their live input and focus.
+let taskSubmitPending = false; // One bounded submission wait, including rerenders.
+let pageNavigationVersion = 0; // A response must not override newer user navigation.
 let agentList = null; // every agent we know of, from /api/agents
 let agentCoverage = null; // { coverage, features } from the same call: what is done for which agent
 async function loadAgents() {
@@ -174,7 +179,7 @@ function toast(text, problem) {
   el.textContent = text;
   if (problem) {
     const action = document.createElement("button"); action.className="btn secondary";action.textContent=problem.action.label;
-    action.addEventListener("click", async()=>{if(problem.action.target!=="current"){page=problem.action.target;history.replaceState(null,"",`#${page}`);await refresh(true);}el.remove();});el.append(action);
+    action.addEventListener("click", async()=>{if(problem.action.target!=="current"){pageNavigationVersion++;page=problem.action.target;history.replaceState(null,"",`#${page}`);await refresh(true);}el.remove();});el.append(action);
     const detail=document.createElement("details"),summary=document.createElement("summary"),code=document.createElement("pre");summary.textContent="详情";code.textContent=JSON.stringify(problem.details,null,2);detail.append(summary,code);el.append(detail);
     const close=document.createElement("button");close.textContent="关闭";close.addEventListener("click",()=>el.remove());el.append(close);
   }
@@ -519,13 +524,13 @@ function renderTasks() {
   const levels = chosen?.can?.efforts ?? [];
   const effort = levels.includes(taskForm.effort) ? taskForm.effort : "";
   const form = agents.length ? `
-    <form class="form card" data-task-form style="padding:16px 18px">
+    <form class="form card" data-task-form aria-busy="${taskSubmitPending}" style="padding:16px 18px">
       <textarea name="task" rows="3" required style="font-size:15px" placeholder="想让谁做什么？比如：读一下 README，告诉我这个项目是做什么的">${esc(taskForm.task)}</textarea>
       <div class="controls" style="margin-top:10px;flex-wrap:wrap">
         <button type="button" class="btn ${auto ? "" : "secondary"}" data-task-agent="${AUTO}" title="按下面的「派活规则」自动决定交给谁、用哪个模型、想多深">自动</button>
         ${agents.map(a => `<button type="button" class="btn ${chosen && a.id === chosen.id ? "" : "secondary"}" data-task-agent="${esc(a.id)}">${esc(a.name)}</button>`).join("")}
         <span class="grow"></span>
-        <button class="btn" type="submit">派出去</button>
+        <button class="btn" type="submit" ${taskSubmitPending ? "disabled" : ""}>${taskSubmitPending ? "正在派发…" : "派出去"}</button>
       </div>
       ${auto ? `<p class="hint" style="margin:8px 0 0">${rules.length ? `按下面 ${rules.length} 条派活规则决定交给谁；没有规则接的任务交给第一个能接活的 agent。` : "还没有派活规则，会交给第一个能接活的 agent；在下面写几条规则就能按任务类型分工。"}</p>` : ""}
       ${!auto && levels.length ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><span class="hint">想得多深</span>
@@ -615,11 +620,99 @@ let profileNaming = false;
 /** Profiles: every agent's settings saved under a name, to come back to in one click. */
 /** The first thing on the Agent page: hand something to an agent in one line. "Auto" follows the rules written on the Tasks page. */
 function quickTask() {
-  return `<form class="card" data-quick-task style="display:flex;gap:8px;align-items:center;padding:10px 14px">
-    <input type="text" name="task" placeholder="交给 agent 做点什么，比如：给这个项目的登录函数补上单元测试" required style="flex:1;min-width:0">
-    <button class="btn" type="submit">派出去（自动选）</button>
+  return `<form class="card" data-quick-task aria-busy="${taskSubmitPending}" style="display:flex;gap:8px;align-items:center;padding:10px 14px">
+    <input type="text" name="task" value="${esc(quickTaskDraft)}" placeholder="交给 agent 做点什么，比如：给这个项目的登录函数补上单元测试" required style="flex:1;min-width:0">
+    <button class="btn" type="submit" ${taskSubmitPending ? "disabled" : ""}>${taskSubmitPending ? "正在派发…" : "派出去（自动选）"}</button>
   </form>
+  ${quickTaskNote ? `<p class="hint" role="status" style="color:var(--bad)">${esc(quickTaskNote)}</p>` : ""}
   <div class="hint" style="margin:4px 6px 12px">按「任务」页里写的规则分给合适的 agent；没有规则就交给第一个能接活的。结果在「任务」页看。</div>`;
+}
+
+/** Lock both submission entry points without replacing focused inputs. */
+function updateTaskSubmitControls() {
+  for (const form of document.querySelectorAll("form[data-task-form], form[data-quick-task]")) {
+    form.setAttribute("aria-busy", String(taskSubmitPending));
+    const button = form.querySelector('button[type="submit"]');
+    if (!button) continue;
+    button.disabled = taskSubmitPending;
+    button.textContent = taskSubmitPending ? "正在派发…" : form.matches("[data-quick-task]") ? "派出去（自动选）" : "派出去";
+  }
+}
+
+/** A local wait deadline does not cancel server work or authorize a POST retry. */
+function taskSubmissionDeadline(request, timeoutMs) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error("Task submission wait expired"), { code: "request_timeout" })), timeoutMs);
+  });
+  return Promise.race([request, expired]).finally(() => clearTimeout(timer));
+}
+
+/** Only an explicit user submission sends a POST; an uncertain result is never retried. */
+async function submitConsoleTask(form, body, quick = false) {
+  if (taskSubmitPending || !String(body.task ?? "").trim()) return;
+  if (quick) quickTaskDraft = String(new FormData(form).get("task") ?? "");
+  else syncTaskForm(form);
+  const draft = quick ? quickTaskDraft : JSON.stringify(taskForm);
+  const navigation = pageNavigationVersion;
+  const draftVersion = taskDraftVersion;
+  let preserveEditing = false;
+  taskSubmitPending = true;
+  if (quick) quickTaskNote = ""; else taskNote = "";
+  updateTaskSubmitControls();
+  let createdId = "";
+  try {
+    try {
+      const result = await taskSubmissionDeadline(call("POST", "/api/tasks", body), 30_000);
+      const id = result?.task?.id;
+      if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("Task submission response was not confirmed");
+      createdId = id;
+      taskOpenIds.add(id);
+      const unchanged = quick ? quickTaskDraft === draft : JSON.stringify(taskForm) === draft;
+      preserveEditing = taskDraftVersion !== draftVersion || !unchanged;
+      if (unchanged && !preserveEditing) {
+        if (quick) quickTaskDraft = ""; else taskForm.task = "";
+        // Also clear the current field before waiting for the read-back refresh.
+        const current = document.querySelector(quick ? "form[data-quick-task]" : "form[data-task-form]");
+        if (current) current.elements.task.value = "";
+      }
+      toast("已派出去，结果在「任务」页");
+    } catch (error) {
+      const message = `未能确认提交结果：${userErrorMessage(error)}。请先查看任务记录，确认没有创建后再重试。`;
+      if (quick) quickTaskNote = message; else taskNote = message;
+      preserveEditing = taskDraftVersion !== draftVersion || (quick ? quickTaskDraft !== draft : JSON.stringify(taskForm) !== draft);
+      if (navigation !== pageNavigationVersion || preserveEditing) toast(message);
+    }
+    if (navigation !== pageNavigationVersion) return;
+    if (createdId && quick && !preserveEditing) {
+      page = "tasks";
+      if (!PANEL) history.replaceState(null, "", "#tasks");
+      closePopover();
+    }
+    if (!preserveEditing) render();
+    try {
+      // Read only the task list here. A late general refresh could otherwise
+      // replace a newer page after the submission's wait deadline has expired.
+      const latest = await taskSubmissionDeadline(call("GET", "/api/tasks"), 10_000);
+      if (!Array.isArray(latest?.tasks)) throw new Error("Task list response was not confirmed");
+      if (navigation !== pageNavigationVersion) return;
+      taskList = latest;
+      preserveEditing ||= taskDraftVersion !== draftVersion;
+      if (preserveEditing) return;
+      render();
+      if (createdId && page === "tasks") {
+        // Running tasks live in the progress tree; completed tasks use the output row.
+        const target = [...document.querySelectorAll("[data-task-progress-id], [data-task-toggle]")]
+          .find(node => (node.dataset.taskProgressId ?? node.dataset.taskToggle) === createdId);
+        if (target) { target.setAttribute("tabindex", "-1"); target.focus({ preventScroll: true }); target.scrollIntoView({ block: "nearest" }); }
+      }
+    } catch {
+      if (createdId && navigation === pageNavigationVersion) toast("任务已创建，但暂时没读到最新进度；请稍后刷新任务记录。");
+    }
+  } finally {
+    taskSubmitPending = false;
+    updateTaskSubmitControls();
+  }
 }
 
 function profileBar() {
@@ -1424,17 +1517,21 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return taskSubmitPending || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 /** Typing survives a re-render: copy what is in the task form into taskForm first. */
-function syncTaskForm() {
-  const f = document.querySelector("form[data-task-form]");
+function syncTaskForm(f = document.querySelector("form[data-task-form]")) {
   if (!f) return;
   taskForm.task = f.elements.task?.value ?? "";
   taskForm.model = f.elements.model?.value ?? "";
   taskForm.cwd = f.elements.cwd?.value ?? "";
 }
-document.addEventListener("input", e => { if (e.target.closest?.("form[data-task-form]")) syncTaskForm(); });
+for (const name of ["input", "change"]) document.addEventListener(name, e => {
+  const form = e.target.closest?.("form[data-task-form]");
+  if (form) { syncTaskForm(form); taskDraftVersion++; }
+  const quick = e.target.closest?.("form[data-quick-task]");
+  if (quick) { quickTaskDraft = String(new FormData(quick).get("task") ?? ""); taskDraftVersion++; }
+});
 for(const name of ["input","change"])document.addEventListener(name,e=>{const form=e.target.closest?.("form[data-rule-form]");if(!form||!ruleForm||ruleForm.saving)return;const f=new FormData(form);for(const key of ["name","words","minChars","maxChars","cwdPrefix","agent","model","effort"])ruleForm[key]=String(key==="model" ? form.elements?.model?.value ?? f.get(key) ?? ruleForm.model ?? "" : f.get(key)??"");});
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
@@ -1505,6 +1602,7 @@ document.addEventListener("click", async e => {
     claudeDesktopConfirm = false;
     if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
     if(nav.disabled||nav.getAttribute?.("aria-disabled")==="true")return;
+    pageNavigationVersion++;
     page = pageOf(nav.dataset.page ?? nav.dataset.go);
     if (!PANEL) history.replaceState(null, "", `#${page}`);
     closePopover();
@@ -1624,9 +1722,9 @@ document.addEventListener("click", async e => {
     return;
   }
   const pickAgent = t.closest("[data-task-agent]");
-  if (pickAgent) { syncTaskForm(); taskForm.agent = pickAgent.dataset.taskAgent; taskForm.effort = ""; try { localStorage.setItem("es.taskAgent", taskForm.agent); } catch {} render(); return; }
+  if (pickAgent) { syncTaskForm(); taskDraftVersion++; taskForm.agent = pickAgent.dataset.taskAgent; taskForm.effort = ""; try { localStorage.setItem("es.taskAgent", taskForm.agent); } catch {} render(); return; }
   const pickEffort = t.closest("[data-task-effort]");
-  if (pickEffort) { syncTaskForm(); taskForm.effort = pickEffort.dataset.taskEffort; render(); return; }
+  if (pickEffort) { syncTaskForm(); taskDraftVersion++; taskForm.effort = pickEffort.dataset.taskEffort; render(); return; }
   if (t.closest("[data-rule-new]")) {
     const first = (agentList ?? []).find(a => a.installed && a.can?.headless);
     ruleForm = { name: "", words: "", minChars: "", maxChars: "", cwdPrefix: "", agent: first?.id ?? "", model: "", effort: "" };
@@ -1991,14 +2089,7 @@ document.addEventListener("submit", async e => {
   if (e.target.matches?.("[data-quick-task]")) {
     e.preventDefault();
     const text = String(new FormData(e.target).get("task") ?? "").trim();
-    if (!text) return;
-    try {
-      await call("POST", "/api/tasks", { agent: AUTO, task: text });
-      toast("已派出去，结果在「任务」页");
-      page = "tasks";
-      if (!PANEL) history.replaceState(null, "", "#tasks");
-    } catch (error) { toast(`没有派出去：${userErrorMessage(error)}`); }
-    await refresh(true);
+    await submitConsoleTask(e.target, { agent: AUTO, task: text }, true);
     return;
   }
   if (e.target.dataset?.providerBudgetForm) {
@@ -2099,6 +2190,7 @@ document.addEventListener("submit", async e => {
   const runForm = e.target.closest("form[data-task-form]");
   if (runForm) {
     e.preventDefault();
+    if (taskSubmitPending) return;
     const f = new FormData(runForm);
     const selectedModel = runForm.elements?.model?.value ?? String(f.get("model") ?? taskForm.model ?? "");
     if (selectedModel && !selectableModelNames().includes(selectedModel)) {
@@ -2106,17 +2198,9 @@ document.addEventListener("submit", async e => {
       taskNote = `没有派出去，请重新选择模型：${modelSelectionReason(selectedModel)}`;
       render(); return;
     }
-    taskNote = "";
-    try {
-      const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || ((state.rules ?? []).length ? AUTO : runForm.querySelector('[data-task-agent]:not([data-task-agent="auto"])')?.dataset.taskAgent);
-      const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(selectedModel ? { model: selectedModel } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
-      const r = await call("POST", "/api/tasks", body);
-      taskOpenIds.add(r.task.id);
-      taskForm.task = "";
-    } catch (error) {
-      taskNote = `没有派出去：${userErrorMessage(error)}`;
-    }
-    await refresh(true);
+    const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || ((state.rules ?? []).length ? AUTO : runForm.querySelector('[data-task-agent]:not([data-task-agent="auto"])')?.dataset.taskAgent);
+    const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(selectedModel ? { model: selectedModel } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
+    await submitConsoleTask(runForm, body);
     return;
   }
   const priceForm = e.target.closest("form[data-price-form]");
@@ -2158,7 +2242,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageOf(location.hash.slice(1));if(next===page)return;if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageOf(location.hash.slice(1));if(next===page)return;pageNavigationVersion++;if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();void refresh(true);});
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

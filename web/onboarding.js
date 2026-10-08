@@ -113,10 +113,11 @@ document.addEventListener("click", async event => {
   if (["dismiss", "finish"].includes(action)) { firstRun.active = false; render(); return; }
   if (["providers", "subscription", "agents"].includes(action)) {
     if (action === "subscription") { firstRun.subscription = true; firstRun.message = "请在订阅页面主动选择登录方式；新订阅默认关闭，需要你明确打开后才能继续。"; }
+    pageNavigationVersion++;
     page = action === "agents" ? "agents" : "providers"; if (action === "agents") firstRun.active = false;
     history.replaceState(null, "", `#${page}`); await refresh(true); return;
   }
-  if (action === "resume") { page = "agents"; history.replaceState(null, "", "#agents"); render(); return; }
+  if (action === "resume") { pageNavigationVersion++; page = "agents"; history.replaceState(null, "", "#agents"); render(); return; }
   if (action === "back") { firstRun.step = 2; firstRun.message = ""; render(); return; }
   if (action === "next") { firstRun.step = 2; render(); return; }
   firstRun.busy = true; firstRun.message = ""; render();
