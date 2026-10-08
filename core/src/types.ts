@@ -240,6 +240,8 @@ export interface GatewayLogEntry {
   attempts?: number;
   /** True only when reported usage and protocol termination are both complete. */
   usageComplete?: boolean;
+  /** Bounded decoder observations, separate from normalized usage and pricing claims. */
+  usageObservation?: import("./usage-observation.ts").UsageObservation;
   /** Token usage when the upstream reported it; absent on passthrough routes. */
   inputTokens?: number;
   outputTokens?: number;
@@ -248,8 +250,10 @@ export interface GatewayLogEntry {
   dropped?: string[];
   /** Which key of the provider's pool answered. */
   keyId?: string;
-  /** Estimated USD at the vendor's pay-as-you-go price when the call was made; absent when unpriced or on a subscription. */
+  /** Log-time estimated USD from user rates or an unverified legacy reference, never a vendor bill. */
   costUsd?: number;
+  /** New log-time evidence only. Absent means unknown provenance; never infer it from current config. */
+  pricingProvenance?: import("./pricing/provenance.ts").PricingProvenance;
   /** Why there is no cost: the provider is a flat subscription, or no price is known for the model. */
   costNote?: "subscription" | "unpriced";
   /** Short failure or recovery description. */

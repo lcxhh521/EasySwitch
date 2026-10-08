@@ -69,6 +69,7 @@ import { vertexConfigIssue, vertexKind as vertexMode, type VertexConfig } from "
 import { CLAUDE_DESKTOP_ISOLATION_BLOCKER, findClaudeDesktopExecutable, prepareClaudeDesktopFixtureSession, type ClaudeDesktopOptions, type ClaudeDesktopSession } from "./claude-desktop.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
 import { costOf, ratesFor } from "./pricing/cost.ts";
+import { estimateProvenance, subscriptionProvenance, unpricedProvenance } from "./pricing/provenance.ts";
 import { accountCommandLine, clearResting, createAccount, isResting, markResting, pickAccount, touch as touchAccount } from "./accounts.ts";
 import { keySecretId, newKeyId, pickKey } from "./keypool.ts";
 import { copilotQuotaCapability } from "./copilot-quota.ts";
@@ -167,19 +168,28 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 /** Stamps an estimated cost on a finished call, using the price in force right now. */
 export function priceEntry(store: Store, entry: GatewayLogEntry): void {
   const provider = entry.providerId ? store.provider(entry.providerId) : undefined;
-  if (!provider) return;
-  if (provider.billing === "subscription") {
-    entry.costNote = "subscription";
+  if (!provider) {
+    entry.pricingProvenance = unpricedProvenance("provider-unavailable");
     return;
   }
-  if (entry.inputTokens === undefined || entry.outputTokens === undefined) return;
+  if (provider.billing === "subscription") {
+    entry.costNote = "subscription";
+    entry.pricingProvenance = subscriptionProvenance();
+    return;
+  }
+  if (entry.inputTokens === undefined || entry.outputTokens === undefined) {
+    entry.pricingProvenance = unpricedProvenance("usage-unavailable");
+    return;
+  }
   const model = entry.model.slice(entry.model.indexOf("/") + 1);
   const priced = ratesFor(provider, model);
   if (!priced) {
     entry.costNote = "unpriced";
+    entry.pricingProvenance = unpricedProvenance("rates-unavailable");
     return;
   }
   entry.costUsd = costOf(priced.rates, { input: entry.inputTokens, output: entry.outputTokens, cached: entry.cachedTokens ?? 0 });
+  entry.pricingProvenance = estimateProvenance(priced, entry.cachedTokens);
 }
 
 let agentCache: { at: number; list: DetectedAgent[] } | undefined;

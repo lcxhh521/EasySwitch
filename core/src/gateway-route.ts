@@ -51,12 +51,14 @@ async function observe(response: Response, protocol: ApiProtocol, onUsage?: (usa
       for (const c of m.tool_calls ?? []) if (c.id) ids.push(c.id);
     }
   };
+  try {
   if (streaming) {
     for await (const data of sseData(response.body!)) {
       if (data === "[DONE]") { meter.done(); break; }
       try { take(JSON.parse(data)); } catch { meter.invalidate(); /* Observation never changes native bytes. */ }
     }
   } else take(await response.json() as Json);
+  } catch (error) { meter.decoderFailed(); throw error; }
   reasoningMemory.remember(ids, reasoning);
   return { usage: meter.finish(), failed: meter.failed };
 }
@@ -79,6 +81,9 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     usageComplete, status, ms: Math.round(performance.now() - started), ...(note ? { note } : {}), ...(keyId ? { keyId } : {}),
     ...(prepared?.dropped.length ? { dropped: [...new Set(prepared.dropped)] } : {}),
     ...(usage ? { inputTokens: usage.input, outputTokens: usage.output, cachedTokens: usage.cached } : {}),
+    // Native observation may outlive a failed downstream pipeline. Capture only
+    // facts known now; never let later decoder activity mutate a logged row.
+    ...(usage?.observation ? { usageObservation: structuredClone(usage.observation) } : {}),
   } satisfies GatewayLogEntry);
   const abort = new AbortController(); res.on("close", () => abort.abort());
   let downstream: Downstream | undefined;

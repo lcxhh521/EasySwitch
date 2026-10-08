@@ -1,4 +1,5 @@
 import type { ApiProtocol } from "./types.ts";
+import { observeUsage } from "./usage-observation.ts";
 import { OUTPUT_LIMITS, ProtocolError, type OutputKind, type Json, type OutputEvent, type Stop, type Usage } from "./protocol.ts";
 
 /** Bound both unterminated SSE frames and total retained output before parsing untrusted JSON. */
@@ -77,10 +78,22 @@ export class OutputUsageTracker {
   #terminal = false;
   #finalUsage = false;
   #invalid = false;
+  #decoderFailure = false;
   failed = false;
   constructor(protocol: ApiProtocol, streaming: boolean) { this.#protocol = protocol; this.#streaming = streaming; }
-  done(): void { if (this.#protocol === "chat") this.#terminal = true; }
-  invalidate(): void { this.#invalid = true; }
+  done(): void { if (this.#protocol === "chat") this.#terminal = true; this.#syncObservation(); }
+  invalidate(): void { this.#invalid = true; this.#syncObservation(); }
+  decoderFailed(): void { this.#decoderFailure = true; this.#syncObservation(); }
+  #syncObservation(finished = false): void {
+    // Snapshots share only this metadata object so a later error/terminal can
+    // update evidence even when no further numeric usage event is emitted.
+    const observation = this.#usage?.observation;
+    if (!observation) return;
+    observation.terminalObserved = this.#terminal;
+    observation.finalUsageObserved = finished && this.#terminal && this.#finalUsage;
+    observation.decoderFailed = this.failed || this.#decoderFailure;
+    observation.decoderInvalid = this.#invalid;
+  }
   take(j: Json): Usage | undefined {
     if (!j || typeof j !== "object" || Array.isArray(j)) { this.invalidate(); return undefined; }
     if (j.error || j.response?.error || j.type === "error" || j.type === "response.failed" || j.status === "failed") this.failed = true;
@@ -106,10 +119,14 @@ export class OutputUsageTracker {
     this.#terminal ||= terminal;
     const moreContent = j.type === "content_block_delta" || typeof j.type === "string" && j.type.startsWith("response.") && j.type.endsWith(".delta") || j.choices?.some((c: Json) => c.delta?.content || c.delta?.reasoning_content || c.delta?.tool_calls?.length) || j.candidates?.some((c: Json) => c.content?.parts?.length);
     if (this.#streaming && !raw && moreContent) this.#finalUsage = false;
-    if (raw) { this.#usage = usageOf(this.#protocol, raw); this.#finalUsage = final; return { ...this.#usage, complete: false }; }
+    if (raw) {
+      this.#usage = { ...usageOf(this.#protocol, raw), observation: observeUsage(this.#protocol, raw, this.#streaming) };
+      this.#finalUsage = final; this.#syncObservation(); return { ...this.#usage, complete: false };
+    }
+    this.#syncObservation();
     return undefined;
   }
-  finish(): Usage | undefined { return this.#usage && { ...this.#usage, complete: this.#usage.complete === true && this.#terminal && this.#finalUsage && !this.failed && !this.#invalid }; }
+  finish(): Usage | undefined { this.#syncObservation(true); return this.#usage && { ...this.#usage, complete: this.#usage.complete === true && this.#terminal && this.#finalUsage && !this.failed && !this.#invalid }; }
 }
 
 /** Wire decoders feed neutral events; none of them fabricates a Chat response. */
@@ -172,6 +189,7 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
     completedItems.add(index);
     yield { type: "block_end", kind: i.type === "function_call" ? "call" : i.type === "reasoning" ? "reasoning" : "text", index };
   }
+  try {
   for await (const data of outputData(response.body, true)) {
     if (data === "[DONE]") { meter.done(); break; }
     const j = JSON.parse(data) as Json;
@@ -285,6 +303,7 @@ export async function* readOutput(response: Response, protocol: ApiProtocol): As
   if (protocol === "gemini") yield* endGemini();
   const finalUsage = meter.finish(); if (finalUsage) yield { type: "usage", usage: finalUsage };
   yield { type: "stop", reason };
+  } catch (error) { meter.decoderFailed(); throw error; }
 }
 
 function* wholeOutput(j: Json, protocol: ApiProtocol): Generator<OutputEvent> {
