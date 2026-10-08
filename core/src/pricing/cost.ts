@@ -32,10 +32,15 @@ function hostOf(url: string): string {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ""; }
 }
 
+/** External ids must never resolve to properties inherited from Object.prototype. */
+function ownValue<T>(values: Record<string, T> | undefined, key: string): T | undefined {
+  return values && Object.hasOwn(values, key) ? values[key] : undefined;
+}
+
 /** The vendor key in the price table for a provider, from its address. */
 export function vendorFor(baseUrl: string): string | undefined {
   const host = hostOf(baseUrl);
-  return HOST_ALIASES[host] ?? TABLE.hostVendor[host];
+  return ownValue(HOST_ALIASES, host) ?? ownValue(TABLE.hostVendor, host);
 }
 
 function fromRow(row: Row): Rates {
@@ -70,22 +75,29 @@ export interface Priced { rates: Rates; source: PriceSource }
 /** The rates for one model on one provider, or undefined when nothing is known. */
 export function ratesFor(provider: Pick<Provider, "baseUrl" | "prices">, model: string): Priced | undefined {
   for (const id of candidates(model)) {
-    const own = provider.prices?.[id];
+    const own = ownValue(provider.prices, id);
     if (own) return { rates: own, source: "user" };
   }
   const vendor = vendorFor(provider.baseUrl);
-  const table = vendor ? TABLE.prices[vendor] : undefined;
-  if (table) for (const id of candidates(model)) if (table[id]) return { rates: fromRow(table[id]), source: "legacy" };
+  const table = vendor ? ownValue(TABLE.prices, vendor) : undefined;
+  if (table) for (const id of candidates(model)) {
+    const row = ownValue(table, id);
+    if (row) return { rates: fromRow(row), source: "legacy" };
+  }
   // A relay re-sells another vendor's model under its own id: price it as the vendor that makes it.
   const origin = originVendor(model);
-  if (origin && TABLE.prices[origin]) for (const id of candidates(model)) if (TABLE.prices[origin]![id]) return { rates: fromRow(TABLE.prices[origin]![id]!), source: "legacy" };
+  const originTable = origin ? ownValue(TABLE.prices, origin) : undefined;
+  if (originTable) for (const id of candidates(model)) {
+    const row = ownValue(originTable, id);
+    if (row) return { rates: fromRow(row), source: "legacy" };
+  }
   // Otherwise look across vendors for an exact id.
   const matches = new Set<string>();
   const found: Row[] = [];
   for (const [v, models] of Object.entries(TABLE.prices)) {
     if (v === "openrouter" || v === "vercel-ai-gateway" || v === "zenmux" || v === "kilo" || v === "nanogpt" || v === "huggingface") continue;
     for (const id of candidates(model)) {
-      const row = models[id];
+      const row = ownValue(models, id);
       if (row) { found.push(row); matches.add(v); }
     }
   }

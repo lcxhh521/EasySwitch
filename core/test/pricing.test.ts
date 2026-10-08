@@ -32,6 +32,42 @@ test("the user's own price beats the table", () => {
   assert.deepEqual(priced.rates, mine);
 });
 
+test("prototype-shaped model ids remain unpriced across hosts, overrides and normalized candidates", () => {
+  const ids = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "vendor/constructor", "constructor[1m]", "__proto__:free", "vendor/toString:beta"];
+  for (const baseUrl of ["https://api.deepseek.com/v1", "https://relay.example.com/v1", "https://constructor/v1", "https://__proto__/v1"]) {
+    for (const prices of [undefined, {}, Object.create(null)]) {
+      for (const model of ids) {
+        assert.equal(ratesFor({ baseUrl, prices }, model), undefined, `${baseUrl}: ${model}`);
+      }
+    }
+  }
+});
+
+test("vendor lookup ignores inherited host keys while preserving aliases and table hosts", () => {
+  for (const host of ["constructor", "__proto__", "toString"]) assert.equal(vendorFor(`https://${host}/v1`), undefined);
+  assert.equal(vendorFor("https://API.OPENAI.COM/v1"), "openai");
+  assert.equal(vendorFor("https://api.moonshot.cn/v1"), "moonshot");
+  assert.equal(vendorFor("https://api.anthropic.com/v1"), "anthropic");
+});
+
+test("only own user prices override legacy rates, including explicit prototype-shaped ids", () => {
+  const mine = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 };
+  const inherited = Object.create({ "deepseek-v4-flash": mine, "my-secret-model": mine });
+  const baseUrl = "https://api.deepseek.com/v1";
+  assert.deepEqual(ratesFor({ baseUrl, prices: inherited }, "deepseek-v4-flash"), ratesFor({ baseUrl }, "deepseek-v4-flash"));
+  assert.equal(ratesFor({ baseUrl, prices: inherited }, "my-secret-model"), undefined);
+
+  for (const model of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    // JSON and computed keys both retain __proto__ as an own data property.
+    for (const prices of [{ [model]: mine }, JSON.parse(JSON.stringify({ [model]: mine })), Object.assign(Object.create(null), { [model]: mine })]) {
+      assert.deepEqual(ratesFor({ baseUrl, prices }, model), { rates: mine, source: "user" });
+    }
+  }
+  const free = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  assert.deepEqual(ratesFor({ baseUrl, prices: { "deepseek-v4-flash": free } }, "deepseek-v4-flash"), { rates: free, source: "user" });
+  assert.deepEqual(ratesFor({ baseUrl, prices: { "custom-model": mine } }, "vendor/custom-model:free"), { rates: mine, source: "user" });
+});
+
 test("cost: cached tokens bill at the cache rate, the rest of the prompt at the input rate", () => {
   const rates = { input: 2, output: 10, cacheRead: 0.5, cacheWrite: 0 };
   // 1M prompt tokens of which 400k cached, 100k output: 0.6M*2 + 0.4M*0.5 + 0.1M*10 = 1.2 + 0.2 + 1.0
@@ -66,4 +102,21 @@ test("a finished call is priced at log time; subscriptions and unknown models sa
   assert.equal(Math.round(summary.totals.costUsd * 1e6) / 1e6, 0.42);
   assert.equal(summary.totals.unpriced, 1);
   assert.equal(summary.totals.subscription, 1);
+});
+
+test("prototype-shaped model ids are logged as unpriced rather than invalid estimates", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "es-price-")));
+  store.upsertProvider(provider({ id: "ds", prices: {} }));
+  store.upsertProvider(provider({ id: "relay", baseUrl: "https://relay.example.com/v1" }));
+  for (const providerId of ["ds", "relay"]) {
+    for (const model of ["constructor", "__proto__", "toString"]) {
+      const entry: GatewayLogEntry = {
+        at: new Date().toISOString(), model: `${providerId}/${model}`, providerId, route: "chat-translate", harness: "codex", status: 200, ms: 1,
+        inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0,
+      };
+      priceEntry(store, entry);
+      assert.equal(entry.costUsd, undefined);
+      assert.equal(entry.costNote, "unpriced");
+    }
+  }
 });
