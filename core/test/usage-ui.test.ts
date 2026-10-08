@@ -10,29 +10,76 @@ const row = (overrides: Partial<GatewayLogEntry> = {}): GatewayLogEntry => ({
   at: NOW.toISOString(), model: "fixture/m", providerId: "fixture", harness: "codex", route: "chat-translate", status: 200,
   ms: 1, inputTokens: 0, outputTokens: 0, usageComplete: true, ...overrides,
 });
+const turn = () => new Promise<void>(resolve => setImmediate(resolve));
 function ui(rows: GatewayLogEntry[]) {
-  const handlers: Record<string, Array<(event: any) => unknown>> = {}, chartHandlers: Record<string, (event: any) => unknown> = {};
-  let tip: any;
+  const handlers: Record<string, Array<(event: any) => unknown>> = {}, windowHandlers: Record<string, Array<() => unknown>> = {}, chartHandlers: Record<string, (event: any) => unknown> = {};
+  const timers = new Map<number, { callback: () => void; delay: number }>(); let timerId = 0;
+  let tip: any, usageMounted = false, pageWrites = 0, usageWrites = 0, html = "", usageHtml = "";
+  let usageButtons: any[] = [], usageSummary: any = null;
+  const replaceUsage = (value: string) => {
+    if (usageButtons.includes(document.activeElement) || document.activeElement === usageSummary) document.activeElement = null;
+    usageHtml = value;
+    usageButtons = [...value.matchAll(/<button([^>]*)>/g)].map(match => {
+      const attr = /data-([a-z-]+)(?:="([^"]*)")?/.exec(match[1]!);
+      const key = attr?.[1]?.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      const node = { dataset: key ? { [key]: attr?.[2] ?? "" } : {}, disabled: /(?:^|\s)disabled(?:\s|=|$)/.test(match[1]!),
+        matches: () => false, focus() { if (!node.disabled) document.activeElement = node; } };
+      return node;
+    });
+    usageSummary = value.includes('data-keep="usage-days"') ? { tagName: "SUMMARY", matches: () => false,
+      parentElement: { dataset: { keep: "usage-days" }, querySelector: () => usageSummary }, focus() { document.activeElement = usageSummary; } } : null;
+  };
+  const usageNode = { get innerHTML() { return usageHtml; }, set innerHTML(value: string) { replaceUsage(value); usageWrites++; },
+    contains: (node: unknown) => usageButtons.includes(node) || !!usageSummary && node === usageSummary,
+    querySelectorAll: (selector: string) => selector.startsWith("details") ? usageSummary ? [usageSummary.parentElement] : [] : usageButtons };
+  const main = { get innerHTML() { return html; }, set innerHTML(value: string) {
+    html = value; pageWrites++; usageMounted = value.includes('id="usage-content"');
+    if (usageMounted) replaceUsage(value.split('<section id="usage-content">')[1]!.split('</section>')[0]!);
+  } };
   const chart = { innerHTML: "", clientWidth: 600, append(node: any) { tip = node; }, getBoundingClientRect: () => ({ left: 0, top: 0 }),
     querySelector: () => ({ addEventListener(name: string, handler: (event: any) => unknown) { chartHandlers[name] = handler; } }) };
-  const context = vm.createContext({ URLSearchParams, console, location: { search: "", hash: "#usage" }, window: { addEventListener() {} }, history: { replaceState() {} },
-    document: { activeElement: null, addEventListener(name: string, fn: any) { (handlers[name] ??= []).push(fn); },
-      querySelector: (selector: string) => selector === "#chart" ? chart : null, querySelectorAll: () => [], createElement: () => ({ style: {}, hidden: true }) },
-    localStorage: { getItem: () => null, setItem() {} }, setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame() {},
+  const location = { search: "", hash: "#usage" };
+  const document = { activeElement: null as any, addEventListener(name: string, fn: any) { (handlers[name] ??= []).push(fn); },
+    querySelector: (selector: string) => selector === "#page" ? main : selector === "#usage-content" ? usageMounted ? usageNode : null : selector === "#chart" ? chart : null,
+    querySelectorAll: () => [], createElement: () => ({ style: {}, hidden: true }) };
+  const context = vm.createContext({ URLSearchParams, AbortController, console, location,
+    window: { addEventListener(name: string, fn: any) { (windowHandlers[name] ??= []).push(fn); } },
+    history: { replaceState(_state: unknown, _title: string, hash: string) { location.hash = hash; } }, document,
+    localStorage: { getItem: () => null, setItem() {} },
+    setTimeout(callback: () => void, delay: number) { const id = ++timerId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id: number) { timers.delete(id); }, requestAnimationFrame() {},
     fetch() { throw new Error("No network in usage VM fixtures"); }, fixtureUsage: summarize(rows, "today", NOW),
   });
   vm.runInContext(readFileSync(new URL("../../web/usage-display.js", import.meta.url), "utf8"), context);
   const source = readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf('fetch("icons/manifest.json")')), context);
   const run = (code: string): any => vm.runInContext(code, context);
-  run(`state={providers:[{id:'fixture',name:'Fixture',icon:'letter:F'}],display:{currency:'USD',usdToCny:8}}; usage=fixtureUsage; usageRange='today';
-    globalThis.requests=[];globalThis.html='';render=()=>{html=renderUsage();};
-    call=(method,path)=>new Promise((resolve,reject)=>requests.push({method,path,resolve,reject}));render();`);
-  const clickRange = async (range: string) => {
-    const target: any = { dataset: { range }, closest: (selector: string) => selector === "[data-range]" ? target : null };
+  run(`globalThis.fixtureState={providers:[{id:'fixture',name:'Fixture',icon:'letter:F'}],display:{currency:'USD',usdToCny:8}};
+    state=fixtureState; usage=fixtureUsage; usageRange='today'; agentList=[]; taskList={tasks:[]};
+    globalThis.requests=[];globalThis.otherRequests=[];globalThis.messages=[];
+    renderHeader=()=>{};renderTasks=()=>'<form>Task draft</form>';renderSettings=()=>'<form>Settings draft</form>';
+    renderAgents=()=>'<form>Quick task draft</form>';budgetSettingsCard=()=>'<form>Budget draft</form>';toast=message=>messages.push(message);
+    call=(method,path,body,options)=>{
+      if(path.startsWith('/api/usage?'))return new Promise((resolve,reject)=>requests.push({method,path,resolve,reject,signal:options?.signal}));
+      otherRequests.push({method,path});
+      if(path==='/api/state')return Promise.resolve(fixtureState);
+      if(path==='/api/tasks')return Promise.resolve({tasks:[]});
+      if(path==='/api/chatgpt'||path==='/api/claude-desktop')return Promise.resolve(null);
+      throw new Error('Unexpected fixture route: '+path);
+    };render();`);
+  const click = async (selector: string, dataset: Record<string, string> = {}) => {
+    const target: any = { dataset, closest: (s: string) => s === selector ? target : null };
     for (const handler of handlers.click ?? []) await handler({ target, preventDefault() {} });
   };
-  return { run, html: (): string => run("html"), chart, clickRange,
+  return { run, document, html: (): string => usageMounted ? usageHtml : html, chart, messages: (): string[] => run("messages"),
+    clickRange: (range: string) => click("[data-range]", { range }), retry: () => click("[data-usage-retry]"),
+    metric: (metric: string) => click("[data-metric]", { metric }),
+    nav: (page: string) => click("#nav button, [data-go]", { page }), manualRefresh: () => click("#refresh"),
+    hash: async (page: string) => { location.hash = `#${page}`; for (const handler of windowHandlers.hashchange ?? []) await handler(); await turn(); },
+    writes: () => ({ page: pageWrites, usage: usageWrites }),
+    expire: async () => { const entry = [...timers.entries()].find(([, timer]) => timer.delay === 10_000); assert.ok(entry); timers.delete(entry[0]); entry[1].callback(); await turn(); },
+    timerCount: () => timers.size,
+    focusSummary: () => { assert.ok(usageSummary); usageSummary.focus(); },
+    focusUsage: (key: string, value: string) => { const button = usageButtons.find(button => Object.hasOwn(button.dataset, key) && button.dataset[key] === value); assert.ok(button); button.focus(); },
     hover: (index = 0) => { chartHandlers.mousemove?.({ target: { closest: () => ({ dataset: { i: String(index) } }) }, clientX: 50, clientY: 60 }); return tip?.innerHTML as string; },
   };
 }
@@ -82,43 +129,226 @@ test("configured CNY conversion and tiny positive amounts are explicit without c
   assert.equal(app.run("JSON.stringify(usage)"), before);
 });
 
-test("latest range wins when older successful or failed requests arrive after a newer response", async () => {
+test("latest selected range wins immediately and cancels older successful or failed reads", async () => {
   for (const staleFails of [false, true]) {
     const app = ui([row({ costUsd: 1 })]);
     const first = app.clickRange("7d"), second = app.clickRange("30d");
     assert.equal(app.run("requests.length"), 2);
     assert.equal(app.run("requests[0].path"), "/api/usage?range=7d"); assert.equal(app.run("requests[1].path"), "/api/usage?range=30d");
-    app.run("render()"); assert.match(app.html(), /data-range="today" class="on"/, "while pending the active range still describes displayed data");
+    assert.equal(app.run("requests[0].signal.aborted"), true);
+    assert.equal(app.run("requests.filter(r=>!r.signal.aborted).length"), 1);
+    assert.match(app.html(), /data-range="30d" class="on"/); assert.match(app.html(), /正在读取用量/);
+    assert.doesNotMatch(app.html(), /\$1\.00/, "a new range must not label an old range's money");
     app.run("requests[1].resolve({...fixtureUsage,range:'30d'})"); await second;
-    app.run(staleFails ? "requests[0].reject(new Error('stale fixture failure'))" : "requests[0].resolve({...fixtureUsage,range:'7d'})"); await first;
+    app.run(staleFails ? "requests[0].reject(new Error('stale fixture failure'))" : "requests[0].resolve({...fixtureUsage,range:'7d'})"); await first; await turn();
     assert.equal(app.run("usage.range"), "30d"); assert.match(app.html(), /data-range="30d" class="on"/);
+    assert.doesNotMatch(app.html(), /读取用量失败|正在读取用量/); assert.equal(app.timerCount(), 0);
   }
 });
 
-test("older response cannot fill a newer pending range or restore data after that range fails", async () => {
+test("older response cannot fill a newer pending range or erase its explicit retry state", async () => {
   for (const olderFirst of [true, false]) {
     const app = ui([row({ costUsd: 1 })]);
     const first = app.clickRange("7d"), second = app.clickRange("30d");
-    if (olderFirst) {
-      app.run("requests[0].resolve({...fixtureUsage,range:'7d'})"); await first;
-      assert.equal(app.run("usage.range"), "today");
-    }
+    if (olderFirst) { app.run("requests[0].resolve({...fixtureUsage,range:'7d'})"); await first; assert.equal(app.run("usage"), null); }
     app.run("requests[1].reject(new Error('current fixture failure'))"); await second;
     if (!olderFirst) { app.run("requests[0].resolve({...fixtureUsage,range:'7d'})"); await first; }
-    assert.equal(app.run("usage"), null);
-    // Error-state presentation is a separate slice; stale requests may not
-    // revive a successful result from a different range after the failure.
-    assert.match(app.html(), /正在读取用量/);
+    assert.equal(app.run("usage"), null); assert.match(app.html(), /读取用量失败/); assert.match(app.html(), /data-usage-retry[^>]*>重试/);
+    assert.match(app.html(), /data-range="30d" class="on"/); assert.doesNotMatch(app.html(), /正在读取用量|current fixture failure/);
   }
 });
 
-test("request sequence also rejects stale refreshes of the same range", async () => {
+test("same-range repeated clicks and retry events share one bounded read", async () => {
   const app = ui([row({ costUsd: 1 })]);
-  const first = app.clickRange("today"), second = app.clickRange("today");
-  app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await second;
-  app.run("requests[0].resolve(fixtureUsage)"); await first;
-  assert.equal(app.run("usage.totals.costUsd"), 2);
-  assert.match(app.html(), /data-range="today" class="on"/);
+  const first = app.clickRange("today"), second = app.clickRange("today"), third = app.retry();
+  assert.equal(app.run("requests.length"), 1); assert.equal(app.timerCount(), 1);
+  assert.match(app.html(), /data-usage-retry aria-disabled="true"/); assert.match(app.html(), /正在刷新用量/);
+  app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await Promise.all([first, second, third]);
+  assert.equal(app.run("usage.totals.costUsd"), 2); assert.match(app.html(), /\$2\.00/); assert.equal(app.timerCount(), 0);
+});
+
+test("first load visibly transitions from loading to a safe failure and retry success", async () => {
+  const app = ui([]); app.run("usage=null;render()");
+  const first = app.retry(); assert.match(app.html(), /正在读取用量/); assert.match(app.html(), /data-usage-retry aria-disabled="true"/);
+  app.run("requests[0].reject(new Error('<img src=x>secret network detail'))"); await first;
+  assert.match(app.html(), /读取用量失败/); assert.doesNotMatch(app.html(), /正在读取|secret|<img src=x>/);
+  const retry = app.retry(); assert.equal(app.run("requests.length"), 2);
+  app.run("requests[1].resolve(fixtureUsage)"); await retry;
+  assert.match(app.html(), /无调用/); assert.doesNotMatch(app.html(), /读取用量失败|正在读取用量/);
+});
+
+test("direct initial usage entry renders loading and retry independently of slow general state", async () => {
+  const app = ui([]);
+  app.run("usage=null;state=null;document.querySelector('#page').innerHTML='';globalThis.originalCall=call;call=(m,p,b,o)=>p==='/api/state'?new Promise(resolve=>globalThis.finishState=()=>resolve(fixtureState)):originalCall(m,p,b,o)");
+  const refresh = app.run("refresh(true)");
+  assert.match(app.html(), /正在读取用量/); assert.match(app.html(), /data-range="today" class="on"/);
+  app.run("requests[0].reject(new Error('fixture failure'))"); await turn();
+  assert.match(app.html(), /读取用量失败/); assert.match(app.html(), /data-usage-retry[^>]*>重试/);
+  app.run("finishState()"); await refresh; assert.match(app.html(), /读取用量失败/);
+});
+
+test("usage loaded before display settings consistently labels and selects its USD fallback", async () => {
+  const app = ui([row({ costUsd: 1 })]); app.run("usage=null;state=null;render()");
+  const read = app.retry(); app.run("requests[0].resolve(fixtureUsage)"); await read;
+  assert.match(app.html(), /data-currency="USD" class="on"/); assert.doesNotMatch(app.html(), /data-currency="CNY" class="on"/);
+  assert.match(app.html(), /\$1\.00/); assert.match(app.html(), /金额以 USD 记录/);
+});
+
+test("same-range refresh failure retains exact data with a stale warning until recovery", async () => {
+  const app = ui([row({ costUsd: 0.2, usageComplete: false }), row({ inputTokens: undefined })]);
+  const before = app.run("JSON.stringify(usage)");
+  const first = app.retry(); app.run("requests[0].reject(new Error('fixture failure'))"); await first;
+  assert.equal(app.run("JSON.stringify(usage)"), before); assert.match(app.html(), /刷新失败.*上次成功读取的数据，可能已过期/);
+  assert.match(app.html(), /另有 1 次费用缺失/); assert.match(app.html(), /1 次费用或用量信息不完整/);
+  const retry = app.retry(); app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:3}})"); await retry;
+  assert.equal(app.run("usage.totals.costUsd"), 3); assert.doesNotMatch(app.html(), /刷新失败|可能已过期/);
+});
+
+test("failed selected range can be retried or replaced without reviving previous-range data", async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  const first = app.clickRange("30d"); app.run("requests[0].reject(new Error('fixture failure'))"); await first;
+  const retry = app.retry(); assert.equal(app.run("requests[1].path"), "/api/usage?range=30d");
+  const next = app.clickRange("7d"); assert.equal(app.run("requests[1].signal.aborted"), true);
+  app.run("requests[2].resolve({...fixtureUsage,range:'7d'})"); await next;
+  app.run("requests[1].resolve({...fixtureUsage,range:'30d'})"); await retry;
+  assert.equal(app.run("usage.range"), "7d"); assert.match(app.html(), /data-range="7d" class="on"/);
+});
+
+for (const hasData of [false, true]) test(`hung usage GET times out, aborts and permits retry (${hasData ? "with" : "without"} data)`, async () => {
+  const app = ui([row({ costUsd: 1 })]); if (!hasData) app.run("usage=null;render()");
+  const first = app.retry(); await app.expire(); await first;
+  assert.equal(app.run("requests[0].signal.aborted"), true); assert.equal(app.timerCount(), 0);
+  assert.match(app.html(), hasData ? /刷新超时.*可能已过期/ : /读取用量超时/); assert.doesNotMatch(app.html(), /正在读取/);
+  const retry = app.retry(); app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await retry;
+  app.run("requests[0].resolve(fixtureUsage)"); await turn();
+  assert.equal(app.run("usage.totals.costUsd"), 2); assert.doesNotMatch(app.html(), /超时/);
+});
+
+test("ordinary refresh updates existing usage and coalesces concurrent refreshes", async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  const first = app.run("refresh()"), second = app.run("refresh()"), third = app.manualRefresh(); await turn();
+  assert.equal(app.run("requests.length"), 1);
+  app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:4}})"); await Promise.all([first, second, third]);
+  assert.equal(app.run("usage.totals.costUsd"), 4); assert.match(app.html(), /\$4\.00/);
+  const again = app.run("refresh()"); assert.equal(app.run("requests.length"), 2);
+  app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:5}})"); await again;
+  assert.match(app.html(), /\$5\.00/);
+});
+
+test("repeated initial polls cannot starve a slow read and a timed-out poll can recover", async () => {
+  const app = ui([]); app.run("usage=null;render()");
+  const polls = [app.run("refresh()"), app.run("refresh()"), app.run("refresh()")]; await turn();
+  assert.equal(app.run("requests.length"), 1); assert.equal(app.timerCount(), 1);
+  await app.expire(); await Promise.all(polls); assert.match(app.html(), /读取用量超时/);
+  const next = app.run("refresh()"); app.run("requests[1].resolve(fixtureUsage)"); await next;
+  app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,calls:999}})"); await turn();
+  assert.equal(app.run("usage.totals.calls"), 0); assert.match(app.html(), /无调用/);
+});
+
+test("usage refresh proceeds while the unrelated state request is slow", async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  app.run("globalThis.originalCall=call;call=(m,p,b,o)=>p==='/api/state'?new Promise(resolve=>globalThis.finishState=()=>resolve(fixtureState)):originalCall(m,p,b,o)");
+  const refresh = app.run("refresh()");
+  app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await turn();
+  assert.match(app.html(), /\$2\.00/); app.run("finishState()"); await refresh;
+});
+
+test("range changes during a general refresh cannot be overwritten by its completion", async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  const refresh = app.run("refresh()"), next = app.clickRange("30d");
+  app.run("requests[1].resolve({...fixtureUsage,range:'30d',totals:{...fixtureUsage.totals,costUsd:6}})"); await next;
+  app.run("requests[0].resolve(fixtureUsage)"); await refresh;
+  assert.equal(app.run("usage.range"), "30d"); assert.match(app.html(), /\$6\.00/);
+});
+
+for (const method of ["nav", "hash"] as const) test(`${method} navigation cancels usage reads, never fetches off-page and returning loads once`, async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  const first = app.retry(); await app[method]("tasks");
+  assert.equal(app.run("requests[0].signal.aborted"), true); const before = app.writes();
+  app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:9}})"); await first; await turn();
+  assert.deepEqual(app.writes(), before); assert.equal(app.run("usage.totals.costUsd"), 1); assert.equal(app.run("page"), "tasks");
+  await app.run("loadUsage()"); await app.run("refresh()"); assert.equal(app.run("requests.length"), 1);
+  const back = app[method]("usage"); await turn(); assert.equal(app.run("requests.length"), 2);
+  app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await back; await turn();
+  assert.equal(app.run("usage.totals.costUsd"), 2); assert.match(app.html(), /\$2\.00/);
+});
+
+test("returning to the same usage range before an old reply arrives preserves the new visit", async () => {
+  const app = ui([row({ costUsd: 1 })]); const old = app.retry();
+  await app.nav("tasks"); const back = app.nav("usage"); await turn();
+  assert.equal(app.run("requests.length"), 2);
+  app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await back;
+  const before = app.writes(); app.run("requests[0].reject(new Error('old visit failure'))"); await old; await turn();
+  assert.deepEqual(app.writes(), before); assert.equal(app.run("usage.totals.costUsd"), 2); assert.doesNotMatch(app.html(), /刷新失败/);
+});
+
+test("navigation during initial preset loading prevents old usage refresh from fetching the new page", async () => {
+  const app = ui([]);
+  app.run("fixtureState.providers=[];globalThis.originalCall=call;globalThis.delayState=true;call=(m,p,b,o)=>p==='/api/presets'?new Promise(resolve=>globalThis.finishPresets=()=>resolve([])):originalCall(m,p,b,o)");
+  const refresh = app.run("refresh(true)"); await turn();
+  // Subsequent navigation already has its own state/preset result.
+  app.run("presets=[{}]"); await app.nav("tasks");
+  const before = app.run("otherRequests.length"), writes = app.writes();
+  app.run("finishPresets();requests[0].resolve(fixtureUsage)"); await refresh;
+  assert.equal(app.run("otherRequests.length"), before); assert.deepEqual(app.writes(), writes); assert.equal(app.run("page"), "tasks");
+});
+
+test("late general refresh never replaces a newer task page or its focused draft", async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  app.run("globalThis.originalCall=call;globalThis.delayState=true;call=(m,p,b,o)=>p==='/api/state'&&delayState?(delayState=false,new Promise(resolve=>globalThis.finishState=()=>resolve(fixtureState))):originalCall(m,p,b,o)");
+  const refresh = app.run("refresh(true)"); await app.nav("tasks");
+  const input = { value: "Fresh task draft", matches: () => true }; app.document.activeElement = input;
+  const before = app.writes(); app.run("finishState();requests[0].resolve(fixtureUsage)"); await refresh;
+  assert.deepEqual(app.writes(), before); assert.equal(app.document.activeElement, input); assert.equal(input.value, "Fresh task draft");
+  assert.equal(app.run("page"), "tasks");
+});
+
+test("background and manual usage refresh preserve focused budget input and its DOM", async () => {
+  const app = ui([row({ costUsd: 1 })]);
+  const input = { value: "37.50", matches: () => true }; app.document.activeElement = input;
+  const before = app.writes(); const background = app.run("refresh()"), manual = app.manualRefresh(); await turn();
+  app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:8}})"); await Promise.all([background, manual]);
+  assert.equal(app.writes().page, before.page); assert.ok(app.writes().usage > before.usage);
+  assert.equal(app.document.activeElement, input); assert.equal(input.value, "37.50"); assert.match(app.html(), /\$8\.00/);
+});
+
+test("background reads keep keyboard focus on range, currency, metric and retry controls", async () => {
+  for (const [key, value] of [["range", "today"], ["metric", "cost"], ["currency", "USD"], ["usageRetry", ""]]) {
+    const app = ui([row({ costUsd: 1 })]); app.focusUsage(key!, value!);
+    const before = app.writes(); const refresh = app.run("refresh()"); await turn();
+    assert.equal(app.document.activeElement?.dataset[key!], value);
+    app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await refresh;
+    assert.equal(app.writes().page, before.page); assert.equal(app.document.activeElement?.dataset[key!], value);
+  }
+});
+
+test("background reads preserve the daily table summary focus and expanded state", async () => {
+  const app = ui([row({ costUsd: 1 })]); app.run("openDetails.add('usage-days');render()"); app.focusSummary();
+  const before = app.writes(); const refresh = app.run("refresh()"); await turn();
+  assert.equal(app.document.activeElement?.tagName, "SUMMARY");
+  app.run("requests[0].resolve(fixtureUsage)"); await refresh;
+  assert.equal(app.writes().page, before.page); assert.equal(app.document.activeElement?.parentElement.dataset.keep, "usage-days");
+  assert.match(app.html(), /data-keep="usage-days" open/);
+});
+
+test("chart metric selection changes only usage content and retains keyboard focus", async () => {
+  const app = ui([row({ costUsd: 1 })]); app.focusUsage("metric", "cost"); const before = app.writes();
+  await app.metric("cost");
+  assert.equal(app.writes().page, before.page); assert.equal(app.document.activeElement?.dataset.metric, "cost");
+  assert.match(app.html(), /data-metric="cost" class="on"/); assert.equal(app.run("requests.length"), 0);
+});
+
+test("failed manual refresh does not announce a successful refresh", async () => {
+  const app = ui([row({ costUsd: 1 })]); const refresh = app.manualRefresh();
+  app.run("requests[0].reject(new Error('fixture failure'))"); await refresh;
+  assert.match(app.html(), /刷新失败/); assert.equal(app.messages().length, 0);
+});
+
+test("malformed or wrong-range responses become retryable failures and keep same-range evidence", async () => {
+  for (const response of ["{}", "{...fixtureUsage,range:'30d'}"]) {
+    const app = ui([row({ costUsd: 1 })]); const refresh = app.retry(); app.run(`requests[0].resolve(${response})`); await refresh;
+    assert.equal(app.run("usage.totals.costUsd"), 1); assert.match(app.html(), /刷新失败.*可能已过期/);
+  }
 });
 
 test("no calls do not claim a zero bill or a complete history", () => {

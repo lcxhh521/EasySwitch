@@ -91,9 +91,9 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     "/api/tasks": { tasks: [] },
     "/api/plan": { accounts: [{ id: "plan-fixture", label: "Plan fixture", kind: "codex", planUsage: true, needsSignIn: false, on: false }] },
     "/api/doctor": { notice: "Read-only fixture report", findings: [] },
-    "/api/usage?range=7d": { totals: { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, costUsd: 0, unpriced: 0 }, byProvider: {}, byHarness: {}, days: [] },
+    "/api/usage?range=7d": { range: "7d", totals: { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, costUsd: 0, unpriced: 0 }, byProvider: {}, byHarness: {}, days: [] },
   };
-  const sandbox: Record<string, unknown> = { URLSearchParams, URL, console, location, document,
+  const sandbox: Record<string, unknown> = { URLSearchParams, URL, AbortController, console, location, document,
     history: { replaceState(_state: unknown, _title: string, hash: string) { location.hash = hash; history.push(hash); } },
     window: { addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); } },
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: () => 0,
@@ -172,6 +172,7 @@ test("real sidebar navigation renders every existing page and preserves settings
     nav.focus(); await app.click(`[data-page="${page}"]`);
     assert.equal(app.run("page"), page); assert.equal(app.location.hash, `#${page}`);
     assert.equal(app.node("#page-title").textContent, title); assert.match(app.html(), content);
+    if (page === "usage") { assert.equal(app.run("usage?.range"), "7d"); assert.equal(app.run("usageError"), ""); }
     assert.equal(nav.getAttribute("aria-current"), "page"); assert.equal(app.document.activeElement, nav);
     assert.equal(app.document.querySelectorAll("#nav button").filter(node => node.getAttribute("aria-current") === "page").length, 1);
   }

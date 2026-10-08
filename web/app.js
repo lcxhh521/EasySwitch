@@ -22,7 +22,9 @@ let page = PANEL ? "agents" : pageOf(location.hash.slice(1));
 let usageRange = "7d";
 let chartMetric = "tokens"; // "tokens" | "cost"
 let usage = null;
-let usageRequestSeq = 0;
+const usageRanges = { today: "今天", "7d": "7 天", "30d": "30 天", all: "已有记录" };
+let usageRequest = null; // One cancellable, bounded GET for the visible range.
+let usageError = "";
 let openProvider = null;
 let addForm = null; // { preset } while the add panel is open
 let chatgptInfo = null; // /api/chatgpt: installed, running, enhanced
@@ -1450,10 +1452,19 @@ function costCell(v) {
 }
 
 function renderUsage() {
-  if (!usage) return `<div class="card empty">正在读取用量…</div>`;
+  const pending = !!usageRequest;
+  const header = `<div class="section-head"><h2>用量</h2>
+    <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <nav class="seg" id="currency"><button data-currency="CNY" class="${state?.display?.currency === "CNY" ? "on" : ""}">¥</button><button data-currency="USD" class="${state?.display?.currency !== "CNY" ? "on" : ""}">$</button></nav>
+      <nav class="seg" id="range">${Object.entries(usageRanges).map(([k, v]) => `<button data-range="${k}" class="${usageRange === k ? "on" : ""}">${v}</button>`).join("")}</nav>
+      <button class="btn secondary" data-usage-retry aria-disabled="${pending}" ${pending ? 'style="opacity:.55;cursor:wait"' : ""}>${pending ? "正在读取…" : usageError ? "重试" : "刷新用量"}</button>
+    </span></div>`;
+  const status = usageError ? `${usageError}${usage ? "当前显示上次成功读取的数据，可能已过期。" : "请重试或选择其他时间范围。"}`
+    : pending ? usage ? "正在刷新用量，当前显示上次成功读取的数据。" : "正在读取用量…" : "";
+  const notice = status ? `<div class="${usage ? "hint" : "card empty"}" role="status" ${usageError ? 'style="color:var(--bad)"' : ""}>${esc(status)}</div>` : "";
+  if (!usage) return `${header}${notice || '<div class="card empty">正在读取用量…</div>'}`;
   const t = usage.totals;
   const hit = usage.cacheHitRate == null ? "—" : `${Math.round(usage.cacheHitRate * 100)}%`;
-  const ranges = { today: "今天", "7d": "7 天", "30d": "30 天", all: "已有记录" };
   const providerRows = Object.entries(usage.byProvider).sort((a, b) => b[1].calls - a[1].calls).map(([id, v]) => {
     const p = providerById(id);
     return `<tr><td>${p ? icon(p.icon, "sm") : ""} ${esc(p?.name ?? id)}</td><td class="num">${thousands(v.calls)}</td>
@@ -1467,12 +1478,7 @@ function renderUsage() {
       <td class="num">${costCell(v)}</td></tr>`).join("");
   const price = usageCostPresentation(t, state?.display);
   const costTile = `<div class="tile"><div class="v">${esc(price.value)}</div><div class="l">已记录估算费用</div><div class="d">${esc([...price.details, price.provenance].filter(Boolean).join(" · ") || (t.calls ? "仅显示日志记录金额" : "还没有调用记录"))}</div></div>`;
-  return `
-    <div class="section-head"><h2>用量</h2>
-      <span style="display:flex;gap:10px;align-items:center">
-        <nav class="seg" id="currency"><button data-currency="CNY" class="${state.display?.currency !== "USD" ? "on" : ""}">¥</button><button data-currency="USD" class="${state.display?.currency === "USD" ? "on" : ""}">$</button></nav>
-        <nav class="seg" id="range">${Object.entries(ranges).map(([k, v]) => `<button data-range="${k}" class="${(usage.range ?? usageRange) === k ? "on" : ""}">${v}</button>`).join("")}</nav></span>
-    </div>
+  return `${header}${notice}
     <div class="card tiles">
       <div class="tile"><div class="v">${compact(t.inputTokens + t.outputTokens)}</div><div class="l">Token</div><div class="d">输入 ${compact(t.inputTokens)} · 输出 ${compact(t.outputTokens)}</div></div>
       <div class="tile"><div class="v">${compact(t.cachedTokens)}</div><div class="l">缓存读取</div><div class="d">命中率 ${hit}</div></div>
@@ -1495,14 +1501,69 @@ function renderUsage() {
     <div class="card">${harnessRows ? `<table class="tbl"><tr><th>Agent</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">失败</th><th class="num">估算花费</th></tr>${harnessRows}</table>` : `<div class="empty">还没有用量</div>`}</div>`;
 }
 
-async function loadUsage() {
-  const request = ++usageRequestSeq, range = usageRange;
-  try {
-    const next = await call("GET", `/api/usage?range=${range}`);
-    if (request === usageRequestSeq && range === usageRange) usage = next;
-  } catch {
-    if (request === usageRequestSeq && range === usageRange) usage = null;
-  }
+/** Replace only usage output: budget fields and other pages keep their live DOM/focus. */
+function updateUsageView() {
+  if (page !== "usage") return;
+  const host = $("#usage-content");
+  if (!host) return;
+  const active = document.activeElement;
+  const focused = host.contains?.(active);
+  const focusKey = focused ? ["range", "currency", "metric", "usageRetry"].find(key => Object.hasOwn(active?.dataset ?? {}, key)) : null;
+  const focusKeep = focused && active?.tagName === "SUMMARY" ? active.parentElement?.dataset.keep : null;
+  const focusValue = focusKey ? active.dataset[focusKey] : null;
+  host.innerHTML = renderUsage();
+  // Keep keyboard selection on the same control when its data/status changes.
+  if (focusKey) [...host.querySelectorAll("button")].find(button => Object.hasOwn(button.dataset, focusKey) && button.dataset[focusKey] === focusValue)?.focus({ preventScroll: true });
+  if (focusKeep) [...host.querySelectorAll("details[data-keep]")].find(details => details.dataset.keep === focusKeep)?.querySelector("summary")?.focus({ preventScroll: true });
+  requestAnimationFrame(drawChart);
+}
+
+/** Aborting a read never cancels any model request or changes the ledger. */
+function cancelUsageLoad() {
+  const request = usageRequest;
+  if (!request) return;
+  usageRequest = null;
+  clearTimeout(request.timer);
+  request.controller.abort();
+  request.cancel();
+}
+
+function loadUsage() {
+  if (page !== "usage") return Promise.resolve();
+  const range = usageRange, navigation = pageNavigationVersion;
+  if (usageRequest?.range === range && usageRequest.navigation === navigation) return usageRequest.promise;
+  cancelUsageLoad();
+  if (usage?.range !== range) usage = null;
+  usageError = "";
+  const request = { range, navigation, controller: new AbortController(), promise: null, timer: null, cancel: null, timedOut: false };
+  usageRequest = request;
+  const current = () => usageRequest === request && page === "usage" && pageNavigationVersion === navigation && usageRange === range;
+  const deadline = new Promise((_, reject) => {
+    request.cancel = () => reject(new Error("Usage read cancelled"));
+    request.timer = setTimeout(() => {
+      request.timedOut = true;
+      request.controller.abort();
+      reject(new Error("Usage read timed out"));
+    }, 10_000);
+  });
+  request.promise = (async () => {
+    try {
+      const next = await Promise.race([call("GET", `/api/usage?range=${range}`, undefined, { signal: request.controller.signal }), deadline]);
+      if (!current()) return;
+      if (next?.range !== range || !next.totals || !Array.isArray(next.days) || !next.byProvider || !next.byHarness) throw new Error("Invalid usage response");
+      usage = next;
+    } catch {
+      if (current()) usageError = `${usage ? "刷新" : "读取用量"}${request.timedOut ? "超时" : "失败"}。`;
+    } finally {
+      clearTimeout(request.timer);
+      if (usageRequest === request) {
+        usageRequest = null;
+        updateUsageView();
+      }
+    }
+  })();
+  updateUsageView();
+  return request.promise;
 }
 
 // ---------------------------------------------------------------- render loop
@@ -1511,12 +1572,12 @@ function render() {
   renderHeader();
   const main = $("#page");
   if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=renderDoctor();return;}
-  if (!state) {
+  if (!state && page !== "usage") {
     main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
     return;
   }
   const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
-  main.innerHTML = (views[page] ?? renderAgents)();
+  main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
   if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
   if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
   if (page === "sessions") requestAnimationFrame(drawFlowLines);
@@ -1560,13 +1621,22 @@ document.addEventListener("change", async e => {
 let importFormOpen = false;
 
 async function refresh(force = false) {
+  const navigation = pageNavigationVersion;
+  if (page !== "usage") cancelUsageLoad();
+  else if (!$("#usage-content")) render();
+  // Start the bounded read immediately, even if the general state read is slow.
+  const usageRefresh = page === "usage" ? loadUsage() : null;
   if (page === "doctor" && typeof loadDoctor === "function") {if(!doctorBusy && (force || !doctorReport))await loadDoctor();render();return;}
+  let nextState;
   try {
-    state = await call("GET", "/api/state");
+    nextState = await call("GET", "/api/state");
   } catch {
-    state = null;
+    nextState = null;
   }
+  if (navigation !== pageNavigationVersion) return;
+  state = nextState;
   if (state && !PANEL && !state.providers.length && !presets.length) presets = await call("GET", "/api/presets").catch(() => []);
+  if (navigation !== pageNavigationVersion) return;
   if (typeof firstRunSync === "function" && state) firstRunSync();
   if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
   if (page === "agents" && !PANEL) {
@@ -1584,7 +1654,14 @@ async function refresh(force = false) {
     if (agentList) force = true;
   }
   if (page === "doctor" && typeof loadDoctor === "function" && !doctorBusy && (force || !doctorReport)) await loadDoctor();
-  if (page === "usage" && (force || !usage)) await loadUsage();
+  if (navigation !== pageNavigationVersion) return;
+  if (page === "usage") {
+    const host = $("#usage-content");
+    if (!host || (!busy() && !host.contains?.(document.activeElement))) render();
+    else { renderHeader(); updateUsageView(); }
+    await usageRefresh;
+    return;
+  }
   if (force || !busy()) render();
   else renderHeader();
 }
@@ -1611,14 +1688,20 @@ document.addEventListener("click", async e => {
     if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
     if(nav.disabled||nav.getAttribute?.("aria-disabled")==="true")return;
     pageNavigationVersion++;
+    cancelUsageLoad();
     page = pageOf(nav.dataset.page ?? nav.dataset.go);
     if (!PANEL) history.replaceState(null, "", `#${page}`);
     closePopover();
-    if (page === "usage") await loadUsage();
+    if (page === "usage") render();
     await refresh(true);
     return;
   }
-  if (t.closest("#refresh")) { await refresh(true); toast("已刷新"); return; }
+  if (t.closest("#refresh")) {
+    const navigation = pageNavigationVersion;
+    await refresh(true);
+    if (navigation === pageNavigationVersion && page !== "usage") toast("已刷新");
+    return;
+  }
   if (t.closest("#guard-chip")) { if (popover) closePopover(); else if (state) openGuard($("#guard-chip")); return; }
 
   const pick = t.closest("[data-pick]");
@@ -1948,10 +2031,16 @@ document.addEventListener("click", async e => {
   const currency = t.closest("[data-currency]");
   if (currency) { try { await call("PUT", "/api/display", { currency: currency.dataset.currency }); } catch (error) { showError(error); } await refresh(true); return; }
   const metric = t.closest("[data-metric]");
-  if (metric) { chartMetric = metric.dataset.metric; render(); return; }
+  if (metric) { chartMetric = metric.dataset.metric; updateUsageView(); return; }
 
+  if (t.closest("[data-usage-retry]")) { if (!usageRequest) await loadUsage(); return; }
   const range = t.closest("[data-range]");
-  if (range) { usageRange = range.dataset.range; await loadUsage(); render(); return; }
+  if (range) {
+    if (page !== "usage" || !Object.hasOwn(usageRanges, range.dataset.range)) return;
+    usageRange = range.dataset.range;
+    await loadUsage();
+    return;
+  }
 
   const stop = t.closest("[data-stop]");
   if (stop) {
@@ -2250,7 +2339,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageOf(location.hash.slice(1));if(next===page)return;pageNavigationVersion++;if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageOf(location.hash.slice(1));if(next===page)return;pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();if(page==="usage")render();void refresh(true);});
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");
