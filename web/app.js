@@ -22,6 +22,7 @@ let page = PANEL ? "agents" : pageOf(location.hash.slice(1));
 let usageRange = "7d";
 let chartMetric = "tokens"; // "tokens" | "cost"
 let usage = null;
+let usageRequestSeq = 0;
 let openProvider = null;
 let addForm = null; // { preset } while the add panel is open
 let chatgptInfo = null; // /api/chatgpt: installed, running, enhanced
@@ -1405,7 +1406,7 @@ function drawChart() {
   const days = usage.days;
   const cost = chartMetric === "cost";
   const values = days.map(d => cost ? d.costUsd : d.inputTokens + d.outputTokens);
-  const fmt = v => cost ? money(v, v >= 1 ? 0 : 2) : compact(v);
+  const fmt = v => cost ? usageMoney(v, state?.display, v >= 1 ? 0 : 2) : compact(v);
   const W = host.clientWidth - 36, H = 200, left = 46, bottom = 22, top = 8;
   const plotW = W - left, plotH = H - bottom - top;
   const max = niceMax(Math.max(...values, 0));
@@ -1415,14 +1416,14 @@ function drawChart() {
   const y = v => top + plotH - (v / max) * plotH;
   const labelEvery = Math.max(1, Math.ceil(days.length / 7));
   const svg = `
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${cost ? "每日估算花费柱状图" : "每日 token 用量柱状图"}">
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${cost ? "每日已记录估算费用柱状图" : "每日 token 用量柱状图"}">
       <g class="grid">${ticks.map(t => `<line x1="${left}" x2="${W}" y1="${y(t)}" y2="${y(t)}"/>`).join("")}</g>
       <g class="axis">${ticks.map(t => `<text x="${left - 8}" y="${y(t) + 4}" text-anchor="end">${fmt(t)}</text>`).join("")}
         ${days.map((d, i) => i % labelEvery === 0 ? `<text x="${left + slot * i + slot / 2}" y="${H - 4}" text-anchor="middle">${d.day.slice(5).replace("-", "/")}</text>` : "").join("")}</g>
       ${values.map((v, i) => v > 0 ? `<path class="bar" d="${barPath(left + slot * i + (slot - bw) / 2, y(v), bw, top + plotH - y(v))}"/>` : "").join("")}
       ${days.map((d, i) => `<rect class="bar-hit" data-i="${i}" x="${left + slot * i}" y="${top}" width="${slot}" height="${plotH}"/>`).join("")}
     </svg>`;
-  host.innerHTML = `${svg}${values.every(v => v === 0) ? `<div class="empty" style="position:absolute;inset:0;display:grid;place-items:center">${cost ? "这段时间没有可估价的用量" : "这段时间还没有用量"}</div>` : ""}`;
+  host.innerHTML = `${svg}${values.every(v => v === 0) ? `<div class="empty" style="position:absolute;inset:0;display:grid;place-items:center;pointer-events:none">${esc(cost ? usageCostPresentation(usage.totals, state?.display).text : usage.totals.calls ? "已记录 token 为 0" : "这段时间还没有调用记录")}</div>` : ""}`;
   const tip = document.createElement("div");
   tip.className = "tip";
   tip.hidden = true;
@@ -1431,7 +1432,8 @@ function drawChart() {
     const hit = e.target.closest(".bar-hit");
     if (!hit) { tip.hidden = true; return; }
     const d = days[Number(hit.dataset.i)];
-    tip.innerHTML = `<b>${d.day}</b><br>${thousands(d.inputTokens + d.outputTokens)} tokens · ${d.calls} 次调用${d.costUsd ? `<br>估算 ${money(d.costUsd)}` : ""}`;
+    const price = usageCostPresentation(d, state?.display);
+    tip.innerHTML = `<b>${esc(d.day)}</b><br>${thousands(d.inputTokens + d.outputTokens)} tokens · ${d.calls} 次调用<br>${esc(price.text)}${price.provenance ? `<br>${esc(price.provenance)}` : ""}<br>${esc(usageCoverage(d))}`;
     const hb = host.getBoundingClientRect();
     tip.style.left = `${e.clientX - hb.left}px`;
     tip.style.top = `${e.clientY - hb.top - 10}px`;
@@ -1440,51 +1442,51 @@ function drawChart() {
   host.querySelector("svg").addEventListener("mouseleave", () => { tip.hidden = true; });
 }
 
-/** One table cell of money: a subscription says so, an unpriced model says "—", never a false zero. */
-function costCell(v, provider) {
-  if (provider?.billing === "subscription" || (v.subscription && !v.costUsd)) return `<span class="hint">包月</span>`;
-  if (!v.costUsd) return v.unpriced ? `<span class="hint" title="这个模型没有价格，可以在模型来源里自己填">—</span>` : "—";
-  return `${money(v.costUsd)}${v.unpriced ? `<span class="hint" title="另有 ${v.unpriced} 次没有价格，没有计入"> +</span>` : ""}`;
+/** Historical evidence only: current provider billing must never hide old money. */
+function costCell(v) {
+  const price = usageCostPresentation(v, state?.display);
+  const evidence = [price.provenance, usageCoverage(v)].filter(Boolean).join(" · ");
+  return `<span title="${esc(evidence)}">${esc(price.headline)}${price.details.map(detail => `<br><span class="hint">${esc(detail)}</span>`).join("")}</span>`;
 }
 
 function renderUsage() {
   if (!usage) return `<div class="card empty">正在读取用量…</div>`;
   const t = usage.totals;
   const hit = usage.cacheHitRate == null ? "—" : `${Math.round(usage.cacheHitRate * 100)}%`;
-  const ranges = { today: "今天", "7d": "7 天", "30d": "30 天", all: "全部" };
+  const ranges = { today: "今天", "7d": "7 天", "30d": "30 天", all: "已有记录" };
   const providerRows = Object.entries(usage.byProvider).sort((a, b) => b[1].calls - a[1].calls).map(([id, v]) => {
     const p = providerById(id);
     return `<tr><td>${p ? icon(p.icon, "sm") : ""} ${esc(p?.name ?? id)}</td><td class="num">${thousands(v.calls)}</td>
       <td class="num">${compact(v.inputTokens)}</td><td class="num">${compact(v.outputTokens)}</td>
       <td class="num">${v.inputTokens ? `${Math.round((v.cachedTokens / v.inputTokens) * 100)}%` : "—"}</td><td class="num">${v.errors}</td>
-      <td class="num">${costCell(v, p)}</td></tr>`;
+      <td class="num">${costCell(v)}</td></tr>`;
   }).join("");
   const harnessRows = Object.entries(usage.byHarness).map(([h, v]) => `
     <tr><td>${icon(HARNESS[h]?.icon ?? "newapi-color", "sm")} ${HARNESS[h]?.name ?? esc(h)}</td><td class="num">${thousands(v.calls)}</td>
       <td class="num">${compact(v.inputTokens)}</td><td class="num">${compact(v.outputTokens)}</td><td class="num">${v.errors}</td>
       <td class="num">${costCell(v)}</td></tr>`).join("");
-  const costTile = t.subscription && !t.costUsd
-    ? `<div class="tile"><div class="v">包月</div><div class="l">估算花费</div><div class="d">${t.subscription} 次调用在套餐内</div></div>`
-    : `<div class="tile"><div class="v">${t.costUsd || !t.unpriced ? money(t.costUsd) : "—"}</div><div class="l">估算花费</div><div class="d">${[t.unpriced ? `${t.unpriced} 次没有价格` : "", t.subscription ? `${t.subscription} 次在套餐内` : ""].filter(Boolean).join(" · ") || "按各家公开的按量价格估算"}</div></div>`;
+  const price = usageCostPresentation(t, state?.display);
+  const costTile = `<div class="tile"><div class="v">${esc(price.value)}</div><div class="l">已记录估算费用</div><div class="d">${esc([...price.details, price.provenance].filter(Boolean).join(" · ") || (t.calls ? "仅显示日志记录金额" : "还没有调用记录"))}</div></div>`;
   return `
     <div class="section-head"><h2>用量</h2>
       <span style="display:flex;gap:10px;align-items:center">
         <nav class="seg" id="currency"><button data-currency="CNY" class="${state.display?.currency !== "USD" ? "on" : ""}">¥</button><button data-currency="USD" class="${state.display?.currency === "USD" ? "on" : ""}">$</button></nav>
-        <nav class="seg" id="range">${Object.entries(ranges).map(([k, v]) => `<button data-range="${k}" class="${usageRange === k ? "on" : ""}">${v}</button>`).join("")}</nav></span>
+        <nav class="seg" id="range">${Object.entries(ranges).map(([k, v]) => `<button data-range="${k}" class="${(usage.range ?? usageRange) === k ? "on" : ""}">${v}</button>`).join("")}</nav></span>
     </div>
     <div class="card tiles">
       <div class="tile"><div class="v">${compact(t.inputTokens + t.outputTokens)}</div><div class="l">Token</div><div class="d">输入 ${compact(t.inputTokens)} · 输出 ${compact(t.outputTokens)}</div></div>
       <div class="tile"><div class="v">${compact(t.cachedTokens)}</div><div class="l">缓存读取</div><div class="d">命中率 ${hit}</div></div>
-      <div class="tile"><div class="v">${thousands(t.calls)}</div><div class="l">调用次数</div><div class="d">${t.unmetered ? `${t.unmetered} 次原样转发未计量` : "全部已计量"}</div></div>
+      <div class="tile"><div class="v">${thousands(t.calls)}</div><div class="l">调用次数</div><div class="d">${esc(usageCoverage(t))}</div></div>
       ${costTile}
       <div class="tile"><div class="v">${thousands(t.errors)}</div><div class="l">失败</div><div class="d">${t.calls ? `占 ${Math.round((t.errors / t.calls) * 100)}%` : "—"}</div></div>
     </div>
+    <p class="hint">${esc(usageDisplayLimits(state?.display))}</p>
     <div class="card"><div class="section-head" style="padding:12px 18px 0"><span class="hint">每日</span>
         <nav class="seg" id="metric"><button data-metric="tokens" class="${chartMetric === "tokens" ? "on" : ""}">Token</button><button data-metric="cost" class="${chartMetric === "cost" ? "on" : ""}">花费</button></nav></div>
       <div class="chart" id="chart"></div>
       <details data-keep="usage-days" ${keepOpen("usage-days")} style="padding:0 18px 12px"><summary class="hint">查看每日数据表</summary>
         <table class="tbl"><tr><th>日期</th><th class="num">输入</th><th class="num">输出</th><th class="num">调用</th><th class="num">估算花费</th></tr>
-        ${usage.days.map(d => `<tr><td>${d.day}</td><td class="num">${thousands(d.inputTokens)}</td><td class="num">${thousands(d.outputTokens)}</td><td class="num">${d.calls}</td><td class="num">${d.costUsd ? money(d.costUsd) : "—"}</td></tr>`).join("")}</table>
+        ${usage.days.map(d => `<tr><td>${d.day}</td><td class="num">${thousands(d.inputTokens)}</td><td class="num">${thousands(d.outputTokens)}</td><td class="num">${d.calls}</td><td class="num">${costCell(d)}</td></tr>`).join("")}</table>
       </details>
     </div>
     <div class="section-head"><h2>按模型来源</h2></div>
@@ -1494,7 +1496,13 @@ function renderUsage() {
 }
 
 async function loadUsage() {
-  try { usage = await call("GET", `/api/usage?range=${usageRange}`); } catch { usage = null; }
+  const request = ++usageRequestSeq, range = usageRange;
+  try {
+    const next = await call("GET", `/api/usage?range=${range}`);
+    if (request === usageRequestSeq && range === usageRange) usage = next;
+  } catch {
+    if (request === usageRequestSeq && range === usageRange) usage = null;
+  }
 }
 
 // ---------------------------------------------------------------- render loop

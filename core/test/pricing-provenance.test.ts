@@ -173,7 +173,7 @@ test("new metadata survives persistence and restart, while history and changed c
   assert.deepEqual(new Ledger(dir).readForBudget(), persisted);
 });
 
-test("metadata leaves usage summaries, budget decisions, task totals and rule suggestions identical", t => {
+test("metadata leaves usage amounts, budget decisions, task totals and rule suggestions identical", t => {
   const dir = directory(t), store = new Store(join(dir, "store"));
   store.upsertProvider(provider({ prices: { expensive: rates, cheap: { ...rates, input: 0.4, output: 0.8 } } }));
   const rows: GatewayLogEntry[] = [], tasks: Task[] = [], feedback: TaskFeedback[] = [];
@@ -183,7 +183,11 @@ test("metadata leaves usage summaries, budget decisions, task totals and rule su
     feedback.push({ taskId: id, rating: "good", at: NOW.toISOString() });
   }
   const oldRows = rows.map(withoutProvenance);
-  assert.deepEqual(summarize(rows, "all", NOW), summarize(oldRows, "all", NOW));
+  const currentSummary = summarize(rows, "all", NOW), oldSummary = summarize(oldRows, "all", NOW);
+  const withoutDisplaySources = (summary: unknown) => JSON.parse(JSON.stringify(summary, (key, value) => key === "pricingSources" ? undefined : value));
+  assert.deepEqual(withoutDisplaySources(currentSummary), withoutDisplaySources(oldSummary));
+  assert.deepEqual(currentSummary.totals.pricingSources, { user: 10, legacy: 0, unpriced: 0, subscription: 0, unknown: 0 });
+  assert.deepEqual(oldSummary.totals.pricingSources, { user: 0, legacy: 0, unpriced: 0, subscription: 0, unknown: 10 });
   const start = new Date("2026-10-01T00:00:00Z"), end = new Date("2026-11-01T00:00:00Z");
   assert.deepEqual(summarizeBudgetEntries(rows, start, end, NOW), summarizeBudgetEntries(oldRows, start, end, NOW));
   const source = provider({ budget: { monthlyUsd: 8, stop: true } });
@@ -241,7 +245,7 @@ test("synthetic gateway logs persisted provenance and existing usage/budget APIs
   assert.equal(row.pricingProvenance.wholeBillCoverage, "not-established");
   assert.equal(JSON.stringify(row.pricingProvenance).includes("forged"), false);
   const usageResponse = await fetch(`${base}/api/usage?range=all`, { headers: { "x-easyswitch": "1" } });
-  assert.equal(usageResponse.status, 200); assert.deepEqual(await usageResponse.json(), summarize([withoutProvenance(row)], "all"));
+  assert.equal(usageResponse.status, 200); assert.deepEqual(await usageResponse.json(), summarize([row], "all"));
   const budgetResponse = await fetch(`${base}/api/budget`, { headers: { "x-easyswitch": "1" } });
   assert.equal(budgetResponse.status, 200); const budget = await budgetResponse.json() as { estimatedCostUsd: number; unknownCostCalls: number };
   assert.equal(budget.estimatedCostUsd, 0.00014); assert.equal(budget.unknownCostCalls, 0);

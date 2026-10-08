@@ -431,10 +431,24 @@ interface Totals {
   unpriced: number;
   /** Calls on a flat subscription: tokens count, per-call cost does not. */
   subscription: number;
+  /** Display evidence only: a recorded amount includes exact zero, not a bill. */
+  recordedCostCalls: number;
+  /** Non-subscription calls without a recorded amount. Disjoint from partialCostCalls. */
+  missingCostCalls: number;
+  /** Calls with an amount but incomplete usage or an explicit unpriced marker. Amounts are retained. */
+  partialCostCalls: number;
+  /** Missing either token counter, or an explicit incomplete protocol/usage observation. */
+  usageIncompleteCalls: number;
+  /** Both counters exist, but protocol/usage completeness was not recorded. */
+  usageCompletenessUnknownCalls: number;
+  /** A partition of recordedCostCalls, based only on the historical row. */
+  pricingSources: { user: number; legacy: number; unpriced: number; subscription: number; unknown: number };
 }
 
 function emptyTotals(): Totals {
-  return { calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, unmetered: 0, costUsd: 0, unpriced: 0, subscription: 0 };
+  return { calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, unmetered: 0, costUsd: 0, unpriced: 0, subscription: 0,
+    recordedCostCalls: 0, missingCostCalls: 0, partialCostCalls: 0, usageIncompleteCalls: 0, usageCompletenessUnknownCalls: 0,
+    pricingSources: { user: 0, legacy: 0, unpriced: 0, subscription: 0, unknown: 0 } };
 }
 
 function add(t: Totals, e: GatewayLogEntry): void {
@@ -447,6 +461,18 @@ function add(t: Totals, e: GatewayLogEntry): void {
   t.costUsd += e.costUsd ?? 0;
   if (e.costNote === "unpriced") t.unpriced += 1;
   if (e.costNote === "subscription") t.subscription += 1;
+  // These counters serve the usage page only. Do not reuse them for budget
+  // admission, re-price old rows, or promote usageComplete to whole-bill proof.
+  const validNumber = (value: number | undefined) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const incomplete = !validNumber(e.inputTokens) || !validNumber(e.outputTokens) || e.usageComplete === false;
+  if (incomplete) t.usageIncompleteCalls += 1;
+  else if (e.usageComplete !== true) t.usageCompletenessUnknownCalls += 1;
+  if (validNumber(e.costUsd)) {
+    t.recordedCostCalls += 1;
+    const source = e.pricingProvenance?.source;
+    if (incomplete || e.costNote === "unpriced" || source === "unpriced") t.partialCostCalls += 1;
+    t.pricingSources[source === "user" || source === "legacy" || source === "unpriced" || source === "subscription" ? source : "unknown"] += 1;
+  } else if (e.costNote !== "subscription") t.missingCostCalls += 1;
 }
 
 function dayKey(at: string): string {

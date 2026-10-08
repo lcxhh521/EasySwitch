@@ -120,7 +120,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   // Define a throwing browser getter inside the VM: its global proxy suppresses
   // exceptions from host-defined accessors and would otherwise test undefined.
   if (options.storage === "getter") run('Object.defineProperty(globalThis, "localStorage", { get() { throw new Error("Storage denied"); } })');
-  for (const file of ["theme.js", "controls.js", "doctor.js"]) run(web(file));
+  for (const file of ["theme.js", "controls.js", "doctor.js", "usage-display.js"]) run(web(file));
   const app = web("app.js"), startup = app.lastIndexOf('fetch("icons/manifest.json")');
   assert.ok(startup > 0, "Load all app handlers and panel setup, excluding startup polling and icon fetch");
   run(app.slice(0, startup));
