@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
-import { dshMcpPlugin, LAUNCHERS, materialize, runHeadless, type LaunchInput } from "../src/agent-launch.ts";
+import { commandLine, dshMcpPlugin, LAUNCHERS, materialize, runHeadless, type HeadlessProcessRuntime, type LaunchInput } from "../src/agent-launch.ts";
 import { dshPatch, findDshMcpPlugin, prepareDshMcpPlugin } from "../src/dsh-launch.ts";
 import { GatewayTokenAuthority, gatewayTokens } from "../src/gateway-auth.ts";
 
@@ -276,20 +276,77 @@ test("Qwen uses its own modelProviders schema and private writable settings, wit
   }
 });
 
+const copilotInheritedOverrides = [
+  "COPILOT_PROVIDERS_CONFIG", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_PROVIDER_HEADERS", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL",
+  "COPILOT_PROVIDER_WIRE_API", "COPILOT_PROVIDER_MAX_PROMPT_TOKENS", "COPILOT_PROVIDER_MAX_OUTPUT_TOKENS", "COPILOT_PROVIDER_AZURE_API_VERSION",
+  "COPILOT_ALLOW_ALL", "COPILOT_PLAN_THEN_AUTOPILOT",
+];
+
 test("Copilot retains documented single-model BYOK without guessing registry fields or using the original home", () => {
   for (const form of ["interactive", "headless"] as const) {
     const spec = LAUNCHERS["copilot-cli"]![form]!(input({ models: ["p/main", "p/other"], mcp }));
     assert.equal(spec.env.COPILOT_HOME, join(input().sessionDir, "copilot-home"));
+    assert.equal(spec.env.COPILOT_CACHE_HOME, join(spec.env.COPILOT_HOME!, "cache"));
     assert.equal(spec.env.COPILOT_MODEL, "p/main");
     assert.equal(spec.env.COPILOT_PROVIDER_BASE_URL, "http://127.0.0.1:18765/v1");
+    assert.equal(spec.env.COPILOT_PROVIDER_TYPE, "openai");
+    assert.equal(spec.env.COPILOT_PROVIDER_API_KEY, input().token);
     assert.deepEqual(JSON.parse(spec.files![join(spec.env.COPILOT_HOME!, "settings.json")]!), {});
     assert.ok(!Object.keys(spec.files!).some(path => path.endsWith("providers.json")), "registry inner schema is still unverified");
-    for (const inherited of ["COPILOT_PROVIDERS_CONFIG", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_PROVIDER_HEADERS", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL"]) assert.ok(spec.unset!.includes(inherited));
+    assert.deepEqual(spec.unset, copilotInheritedOverrides);
+    for (const inherited of copilotInheritedOverrides) assert.equal(spec.env[inherited], undefined, "do not replace ambient overrides with guessed values");
+    assert.ok(commandLine(spec).startsWith(`env ${copilotInheritedOverrides.map(name => `-u ${name}`).join(" ")} `));
+    assert.ok(!spec.args.some(arg => ["--allow-all", "--autopilot", "--plan", "--mode", "--yolo"].includes(arg)));
     const flag = spec.args.indexOf("--additional-mcp-config");
     const path = spec.args[flag + 1]!;
     assert.ok(path.startsWith("@"));
     assert.deepEqual(JSON.parse(spec.files![path.slice(1)]!).mcpServers.easyswitch.headers, mcp.headers);
     assert.ok(!JSON.stringify(spec.args).includes("test-mcp-token"));
+    assert.ok(!commandLine(spec).includes("test-mcp-token"));
+  }
+});
+
+test("Copilot headless removes ambient overrides before the in-process spawn stub without changing parent settings or auth", async () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "es-copilot-env-"));
+  const preserved = { COPILOT_OFFLINE: "false", COPILOT_GITHUB_TOKEN: "fixture-copilot-github", GH_TOKEN: "fixture-gh", GITHUB_TOKEN: "fixture-github" };
+  const ambient: Record<string, string> = { ...Object.fromEntries(copilotInheritedOverrides.map(name => [name, "true"])), ...preserved,
+    COPILOT_HOME: root, COPILOT_CACHE_HOME: join(root, "native-cache"), COPILOT_MODEL: "fixture/ambient",
+    COPILOT_PROVIDER_TYPE: "fixture-provider", COPILOT_PROVIDER_BASE_URL: "http://127.0.0.1:1/unused", COPILOT_PROVIDER_API_KEY: "fixture-ambient-key" };
+  const previous = Object.fromEntries(Object.keys(ambient).map(name => [name, process.env[name]]));
+  const authority = new GatewayTokenAuthority();
+  let capturedEnv: NodeJS.ProcessEnv = {}, capturedArgs: readonly string[] = [], capturedCommand = "", settings = "", mcpConfig = "", privateHome = "", calls = 0, fileMode = 0;
+  const runtime: HeadlessProcessRuntime = { spawn: ((command: string, args: readonly string[], options: { env: NodeJS.ProcessEnv }) => {
+    calls++; capturedCommand = command; capturedEnv = { ...options.env }; capturedArgs = [...args];
+    privateHome = capturedEnv.COPILOT_HOME!;
+    settings = readFileSync(join(privateHome, "settings.json"), "utf8");
+    mcpConfig = readFileSync(join(privateHome, "easyswitch-mcp.json"), "utf8");
+    fileMode = lstatSync(join(privateHome, "easyswitch-mcp.json")).mode & 0o777;
+    // Capture production environment assembly, but never create an OS child or execute an agent.
+    throw new Error("fixture stops before process launch");
+  }) as unknown as HeadlessProcessRuntime["spawn"] };
+  try {
+    writeFileSync(join(root, "settings.json"), "untouched native fixture", { mode: 0o600 });
+    Object.assign(process.env, ambient);
+    const result = await runHeadless("copilot-cli", { bin: "/never-run-agent", port: 18765, model: "p/main", task: "fake task", effort: "high" }, { gatewayAuth: authority }, runtime);
+    assert.equal(calls, 1); assert.equal(capturedCommand, "/never-run-agent"); assert.equal(result.exitCode, null);
+    for (const name of copilotInheritedOverrides) assert.equal(capturedEnv[name], undefined, name);
+    for (const [name, value] of Object.entries(preserved)) assert.equal(capturedEnv[name], value, name);
+    assert.equal(capturedEnv.COPILOT_PROVIDER_BASE_URL, "http://127.0.0.1:18765/v1");
+    assert.equal(capturedEnv.COPILOT_PROVIDER_TYPE, "openai"); assert.equal(capturedEnv.COPILOT_MODEL, "p/main");
+    assert.notEqual(capturedEnv.COPILOT_PROVIDER_API_KEY, ambient.COPILOT_PROVIDER_API_KEY);
+    assert.equal(basename(privateHome), "copilot-home"); assert.notEqual(privateHome, root);
+    assert.equal(capturedEnv.COPILOT_CACHE_HOME, join(privateHome, "cache"));
+    assert.deepEqual(JSON.parse(settings), { effortLevel: "high" });
+    assert.equal(JSON.parse(mcpConfig).mcpServers.easyswitch.headers.Authorization, `Bearer ${capturedEnv.COPILOT_PROVIDER_API_KEY}`);
+    assert.equal(capturedArgs[capturedArgs.indexOf("--additional-mcp-config") + 1], `@${join(privateHome, "easyswitch-mcp.json")}`);
+    assert.ok(!JSON.stringify(capturedArgs).includes(capturedEnv.COPILOT_PROVIDER_API_KEY!));
+    if (process.platform !== "win32") assert.equal(fileMode, 0o600);
+    assert.deepEqual(authority.list(), []); assert.ok(!existsSync(privateHome));
+    assert.equal(readFileSync(join(root, "settings.json"), "utf8"), "untouched native fixture");
+    for (const [name, value] of Object.entries(ambient)) assert.equal(process.env[name], value, "the parent environment stays unchanged");
+  } finally {
+    for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -191,7 +191,7 @@ export const LAUNCHERS: Record<string, AgentLauncher> = {
     verified: false,
     efforts: ["low", "medium", "high", "xhigh"],
     pickerNote: "官方已提供 providers.json 多模型注册表与 /model 菜单，但内部条目和凭据引用格式尚未核实；目前只用官方环境变量指定默认模型，不声称已注入全部模型",
-    caveat: "BYOK 环境变量、COPILOT_HOME 和 effortLevel 来自官方文档；始终使用私有配置目录，真实 CLI 没有实测；后台任务仍保留程序自己的工具确认",
+    caveat: "BYOK 环境变量、COPILOT_HOME 和 effortLevel 来自官方文档；私有配置目录不代表工具隔离，项目设置仍可能生效；清除环境中的自动批准/自动驾驶开关，真实 CLI 没有实测",
     mcpCaveat: "按官方 --additional-mcp-config @文件 传本次私有配置，令牌不放 argv；真实 CLI 未实测",
     interactive: i => copilotSpec(i, copilotMcp(i)),
     headless: i => copilotSpec(i, ["-p", i.task ?? "", ...copilotMcp(i)]),
@@ -314,8 +314,12 @@ function copilotSpec(i: LaunchInput, args: string[]): LaunchSpec {
   const env = copilotEnv(i);
   const home = join(i.sessionDir, "copilot-home");
   return { command: i.bin, args, env: { ...env, COPILOT_HOME: home, COPILOT_CACHE_HOME: join(home, "cache") },
-    // These official overrides can supersede our token, endpoint, or model selection.
-    unset: ["COPILOT_PROVIDERS_CONFIG", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_PROVIDER_HEADERS", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL"],
+    // Official BYOK overrides must not replace this launch's provider, model or request shape.
+    unset: ["COPILOT_PROVIDERS_CONFIG", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_PROVIDER_HEADERS", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL",
+      "COPILOT_PROVIDER_WIRE_API", "COPILOT_PROVIDER_MAX_PROMPT_TOKENS", "COPILOT_PROVIDER_MAX_OUTPUT_TOKENS", "COPILOT_PROVIDER_AZURE_API_VERSION",
+      // Ambient flags must not silently grant approvals or change the execution mode.
+      // This is per-child cleanup, not isolation from every native/project permission source.
+      "COPILOT_ALLOW_ALL", "COPILOT_PLAN_THEN_AUTOPILOT"],
     files: {
       [join(home, "settings.json")]: JSON.stringify(i.effort ? { effortLevel: i.effort } : {}),
       ...(i.mcp ? { [join(home, "easyswitch-mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers, tools: ["*"] } } }) } : {}),

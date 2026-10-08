@@ -39,7 +39,11 @@ Official documentation describes a `providers.json` registry, top-level `provide
 - [Official BYOK configuration](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models)
 - [CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
 
-The supported single-model BYOK path remains. `COPILOT_HOME` is now private even without an effort selection. Inherited registry, API-key command, bearer/header and model-identity overrides are cleared so they cannot supersede the intended gateway configuration. The official `--additional-mcp-config @file` form keeps its MCP credential out of argv. No real model menu, authentication, tools or program lifecycle was exercised.
+The supported single-model BYOK path remains. `COPILOT_HOME` is private even without an effort selection, and `COPILOT_CACHE_HOME` points to its private cache. Inherited registry, API-key command, bearer/header and model-identity overrides are cleared so they cannot supersede the intended gateway configuration. The official `--additional-mcp-config @file` form keeps its MCP credential out of argv.
+
+The 2026-10-08 source review adds four documented provider overrides to that per-child cleanup: `COPILOT_PROVIDER_WIRE_API`, `COPILOT_PROVIDER_MAX_PROMPT_TOKENS`, `COPILOT_PROVIDER_MAX_OUTPUT_TOKENS` and `COPILOT_PROVIDER_AZURE_API_VERSION`. They are unset, not replaced with guessed protocol values or token limits. `COPILOT_ALLOW_ALL` and `COPILOT_PLAN_THEN_AUTOPILOT` are also unset so an ambient environment cannot silently auto-approve permissions or select plan-then-autopilot. This is preventative hardening, not a reproduced real-CLI failure.
+
+The cleanup applies only to EasySwitch's enhanced child session. It does not change the parent's environment, native configuration, `COPILOT_OFFLINE`, or GitHub authentication variables. A private configuration directory is not account, filesystem or tool isolation: native/project settings and other authentication sources can still matter. The inner registry contract and minimum supporting CLI version remain unknown, and full catalog support stays incomplete. No real model menu, authentication, tools or program lifecycle was exercised.
 
 ## Verification boundary
 
