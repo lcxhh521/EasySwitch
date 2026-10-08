@@ -352,3 +352,13 @@ B33预设：`preset-facts.ts`保存OpenAI、Anthropic、Gemini、Azure、OpenRou
 新增endpoint-diagnostics.ts只计算元数据：针对DeepSeek/Kimi/智谱/Qwen/小米5个已知旧有效Messages完整URL给出固定官方修正提示；正确wire.paths.messages覆盖不误报，未知自定义地址不猜测。自检仍保留来源原有探测/鉴权结果，主动检查期间的地址提示继续标metadata，不冒充真实请求结果。没有读取SecretStore、发送诊断请求或改写已存来源；只输出固定公开地址，不返回用户输入URL/原始错误。
 
 本批最终组合安全白名单1030项通过（主1013+桌面fake17），1项真实Keychain跳过；独立网关41项及诊断36项通过，类型/待办/差异检查通过。
+
+### 编程套餐事实重建与旧地址提示扩展（2026-10-08）
+
+9条套餐预设独立重建，累计61条、6条legacy：MiniMax CN、Cline、Hyperbolic、Ollama Cloud、自定义中转与MiMo Free历史项。模块含51项运行事实、7项只研究的MiniMax CN事实、41个官方URL。MiniMax CN当前官方.cn域名及新的quota路径已记录，但现有额度读取器只接受旧域且新响应结构未核实；本批保留其整个旧预设，不把改主机导致失去额度读数伪装成无影响更新。
+
+智谱套餐、Z.AI、Kimi Code、MiniMax国际、火山Coding、小米Token Plan的Messages新预设补/v1；Z.AI/火山为官方SDK配置与资源路径推导，另4条有直接HTTP依据。默认模型、分类计费、字段有无保持；账号套餐是否授权相应模型另行验收。套餐交互/受支持工具等限制保留，OpenCode Go原始鉴权头与session转发不作已验证声明，无能力扩展或已存来源迁移。
+
+被动地址诊断增加5个唯一订阅端点，与智谱共享地址去重后共10个固定有效URL；SDK推导依据在提示中明确。MiniMax CN、动态Cloudflare及可选Tencent/Alibaba路径不在此诊断范围。12项套餐回归涵盖15次实际公共预设的loopback请求、保存字节及CN额度读数入口保留；独立27项套餐/来源审查与39项地址诊断审查通过。
+
+本批最终组合安全白名单1045项通过（主1028+桌面fake17），1项真实Keychain跳过；类型/待办/差异检查通过。未运行真实套餐、账号或模型请求。

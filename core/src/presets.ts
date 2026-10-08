@@ -3,8 +3,8 @@ import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "./presets-of
 
 /**
  * One-click starting points, preserving EasySwitch's public picker contract.
- * 52 entries are freshly reconstructed from official facts in preset-facts.ts
- * and presets-official.ts. The remaining 15 below are explicitly legacy:
+ * 61 entries are freshly reconstructed from official facts in preset-facts.ts
+ * and presets-official.ts. The remaining 6 below are explicitly legacy:
  * Historical repository attribution: adapted from opencodex (MIT),
  * src/providers/registry/entries-core.ts and
  * entries-extended.ts, read 2026-10-05; upstream commit was not recorded by
@@ -70,17 +70,10 @@ function p(category: typeof PRESET_CATEGORIES[number], id: string, name: string,
 
 /** Attributed legacy rows: no independent-verification claim is made for this collection. */
 const LEGACY_PRESETS: ProviderPreset[] = [
-  // 编程套餐：按月订阅、给编程工具用的 Key
-  p("编程套餐", "zhipu-coding", "智谱 GLM 编程套餐", "https://open.bigmodel.cn/api/coding/paas/v4", { anthropic: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.3", key: "https://bigmodel.cn/console/usercenter/apikeys", note: "GLM Coding Plan（国内站）" }),
-  p("编程套餐", "zai", "Z.AI GLM 编程套餐", "https://api.z.ai/api/coding/paas/v4", { anthropic: "https://api.z.ai/api/anthropic", model: "glm-5.3", key: "https://z.ai/manage-apikey/apikey-list", note: "GLM Coding Plan（国际站）" }),
-  p("编程套餐", "kimi-coding", "Kimi For Coding", "https://api.kimi.com/coding/v1", { anthropic: "https://api.kimi.com/coding", model: "kimi-for-coding", key: "https://www.kimi.com/coding", note: "Kimi Code 专用 Key 与国内 coding 端点；权益以账号/区域为准，不是 Moonshot 按量余额" }),
+  // MiniMax CN remains legacy: current docs use .cn, but changing its host
+  // would bypass the old plan-usage reader. Current quota host/path and parsing
+  // require separate review; neither the old host nor stored providers migrate.
   p("编程套餐", "minimax-coding-cn", "MiniMax 编程套餐（国内）", "https://api.minimaxi.com/v1", { anthropic: "https://api.minimaxi.com/anthropic", model: "MiniMax-M3", key: "https://platform.minimaxi.com", note: "使用国内专用 Subscription Key；普通 API Key 扣按量余额；适用套餐范围和限额" }),
-  p("编程套餐", "minimax-coding", "MiniMax 编程套餐（国际）", "https://api.minimax.io/v1", { anthropic: "https://api.minimax.io/anthropic", model: "MiniMax-M3", key: "https://platform.minimax.io", note: "官方 M Plan（旧 Token/Coding Plan）专用 Subscription Key；普通 API Key 扣按量余额；个人交互开发用途" }),
-  p("编程套餐", "volcengine-coding", "火山方舟 编程套餐", "https://ark.cn-beijing.volces.com/api/coding/v3", { anthropic: "https://ark.cn-beijing.volces.com/api/coding", model: "ark-code-latest", key: "https://console.volcengine.com/ark/", note: "Ark Coding Plan 仅限 AI 编程工具，不得用于通用 API 服务或其他非编程场景" }),
-  p("编程套餐", "tencent-coding", "腾讯云 编程套餐", "https://api.lkeap.cloud.tencent.com/coding/v3", { model: "tc-code-latest" }),
-  p("编程套餐", "alibaba-token-plan", "阿里云 Token Plan（北京）", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", { model: "qwen3.8-max" }),
-  p("编程套餐", "mimo-token-plan", "小米 MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", { anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic", model: "mimo-v2.6-pro", key: "https://platform.xiaomimimo.com/#/console/plan-manage", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方订阅，使用专用 tp-/ttp- Key 和套餐端点；扣套餐额度，不与按量 API Key 或 MiMo Free 混用" }),
-  p("编程套餐", "opencode-go", "opencode Go", "https://opencode.ai/zen/go/v1", { model: "kimi-k2.7-code" }),
 
   // Exact existing Cline gateway model ID remains unverified; retain attribution.
   p("中转与聚合", "cline", "Cline", "https://api.cline.bot/api/v1", { model: "anthropic/claude-sonnet-5" }),

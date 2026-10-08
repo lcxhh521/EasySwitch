@@ -80,6 +80,19 @@ const choices: EditorialChoice[] = [
   { id: "vertex", name: "Google Vertex AI（标准）", category: "国际官方", icon: "gemini-color", selectDocumentedModel: true, exposeGuidance: true, exposeKeyGuide: true, protocols: ["gemini"], vertexMode: "standard" },
   { id: "vertex-express", name: "Google Vertex AI Express", category: "国际官方", icon: "gemini-color", selectDocumentedModel: true, exposeGuidance: true, exposeKeyGuide: true, protocols: ["gemini"], vertexMode: "express" },
   { id: "cloudflare-ai-gateway", name: "Cloudflare AI Gateway", category: "中转与聚合", icon: "cloudflare-ai-gateway-color", exposeGuidance: true, exposeKeyGuide: false, params: [{ key: "account_id", label: "Cloudflare 账号 ID" }, { key: "gateway", label: "网关名称", example: "my-gateway" }] },
+  // Coding-plan identity and default choices remain unchanged. Restrictions are
+  // evidence, not provider approval of arbitrary EasySwitch/agent traffic.
+  { id: "zhipu-coding", name: "智谱 GLM 编程套餐", category: "编程套餐", icon: "zhipu-color", selectDocumentedModel: true },
+  { id: "zai", name: "Z.AI GLM 编程套餐", category: "编程套餐", icon: "zai", selectDocumentedModel: true },
+  { id: "kimi-coding", name: "Kimi For Coding", category: "编程套餐", icon: "kimi-color", selectDocumentedModel: true },
+  { id: "minimax-coding", name: "MiniMax 编程套餐（国际）", category: "编程套餐", icon: "minimax-color", selectDocumentedModel: true },
+  { id: "volcengine-coding", name: "火山方舟 编程套餐", category: "编程套餐", icon: "volcengine-color", selectDocumentedModel: true },
+  { id: "tencent-coding", name: "腾讯云 编程套餐", category: "编程套餐", icon: "hunyuan-color", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "alibaba-token-plan", name: "阿里云 Token Plan（北京）", category: "编程套餐", icon: "alibaba-color", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "mimo-token-plan", name: "小米 MiMo Token Plan", category: "编程套餐", icon: "xiaomi-color", selectDocumentedModel: true, useDocumentedAuthOverride: true },
+  // The API-key requirement is documented; the implicit Bearer runtime is not
+  // independent Go header evidence and does not justify a wire override.
+  { id: "opencode-go", name: "opencode Go", category: "编程套餐", icon: "opencode", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
 ];
 
 export interface PresetFieldOrigin {

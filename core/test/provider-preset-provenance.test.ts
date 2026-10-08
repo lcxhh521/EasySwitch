@@ -10,6 +10,7 @@ import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "../src/prese
 import { OFFICIAL_PRESET_FACTS, type IndependentPresetId } from "../src/preset-facts.ts";
 import { INFERENCE_PRESET_FACTS, INFERENCE_RESEARCH_ONLY, type InferencePresetId } from "../src/preset-facts-inference.ts";
 import type { GatewayPresetId } from "../src/preset-facts-gateway.ts";
+import type { SubscriptionPresetId } from "../src/preset-facts-subscription.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { prepareOutbound } from "../src/outbound.ts";
@@ -32,21 +33,34 @@ const gatewayDomains: Record<GatewayPresetId, string[]> = {
   nanogpt: ["docs.nano-gpt.com"], "opencode-zen": ["docs.opencode.ai"], kilo: ["kilo.ai"],
   vertex: ["docs.cloud.google.com"], "vertex-express": ["docs.cloud.google.com", "github.com"], "cloudflare-ai-gateway": ["developers.cloudflare.com"],
 };
+const subscriptionIds = ["zhipu-coding", "zai", "kimi-coding", "minimax-coding", "volcengine-coding", "tencent-coding", "alibaba-token-plan", "mimo-token-plan", "opencode-go"] as const;
+const subscriptionDomains: Record<SubscriptionPresetId, string[]> = {
+  "zhipu-coding": ["docs.bigmodel.cn", "code.claude.com"], zai: ["docs.z.ai", "code.claude.com", "raw.githubusercontent.com"],
+  "kimi-coding": ["www.kimi.com", "code.claude.com"], "minimax-coding": ["platform.minimax.io"],
+  "volcengine-coding": ["docs.volcengine.com", "code.claude.com", "raw.githubusercontent.com"], "tencent-coding": ["cloud.tencent.com", "code.claude.com"],
+  "alibaba-token-plan": ["help.aliyun.com", "code.claude.com"], "mimo-token-plan": ["mimo.mi.com"], "opencode-go": ["docs.opencode.ai"],
+};
 const domesticIds = ["deepseek", "kimi", "zhipu", "qwen", "volcengine", "qianfan", "stepfun", "siliconflow", "xiaomi"] as const;
-const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds, ...inferenceIds, ...gatewayIds] as const;
+const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds, ...inferenceIds, ...gatewayIds, ...subscriptionIds] as const;
 const reconstructed = new Set<string>(independentIds);
 const preset = (id: string): ProviderPreset => { const p = PRESETS.find(p => p.id === id); assert.ok(p, id); return p; };
 // Deliberate, documented exceptions to the old operational contract. The SDK
 // roots omitted /v1, but EasySwitch appends /messages itself. These corrections
 // apply only to new preset selections, never to already-saved/custom providers.
 const messagesCorrections: Record<string, { previous: string; corrected: string; endpoint: string }> = {
+  "zhipu-coding": { previous: "https://open.bigmodel.cn/api/anthropic", corrected: "https://open.bigmodel.cn/api/anthropic/v1", endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages" },
+  zai: { previous: "https://api.z.ai/api/anthropic", corrected: "https://api.z.ai/api/anthropic/v1", endpoint: "https://api.z.ai/api/anthropic/v1/messages" },
+  "kimi-coding": { previous: "https://api.kimi.com/coding", corrected: "https://api.kimi.com/coding/v1", endpoint: "https://api.kimi.com/coding/v1/messages" },
+  "minimax-coding": { previous: "https://api.minimax.io/anthropic", corrected: "https://api.minimax.io/anthropic/v1", endpoint: "https://api.minimax.io/anthropic/v1/messages" },
+  "volcengine-coding": { previous: "https://ark.cn-beijing.volces.com/api/coding", corrected: "https://ark.cn-beijing.volces.com/api/coding/v1", endpoint: "https://ark.cn-beijing.volces.com/api/coding/v1/messages" },
+  "mimo-token-plan": { previous: "https://token-plan-cn.xiaomimimo.com/anthropic", corrected: "https://token-plan-cn.xiaomimimo.com/anthropic/v1", endpoint: "https://token-plan-cn.xiaomimimo.com/anthropic/v1/messages" },
   deepseek: { previous: "https://api.deepseek.com/anthropic", corrected: "https://api.deepseek.com/anthropic/v1", endpoint: "https://api.deepseek.com/anthropic/v1/messages" },
   kimi: { previous: "https://api.moonshot.cn/anthropic", corrected: "https://api.moonshot.cn/anthropic/v1", endpoint: "https://api.moonshot.cn/anthropic/v1/messages" },
   zhipu: { previous: "https://open.bigmodel.cn/api/anthropic", corrected: "https://open.bigmodel.cn/api/anthropic/v1", endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages" },
   qwen: { previous: "https://dashscope.aliyuncs.com/apps/anthropic", corrected: "https://dashscope.aliyuncs.com/apps/anthropic/v1", endpoint: "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages" },
   xiaomi: { previous: "https://api.xiaomimimo.com/anthropic", corrected: "https://api.xiaomimimo.com/anthropic/v1", endpoint: "https://api.xiaomimimo.com/anthropic/v1/messages" },
 };
-const unexposedGuidanceIds = ["zhipu", "qianfan", "stepfun"] as const;
+const unexposedGuidanceIds = ["zhipu", "qianfan", "stepfun", "tencent-coding", "alibaba-token-plan", "opencode-go"] as const;
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => [k, canonical(v)]));
@@ -54,7 +68,7 @@ function canonical(value: unknown): unknown {
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
-test("preset reconstruction is exactly 52 disjoint entries, with 15 explicitly attributed legacy rows", () => {
+test("preset reconstruction is exactly 61 disjoint entries, with 6 explicitly attributed legacy rows", () => {
   assert.equal(PRESETS.length, 67);
   assert.equal(new Set(PRESETS.map(p => p.id)).size, 67);
   assert.deepEqual(INDEPENDENT_PRESETS.map(p => p.id), independentIds);
@@ -69,12 +83,12 @@ test("preset reconstruction is exactly 52 disjoint entries, with 15 explicitly a
       assert.match(origin.scope, /Not independently reconstructed or verified/);
     }
   }
-  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 15);
+  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 6);
 });
 
 test("all 67 rows retain the baseline contract except explicit documented endpoint corrections", () => {
-  // Preserve the original operational hash: normalize only the five explicitly
-  // checked domestic Messages fixes, the Cloudflare Messages fix, and
+  // Preserve the original operational hash: normalize only the eleven explicitly
+  // checked domestic/coding-plan Messages fixes, the Cloudflare Messages fix, and
   // DeepSeek/Together canonical bases to old values.
   const originalOperations = PRESETS.map(({ note, keyUrl, ...p }) => {
     const correction = messagesCorrections[p.id];
@@ -100,8 +114,8 @@ test("all 67 rows retain the baseline contract except explicit documented endpoi
   });
   assert.equal(digest(originalOperations), "f09d4033eb89b4f8905563a8e4e92e9c62fd09246ad8538d74cf6ef259493d4b");
   assert.equal(digest(PRESETS.map(p => ({ id: p.id, fields: Object.keys(p).sort() }))), "ba74f5e07c68d0008451810cc3420d8712891236b5b9df64af7eb6f95e45e60e");
-  // Independently captured from the unchanged 15-row subset before this batch.
-  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "00612336be41da1a8bd7f115eea69b0de05b0cf87fc86c24211e95a5112f6c35");
+  // Independently captured from the unchanged six-row subset before this batch.
+  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "800eb3a71e477b995c8282300aef560426b4410b47773099075973cea8e6ea1b");
   assert.deepEqual(PRESET_CATEGORIES, ["编程套餐", "国内官方", "国际官方", "中转与聚合", "推理平台", "本地", "自定义"]);
   assert.deepEqual(PRESETS.filter(p => p.category === "编程套餐").map(p => p.id), ["zhipu-coding", "zai", "kimi-coding", "minimax-coding-cn", "minimax-coding", "volcengine-coding", "tencent-coding", "alibaba-token-plan", "mimo-token-plan", "opencode-go"]);
 });
@@ -135,6 +149,7 @@ test("every fact has dated field-level official evidence and a bounded verificat
   const domains: Record<IndependentPresetId, string[]> = {
     ...inferenceDomains,
     ...gatewayDomains,
+    ...subscriptionDomains,
     openai: ["developers.openai.com"], anthropic: ["platform.claude.com"], gemini: ["ai.google.dev"],
     "azure-openai": ["learn.microsoft.com"], openrouter: ["openrouter.ai"], "cloudflare-workers-ai": ["developers.cloudflare.com"],
     ollama: ["docs.ollama.com"], lmstudio: ["lmstudio.ai"], vllm: ["docs.vllm.ai"], litellm: ["docs.litellm.ai"],
@@ -217,7 +232,7 @@ test("domestic reconstructed bases yield the exact documented Chat and Messages 
   assert.equal(endpointUrl({ baseUrl: "https://fixture.example.invalid/custom" }, "messages"), "https://fixture.example.invalid/custom/messages");
 });
 
-test("Messages production adapter sends the five corrected preset URLs to an in-memory fetch fixture", async t => {
+test("Messages production adapter sends the eleven corrected domestic/coding-plan URLs to an in-memory fetch fixture", async t => {
   const sent: string[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     sent.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -239,11 +254,11 @@ test("Messages production adapter sends the five corrected preset URLs to an in-
     assert.equal(response.status, 200, id);
     assert.equal(sent.at(-1), correction.endpoint, id);
   }
-  assert.equal(sent.length, 5);
+  assert.equal(sent.length, 11);
 });
 
 test("documentation facts do not expand protocol, authentication, model or subscription behavior", () => {
-  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"], ["cerebras", "gpt-oss-120b"], ["vultr", "kimi-k2-instruct"], ["neuralwatt", "glm-5.3"], ["mistral", "codestral-latest"], ["meta", "muse-spark-1.3"], ["packycode", "gpt-5.5"], ["bizrouter", "openai/gpt-5.6-sol"], ["orcarouter", "openai/gpt-5.5"], ["tokenlab", "gpt-5.6-terra"], ["vertex", "gemini-3.5-flash"], ["vertex-express", "gemini-3.5-flash"]]);
+  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"], ["cerebras", "gpt-oss-120b"], ["vultr", "kimi-k2-instruct"], ["neuralwatt", "glm-5.3"], ["mistral", "codestral-latest"], ["meta", "muse-spark-1.3"], ["packycode", "gpt-5.5"], ["bizrouter", "openai/gpt-5.6-sol"], ["orcarouter", "openai/gpt-5.5"], ["tokenlab", "gpt-5.6-terra"], ["vertex", "gemini-3.5-flash"], ["vertex-express", "gemini-3.5-flash"], ["zhipu-coding", "glm-5.3"], ["zai", "glm-5.3"], ["kimi-coding", "kimi-for-coding"], ["minimax-coding", "MiniMax-M3"], ["volcengine-coding", "ark-code-latest"], ["tencent-coding", "tc-code-latest"], ["alibaba-token-plan", "qwen3.8-max"], ["mimo-token-plan", "mimo-v2.6-pro"], ["opencode-go", "kimi-k2.7-code"]]);
   for (const id of unexposedGuidanceIds) {
     assert.ok(OFFICIAL_PRESET_FACTS[id].guidance.value);
     assert.equal(Object.hasOwn(preset(id), "note"), false, id);
@@ -258,8 +273,8 @@ test("documentation facts do not expand protocol, authentication, model or subsc
       assert.equal(p.vertexMode, undefined, p.id);
     }
     assert.equal(p.models, undefined, p.id);
-    assert.notEqual(p.category, "编程套餐", p.id);
-    if (p.id !== "azure-openai" && p.id !== "xiaomi") assert.equal(p.wire, undefined, p.id);
+    assert.equal(p.category === "编程套餐", subscriptionIds.some(id => id === p.id), p.id);
+    if (p.id !== "azure-openai" && p.id !== "xiaomi" && p.id !== "mimo-token-plan") assert.equal(p.wire, undefined, p.id);
   }
   assert.deepEqual(preset("azure-openai").wire, { authHeader: "api-key", authScheme: "raw" });
   assert.deepEqual(upstreamHeaders(preset("azure-openai"), "fixture-only-key"), { "api-key": "fixture-only-key" });
