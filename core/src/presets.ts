@@ -1,14 +1,17 @@
 import type { ApiProtocol, ProviderPreset, WireConfig } from "./types.ts";
+import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "./presets-official.ts";
 
 /**
- * One-click starting points, grouped for the picker. Addresses, labels, key
- * pages and default models come from the provider registry of opencodex (MIT,
- * src/providers/registry/entries-*.ts, read 2026-10-05), checked and trimmed
- * by hand. Account-scoped URLs use explicit user inputs; Vertex has a dedicated
- * Gemini adapter. Proprietary agent-only protocols (Qoder, CodeBuddy, GitLab
- * Duo) are not ordinary model-source presets. The addresses only prefill the form: the probe that
- * runs after adding is what establishes whether a provider works and which
- * route each harness takes, so a stale address shows up there.
+ * One-click starting points, preserving EasySwitch's public picker contract.
+ * Ten entries are freshly reconstructed from official facts in preset-facts.ts
+ * and presets-official.ts. The remaining 57 below are explicitly legacy:
+ * Historical repository attribution: adapted from opencodex (MIT),
+ * src/providers/registry/entries-core.ts and
+ * entries-extended.ts, read 2026-10-05; upstream commit was not recorded by
+ * the original import. Copyright (c) 2026 opencodex contributors.
+ * Retain third_party/opencodex/LICENSE and
+ * PROVENANCE.md's historical attribution until those entries are rewritten.
+ * A documentation-backed endpoint is not a live service or capability check.
  */
 export const PRESET_CATEGORIES = ["编程套餐", "国内官方", "国际官方", "中转与聚合", "推理平台", "本地", "自定义"] as const;
 
@@ -65,7 +68,8 @@ function p(category: typeof PRESET_CATEGORIES[number], id: string, name: string,
   };
 }
 
-export const PRESETS: ProviderPreset[] = [
+/** Attributed legacy rows: no independent-verification claim is made for this collection. */
+const LEGACY_PRESETS: ProviderPreset[] = [
   // 编程套餐：按月订阅、给编程工具用的 Key
   p("编程套餐", "zhipu-coding", "智谱 GLM 编程套餐", "https://open.bigmodel.cn/api/coding/paas/v4", { anthropic: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.3", key: "https://bigmodel.cn/console/usercenter/apikeys", note: "GLM Coding Plan（国内站）" }),
   p("编程套餐", "zai", "Z.AI GLM 编程套餐", "https://api.z.ai/api/coding/paas/v4", { anthropic: "https://api.z.ai/api/anthropic", model: "glm-5.3", key: "https://z.ai/manage-apikey/apikey-list", note: "GLM Coding Plan（国际站）" }),
@@ -90,15 +94,11 @@ export const PRESETS: ProviderPreset[] = [
   p("国内官方", "xiaomi", "小米 MiMo 官方 API", "https://api.xiaomimimo.com/v1", { anthropic: "https://api.xiaomimimo.com/anthropic", model: "mimo-v2.6-flash", key: "https://platform.xiaomimimo.com/#/console/api-keys", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方按量 API，使用 sk- API Key；已有预设，真实账号调用尚未验收，与 Token Plan / MiMo Free 分开" }),
 
   // 国际官方
-  p("国际官方", "openai", "OpenAI", "https://api.openai.com/v1", { model: "gpt-5.5", key: "https://platform.openai.com/api-keys", note: "官方 API；原样转发 Responses 协议" }),
-  p("国际官方", "anthropic", "Anthropic", "https://api.anthropic.com/v1", { anthropic: "https://api.anthropic.com/v1", model: "claude-sonnet-5", key: "https://console.anthropic.com/settings/keys", note: "官方 API Key（不是 Claude 订阅）" }),
-  p("国际官方", "gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", { model: "gemini-3.5-flash", key: "https://aistudio.google.com/apikey", note: "AI Studio 的 Key，OpenAI 兼容层" }),
   p("国际官方", "xai", "xAI", "https://api.x.ai/v1", { key: "https://console.x.ai", note: "Grok 官方 API" }),
   p("国际官方", "mistral", "Mistral", "https://api.mistral.ai/v1", { model: "codestral-latest", key: "https://console.mistral.ai/api-keys" }),
   p("国际官方", "meta", "Meta Model API", "https://api.meta.ai/v1", { model: "muse-spark-1.3" }),
 
   // 中转与聚合
-  p("中转与聚合", "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", { key: "https://openrouter.ai/keys", note: "一个 Key 用几百个模型" }),
   p("中转与聚合", "zenmux", "ZenMux", "https://zenmux.ai/api/v1"),
   p("中转与聚合", "vercel", "Vercel AI Gateway", "https://ai-gateway.vercel.sh/v1"),
   p("中转与聚合", "huggingface", "Hugging Face", "https://router.huggingface.co/v1"),
@@ -124,15 +124,6 @@ export const PRESETS: ProviderPreset[] = [
   }),
 
   // 地址里有你自己的名字或 ID 的
-  p("国际官方", "azure-openai", "Azure OpenAI", "https://{resource}.openai.azure.com/openai/v1", {
-    params: [{ key: "resource", label: "Azure 资源名", example: "my-openai" }],
-    wire: { authHeader: "api-key", authScheme: "raw" },
-    icon: "openai", key: "https://portal.azure.com/", note: "模型名填「部署名」；用的是 v1 接口，不需要 api-version",
-  }),
-  p("推理平台", "cloudflare-workers-ai", "Cloudflare Workers AI", "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", {
-    params: [{ key: "account_id", label: "Cloudflare 账号 ID", example: "a1b2c3…" }],
-    key: "https://dash.cloudflare.com/profile/api-tokens", note: "有免费额度；模型名形如 @cf/meta/llama-3.3-70b-instruct-fp8-fast",
-  }),
   p("中转与聚合", "cloudflare-ai-gateway", "Cloudflare AI Gateway", "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/openai", {
     anthropic: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/anthropic",
     params: [{ key: "account_id", label: "Cloudflare 账号 ID" }, { key: "gateway", label: "网关名称", example: "my-gateway" }],
@@ -159,16 +150,46 @@ export const PRESETS: ProviderPreset[] = [
   p("推理平台", "synthetic", "Synthetic", "https://api.synthetic.new/openai/v1"),
   p("推理平台", "ollama-cloud", "Ollama Cloud", "https://ollama.com/v1", { model: "glm-5.3" }),
 
-  // 本地
-  p("本地", "ollama", "Ollama", "http://127.0.0.1:11434/v1", { note: "本机模型，不需要 Key" }),
-  p("本地", "lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", { icon: "lmstudio", note: "本机模型，不需要 Key" }),
-  p("本地", "vllm", "vLLM", "http://127.0.0.1:8000/v1", { note: "本机或自己的服务器" }),
-  p("本地", "litellm", "LiteLLM", "http://127.0.0.1:4000/v1", { note: "自己搭的 LiteLLM 代理" }),
-
   // 自定义
   { id: "relay", name: "自定义中转站", category: "自定义", icon: "newapi-color", baseUrl: "", note: "任何 OpenAI 兼容地址；也可以回到首页把使用说明整段粘贴" },
   { id: "mimo-free", name: "小米 MiMo Free（已停用）", category: "国内官方", icon: "xiaomi-color", baseUrl: "https://api.xiaomimimo.com/api/free-ai/openai/chat", models: ["mimo-auto"], wire: { paths: { chat: "", models: "" } }, note: "历史实验性免 key 入口，非官方开放 API，现已停用；仅保留本地假服务测试，不保证可用、免费或免限额。请使用官方 API 或 Token Plan" },
 ];
+
+/** Retained EasySwitch ordering, independent of either source collection. */
+const PRESET_ORDER = [
+  "zhipu-coding", "zai", "kimi-coding", "minimax-coding-cn", "minimax-coding", "volcengine-coding",
+  "tencent-coding", "alibaba-token-plan", "mimo-token-plan", "opencode-go", "deepseek", "kimi",
+  "zhipu", "qwen", "volcengine", "qianfan", "stepfun", "siliconflow",
+  "xiaomi", "openai", "anthropic", "gemini", "xai", "mistral",
+  "meta", "openrouter", "zenmux", "vercel", "huggingface", "packycode",
+  "bizrouter", "orcarouter", "tokenlab", "opengateway", "nanogpt", "opencode-zen",
+  "cline", "kilo", "vertex", "vertex-express", "azure-openai", "cloudflare-workers-ai",
+  "cloudflare-ai-gateway", "groq", "cerebras", "together", "fireworks", "deepinfra",
+  "sambanova", "nebius", "hyperbolic", "nvidia", "baseten", "scaleway",
+  "digitalocean", "vultr", "nscale", "venice", "neuralwatt", "synthetic",
+  "ollama-cloud", "ollama", "lmstudio", "vllm", "litellm", "relay",
+  "mimo-free",
+] as const;
+
+const assembled = [...LEGACY_PRESETS, ...INDEPENDENT_PRESETS];
+const byId = new Map(assembled.map(preset => [preset.id, preset]));
+if (byId.size !== assembled.length || byId.size !== PRESET_ORDER.length || new Set(PRESET_ORDER).size !== PRESET_ORDER.length) throw new Error("Preset collections overlap or omit a stable ID");
+export const PRESETS: ProviderPreset[] = PRESET_ORDER.map(id => {
+  const preset = byId.get(id);
+  if (!preset) throw new Error(`Missing stable preset ID: ${id}`);
+  return preset;
+});
+
+/** Maintenance metadata stays outside ProviderPreset and the /api/presets response. */
+export const PRESET_PROVENANCE = {
+  ...Object.fromEntries(LEGACY_PRESETS.map(preset => [preset.id, {
+    status: "legacy-attributed" as const,
+    source: "opencodex provider registry (MIT); historical attribution retained in PROVENANCE.md",
+    sourceReadAt: "2026-10-05",
+    scope: "Not independently reconstructed or verified in this batch; later EasySwitch changes retain their historical records.",
+  }])),
+  ...INDEPENDENT_PRESET_PROVENANCE,
+};
 
 /** The icon for a provider, from its address: a preset on the same host first, then the vendor table, else a letter avatar. */
 export function iconForBaseUrl(baseUrl: string, name?: string): string {
