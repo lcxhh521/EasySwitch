@@ -25,7 +25,7 @@
 
 - [~] B2 · CLI 启动与后台任务：代码补齐，真实程序验收未完成 — 来源：同上（10-06） · 进展：Kimi TS/旧CLI、OMP、AtomCode、CodeBuddy Code私有启动已补，保留B60全模型菜单；CodeBuddy的Messages地址覆盖已有官方依据，不再沿用不能重定向的旧猜测。新增实现仅经云端纯/假服务验证，真实参数和会话行为待验收；见 docs/agent-gaps-validation.md
 - [~] B3 · 每个支持“按次指定 MCP”的 agent 都挂上 EasySwitch 的 MCP（已挂：Codex、Claude Code、Hermes、OpenCode、Gemini、Qwen、Copilot、Droid、Cline、Goose、Crush、Grok、Qoder、OpenClaw、dsh、Trae Agent 等，逐个见各启动器的 mcpCaveat），不支持的写明原因 — 来源：「agents calling agents」产品定义 + 同上（10-06） · 2026-10-06 云端进展：dsh 的已安装插件私有挂载、Kimi/OMP/AtomCode/CodeBuddy MCP 及 Trae stdio→HTTP 桥已实现，18 个 agent-config-gaps/mcp-stdio-bridge 纯/假服务测试通过；能力矩阵保持 documented，真实客户端和项目级配置覆盖行为未验收
-- [ ] B5 · 把「按文档写的、没实测」的 Gemini CLI、Qwen Code、OpenCode、Copilot CLI、Aider 逐个实测（用独立目录临时安装，不动系统环境）；与 B57 的本机验证命令合并做 — 来源：盘点发现 Gemini CLI 被多报为已接入（10-06）
+- [ ] B5 · 把「按文档写的、没实测」的 Gemini CLI、Qwen Code、OpenCode、Copilot CLI、Aider 逐个实测（用独立目录临时安装，不动系统环境）；与 B57 的本机验证命令合并做 — 来源：盘点发现 Gemini CLI 被多报为已接入（10-06） · 2026-10-08用户对五个官方CLI云端独立目录临时安装、仅本地假服务验收的确认答复「继续」；先核验隔离，不登录账号、不调用真实模型。安装准备与真实运行分开记录，未通过的客户端不标实测。 · 静态准备：候选版本/安装钩子/隔离条件见 research/cli-acceptance-readiness.md；npm/PyPI直连元数据请求DNS失败，未下载或安装包。运行隔离未建立；Aider候选0.86.0位于两条已核实公告的受影响范围，暂停执行。五个客户端仍未实测。
 
 ## 产品功能
 
