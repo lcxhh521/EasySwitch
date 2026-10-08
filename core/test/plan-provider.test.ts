@@ -207,7 +207,7 @@ test("what a plan's answers say about its usage is remembered and shown on its c
   fake.responsesHeaders = { "x-codex-primary-used-percent": "62", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600) };
   assert.equal((await planChat(`${pid}/gpt-fake`)).status, 200);
   const quota = (await planInfo()).quota as { text: string; exhaustedUntil?: number };
-  assert.match(quota.text, /已用 62%（5 小时窗口），\d\d:\d\d 恢复/);
+  assert.match(quota.text, /^已用 62%（5 小时窗口），(?:\d{1,2}\/\d{1,2} )?\d\d:\d\d 恢复$/);
   assert.equal(quota.exhaustedUntil, undefined);
   fake.responsesHeaders = undefined;
 });
@@ -232,7 +232,7 @@ test("a plan that is used up is skipped by the pool until it is back, and the ne
     assert.equal(second.status, 200);
     assert.equal(fake.responsesRequests.length, before + 1, "a plan that is used up is not asked again until it is back");
     const card = (await planInfo()).quota as { text: string; exhaustedUntil?: number };
-    assert.match(card.text, /^已用完，\d\d:\d\d 恢复$/);
+    assert.match(card.text, /^已用完，(?:\d{1,2}\/\d{1,2} )?\d\d:\d\d 恢复$/);
     assert.ok(card.exhaustedUntil! > Date.now());
     // Once it is back (its quota state forgotten, as after the reset), it is used again.
     clearQuota(); clearRest(); fake.responsesHeaders = undefined;

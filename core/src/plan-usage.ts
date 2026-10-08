@@ -14,7 +14,11 @@ type Json = Record<string, any>;
 
 interface Reader { host: RegExp; url: (provider: Provider) => string; parse: (body: Json, now: number) => QuotaWindow[] }
 
-const number = (v: unknown): number | undefined => { const n = typeof v === "string" ? Number(v) : v; return typeof n === "number" && Number.isFinite(n) ? n : undefined; };
+function number(v: unknown): number | undefined {
+  if (typeof v === "string" && v.trim() === "") return undefined;
+  const n = typeof v === "string" ? Number(v) : v;
+  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+}
 
 function timeOf(v: unknown): number | undefined {
   if (typeof v === "string" && Number.isNaN(Number(v))) { const t = Date.parse(v); return Number.isNaN(t) ? undefined : t; }

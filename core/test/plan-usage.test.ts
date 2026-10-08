@@ -51,6 +51,70 @@ test("MiniMax's plan: remaining percents become used percents, and a full window
   assert.equal(isExhausted("mm", NOW + 1), false);
 });
 
+test("invalid quota numbers remain unknown instead of reporting an empty plan", async () => {
+  const invalid = [undefined, null, "", " ", "\t\r\n", "not-a-number", "NaN", "Infinity", "-Infinity", "1e999", true, false, [], {}];
+  for (const value of invalid) {
+    clearQuota();
+    const label = JSON.stringify(value);
+    const reset = NOW + 3_600_000;
+    const kimi = provider("invalid-kimi", "https://api.kimi.com/coding/v1");
+    for (const usage of [{ limit: 100, remaining: value }, { limit: 100, used: value }, { limit: value, remaining: 0 }]) {
+      assert.equal(await refreshPlanUsage(kimi, "fixture-key", NOW, answering({ usage: { ...usage, resetTime: reset } })), undefined, `Kimi: ${label}`);
+      assert.equal(quotaOf(kimi.id), undefined, `Kimi: ${label}`);
+      assert.equal(isExhausted(kimi.id, NOW), false, `Kimi: ${label}`);
+    }
+    const minimax = provider("invalid-mm", "https://api.minimax.io/v1");
+    const body = { base_resp: { status_code: 0 }, model_remains: [{
+      model_name: "general", current_interval_remaining_percent: value, end_time: reset,
+      current_weekly_status: 1, current_weekly_remaining_percent: value, weekly_end_time: reset,
+    }] };
+    assert.equal(await refreshPlanUsage(minimax, "fixture-key", NOW, answering(body)), undefined, `MiniMax: ${label}`);
+    assert.equal(quotaOf(minimax.id), undefined, `MiniMax: ${label}`);
+    assert.equal(isExhausted(minimax.id, NOW), false, `MiniMax: ${label}`);
+  }
+});
+
+test("unknown fields leave valid usage usable and an unknown refresh preserves the last observation", async () => {
+  clearQuota();
+  const kimi = provider("fallback-kimi", "https://api.kimi.com/coding/v1");
+  const windows = await refreshPlanUsage(kimi, "fixture-key", NOW, answering({ usage: { limit: "100", remaining: " ", used: "25" } }));
+  assert.equal(windows?.[0]?.usedPercent, 25, "unknown remaining falls back to valid used");
+  const before = quotaOf(kimi.id);
+  assert.equal(await refreshPlanUsage(kimi, "fixture-key", NOW + 1, answering({ usage: { limit: 100, remaining: "\t", resetTime: NOW + 3_600_000 } })), undefined);
+  assert.equal(quotaOf(kimi.id), before, "no fresh quota fact means no state replacement");
+  assert.equal(isExhausted(kimi.id, NOW + 1), false);
+  const minimax = provider("partial-mm", "https://api.minimax.io/v1");
+  const partial = await refreshPlanUsage(minimax, "fixture-key", NOW, answering({ base_resp: { status_code: "0" }, model_remains: [{
+    model_name: "general", current_interval_remaining_percent: "", current_weekly_status: "1", current_weekly_remaining_percent: "75",
+  }] }));
+  assert.deepEqual(partial, [{ id: "secondary", usedPercent: 25, windowMinutes: 10080 }]);
+});
+
+test("real zero and nonempty numeric strings retain their quota meaning", async () => {
+  const reset = NOW + 3_600_000;
+  for (const remaining of [0, "0", " 0 ", "0.0"]) {
+    clearQuota();
+    const kimi = provider("zero-kimi", "https://api.kimi.com/coding/v1");
+    const windows = await refreshPlanUsage(kimi, "fixture-key", NOW, answering({ usage: { limit: "100", remaining, resetTime: reset } }));
+    assert.equal(windows?.[0]?.usedPercent, 100);
+    assert.equal(exhaustedUntil(kimi.id, NOW), reset);
+    const minimax = provider("zero-mm", "https://api.minimax.io/v1");
+    const mmWindows = await refreshPlanUsage(minimax, "fixture-key", NOW, answering({ base_resp: { status_code: "0" }, model_remains: [{
+      model_name: "general", current_interval_remaining_percent: remaining, end_time: reset,
+      current_weekly_status: "1", current_weekly_remaining_percent: remaining, weekly_end_time: reset,
+    }] }));
+    assert.deepEqual(mmWindows?.map(w => w.usedPercent), [100, 100]);
+    assert.equal(exhaustedUntil(minimax.id, NOW), reset);
+  }
+  for (const remaining of [25.5, "25.5", " 25.5 ", "2.55e1"]) {
+    clearQuota();
+    const windows = await refreshPlanUsage(provider("numeric-kimi", "https://api.kimi.com/coding/v1"), "fixture-key", NOW, answering({ usage: { limit: "100", remaining } }));
+    assert.equal(windows?.[0]?.usedPercent, 74.5);
+    const mmWindows = await refreshPlanUsage(provider("numeric-mm", "https://api.minimax.io/v1"), "fixture-key", NOW, answering({ base_resp: { status_code: 0 }, model_remains: [{ model_name: "general", current_interval_remaining_percent: remaining }] }));
+    assert.equal(mmWindows?.[0]?.usedPercent, 74.5);
+  }
+});
+
 test("a vendor that answers with something unrecognised, an error, or no key shows nothing and breaks nothing; subscriptions with their own channels are left alone", async () => {
   clearQuota();
   const p = provider("kimi2", "https://api.kimi.ai/coding/v1");
