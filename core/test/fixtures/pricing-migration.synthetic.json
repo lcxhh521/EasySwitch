@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "dataKind": "synthetic",
+  "cases": [
+    {
+      "id": "openai-text",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "openai-mini-text",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "conditional-gpt-5.4",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-5.4",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-claude-haiku-4-5",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "model": "claude-haiku-4-5",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-claude-opus-4-6",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "model": "claude-opus-4-6",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-claude-sonnet-4-6",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "model": "claude-sonnet-4-6",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-gemini-2.5-flash",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1",
+      "model": "gemini-2.5-flash",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-gemini-2.5-pro",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1",
+      "model": "gemini-2.5-pro",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-deepseek-v4-flash",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "model": "deepseek-v4-flash",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "conditional-deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "model": "deepseek-v4-pro",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "user-override",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      },
+      "userRates": {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 0.1,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "reseller-host",
+      "baseUrl": "https://relay.example.invalid/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "model-alias",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "openai/gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "missing-cache-count",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "missing-scope",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      }
+    },
+    {
+      "id": "unknown-region",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "unknown"
+      }
+    },
+    {
+      "id": "invalid-negative-usage",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": -1,
+        "output": 1,
+        "cached": 0
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "subscription",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "subscription",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "unknown-model",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "synthetic-unknown-model",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "zero-selected-tokens",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 0,
+        "output": 0
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    },
+    {
+      "id": "included-cache-writes",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "billing": "usage",
+      "usage": {
+        "input": 10000,
+        "output": 1000,
+        "cached": 2000,
+        "cacheWrite": 3000
+      },
+      "scope": {
+        "mode": "standard",
+        "modality": "text",
+        "region": "non-regional"
+      }
+    }
+  ]
+}
