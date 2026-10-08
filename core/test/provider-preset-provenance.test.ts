@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PRESETS, PRESET_CATEGORIES, PRESET_PROVENANCE, letterIcon, iconForBaseUrl } from "../src/presets.ts";
+import { withPresetAvailability } from "../src/preset-availability.ts";
 import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "../src/presets-official.ts";
 import { OFFICIAL_PRESET_FACTS, type IndependentPresetId } from "../src/preset-facts.ts";
 import { INFERENCE_PRESET_FACTS, INFERENCE_RESEARCH_ONLY, type InferencePresetId } from "../src/preset-facts-inference.ts";
@@ -383,7 +384,8 @@ test("loopback console API preserves public preset shape and category-driven bil
   const upstreamBase = await listen(upstream), apiBase = await listen(api);
   const response = await fetch(`${apiBase}/api/presets`, { headers: { "x-easyswitch": "1" } });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), PRESETS);
+  // The API adds retirement guidance without rewriting the legacy preset contract.
+  assert.deepEqual(await response.json(), PRESETS.map(withPresetAvailability));
   assert.equal(Object.hasOwn(preset("openai"), "provenance"), false);
   for (const id of ["openai", "zhipu-coding"] as const) {
     const created = await fetch(`${apiBase}/api/providers`, { method: "POST", headers: { "content-type": "application/json", "x-easyswitch": "1" }, body: JSON.stringify({ name: `fixture-${id}`, baseUrl: `${upstreamBase}/v1`, presetId: id }) });
@@ -434,7 +436,7 @@ test("serving revised presets never migrates saved providers or user-defined Mes
   const apiBase = await listen(api);
   const response = await fetch(`${apiBase}/api/presets`, { headers: { "x-easyswitch": "1" } });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), PRESETS);
+  assert.deepEqual(await response.json(), PRESETS.map(withPresetAvailability));
   assert.deepEqual(store.providers(), saved);
   assert.equal(readFileSync(join(root, "state.json"), "utf8"), before);
   const reloaded = new Store(root);

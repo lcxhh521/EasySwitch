@@ -30,13 +30,14 @@ test("every dictionary entry contains plain-language explanation and a fixed cor
   assert.throws(() => requireRegisteredError("new_undocumented_error"), RangeError);
 });
 
-test("fifteen existing error paths map to useful fixed categories", () => {
+test("existing error paths map to useful fixed categories", () => {
   const cases: Array<[unknown, string]> = [
     [new TypeError("Failed to fetch"), "service_unavailable"],
     [{ status: 504, message: "Qoder 请求超时。" }, "request_timeout"],
     [{ status: 400, error: "请填写至少一个有效的 Vertex 模型 ID。" }, "invalid_input"],
     [{ status: 404, error: { type: "not_found_error", code: "model_not_found", message: "private model" } }, "model_unavailable"],
     [{ message: 'The subscription "private source" is switched off in EasySwitch.' }, "source_disabled"],
+    [{ code: "source_retired", status: 409, message: "private URL or API key must never be shown" }, "source_retired"],
     [{ status: 401, context: "source", error: "opaque private upstream text" }, "source_auth_required"],
     [{ code: "EACCES", message: "private path" }, "permission_denied"],
     [{ status: 429, error: "upstream quota or rate limit reached" }, "quota_limited"],

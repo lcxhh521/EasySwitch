@@ -989,6 +989,13 @@ function providerRow(p) {
 
 let presetQuery = "";
 
+function presetUnavailableNotice(preset) {
+  if (!preset?.unavailable) return "";
+  const { reason, sourceUrl } = preset.unavailable;
+  const source = typeof sourceUrl === "string" && /^https:\/\//.test(sourceUrl) ? ` <a href="${esc(sourceUrl)}" target="_blank" rel="noopener">官方停用说明</a>` : "";
+  return `<p class="hint" id="preset-status-${esc(preset.id)}">${esc(preset.name)}：${esc(reason)}${source}</p>`;
+}
+
 /** Presets grouped by category, filtered by the search box. */
 function presetGroups() {
   const q = presetQuery.trim().toLowerCase();
@@ -1000,14 +1007,15 @@ function presetGroups() {
     return items.length ? `
       <div class="hint" style="margin:10px 0 4px">${esc(cat)}</div>
       <div class="presets">${items.map(x => `
-        <button class="preset ${preset?.id === x.id ? "on" : ""}" data-preset="${esc(x.id)}" title="${esc(x.note ?? x.baseUrl)}">${icon(x.icon, "lg")}<span>${esc(x.name)}</span></button>`).join("")}
-      </div>` : "";
+        <button class="preset ${preset?.id === x.id ? "on" : ""}" data-preset="${esc(x.id)}" ${x.unavailable ? `disabled aria-describedby="preset-status-${esc(x.id)}"` : ""} title="${esc(x.unavailable?.reason ?? x.note ?? x.baseUrl)}">${icon(x.icon, "lg")}<span>${esc(x.name)}${x.unavailable ? ' <span class="chip warn">已停用</span>' : ""}</span></button>`).join("")}
+      </div>${items.filter(x => x.unavailable).map(presetUnavailableNotice).join("")}` : "";
   }).join("");
   return `<div id="preset-groups">${html || `<div class="empty">没有匹配的预设；可以选「自定义中转站」手动填</div>`}</div>`;
 }
 
 function renderAddForm() {
   const preset = addForm.preset;
+  if (preset?.unavailable) return `${presetUnavailableNotice(preset)}<button class="btn secondary" type="button" data-cancel-add>取消</button>`;
   return `
     <div class="field"><input type="search" id="preset-search" style="width:100%" placeholder="搜索 ${presets.length} 个预设：DeepSeek、Kimi、中转站、本地……" value="${esc(presetQuery)}" autocomplete="off"></div>
     ${presetGroups()}
@@ -1112,6 +1120,7 @@ function renderProviders() {
 }
 
 async function submitAdd(form) {
+  if (addForm?.preset?.unavailable) { render(); return; }
   const data = Object.fromEntries(new FormData(form));
   // Placeholder values travel as their own object; the preset (not the page) decides the wire details.
   data.urlParams = Object.fromEntries(Object.entries(data).filter(([k]) => k.startsWith("param:")).map(([k, v]) => [k.slice(6), v]));
@@ -1813,7 +1822,11 @@ document.addEventListener("click", async e => {
     return;
   }
   const preset = t.closest("[data-preset]");
-  if (preset) { addForm = { preset: presets.find(x => x.id === preset.dataset.preset) }; render(); return; }
+  if (preset) {
+    const selected = presets.find(x => x.id === preset.dataset.preset);
+    if (preset.disabled || !selected || selected.unavailable) return;
+    addForm = { preset: selected }; render(); return;
+  }
   if (t.closest("[data-cancel-add]")) { addForm = null; render(); return; }
 
   const detail = t.closest(".detail");

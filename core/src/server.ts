@@ -41,6 +41,7 @@ import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCapabilities, claudeLoggedIn, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
 import { rangeStart, summarize, Ledger, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
+import { newProviderUnavailable, withPresetAvailability } from "./preset-availability.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { ProviderImportService, ProviderImportError, type ImportSource } from "./provider-import.ts";
 import { homedir } from "node:os";
@@ -1532,6 +1533,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const name = String(body.name ?? "").trim() || nameFromUrl(parsed.baseUrl);
+      const unavailable = newProviderUnavailable({ baseUrl: parsed.baseUrl });
+      if (unavailable) { json(res, 409, { code: "source_retired", unavailable }); return; }
       let provider: Provider;
       try {
         provider = await addAndProbe({ name, baseUrl: parsed.baseUrl.replace(/\/+$/, ""), apiKey: parsed.apiKey ?? "" });
@@ -1590,6 +1593,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (issue) { json(res, issue.status, { error: issue.message, code: issue.code }); return; }
       const name = String(body.name ?? "").trim();
       const baseUrl = String(body.baseUrl ?? "").trim().replace(/\/+$/, "");
+      const unavailable = newProviderUnavailable({ presetId: body.presetId, baseUrl });
+      if (unavailable) { json(res, 409, { code: "source_retired", unavailable }); return; }
       const apiKey = String(body.apiKey ?? "").trim();
       const protocols = body.protocols === undefined ? undefined : protocolList(body.protocols);
       if (body.protocols !== undefined && !protocols) { json(res, 400, { error: "请选择至少一个有效的出站协议" }); return; }
@@ -1816,7 +1821,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
 
     if (method === "GET" && path === "/api/presets") {
-      json(res, 200, PRESETS);
+      json(res, 200, PRESETS.map(withPresetAvailability));
       return;
     }
 

@@ -7,7 +7,7 @@ function firstRunVisible() {
   return firstRun.active;
 }
 function firstRunPresets() {
-  return presets.filter(p => !p.vertexMode && !p.urlParams?.length && p.id !== "mimo-free");
+  return presets.filter(p => !p.unavailable && !p.vertexMode && !p.urlParams?.length && p.id !== "mimo-free");
 }
 function firstRunAgents() {
   const uses = new Map();

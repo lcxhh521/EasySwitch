@@ -4,6 +4,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { prepareOutbound } from "../src/outbound.ts";
 import type { Provider, ProviderPreset } from "../src/types.ts";
 import { PRESETS, PRESET_PROVENANCE } from "../src/presets.ts";
+import { withPresetAvailability } from "../src/preset-availability.ts";
 import { OFFICIAL_PRESET_FACTS } from "../src/preset-facts.ts";
 import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "../src/presets-official.ts";
 import { hasPlanUsage } from "../src/plan-usage.ts";
@@ -266,7 +267,7 @@ test("serving coding-plan presets never migrates saved SDK roots, MiniMax hosts 
   const origin = await listen(server);
   const response = await fetch(`${origin}/api/presets`, { headers });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), PRESETS);
+  assert.deepEqual(await response.json(), PRESETS.map(withPresetAvailability));
   assert.equal(readFileSync(join(root, "state.json"), "utf8"), before);
   assert.deepEqual(store.providers(), saved);
   const reloaded = new Store(root);

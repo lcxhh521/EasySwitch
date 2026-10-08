@@ -266,6 +266,8 @@ export interface SessionInfo {
 
 /** A provider the user can add with one click. */
 export interface ProviderPreset {
+  /** New-add guard from official retirement guidance; absence is not a live availability claim. */
+  unavailable?: { reason: string; sourceUrl: string };
   vertexMode?: "standard" | "express";
   protocols?: ApiProtocol[];
   id: string;
