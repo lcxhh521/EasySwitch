@@ -1552,8 +1552,10 @@ function loadUsage() {
       if (!current()) return;
       if (next?.range !== range || !next.totals || !Array.isArray(next.days) || !next.byProvider || !next.byHarness) throw new Error("Invalid usage response");
       usage = next;
-    } catch {
-      if (current()) usageError = `${usage ? "刷新" : "读取用量"}${request.timedOut ? "超时" : "失败"}。`;
+    } catch (error) {
+      if (current()) usageError = error?.code === "usage_range_too_large"
+        ? errorPresentation({ code: "usage_range_too_large" }).message
+        : `${usage ? "刷新" : "读取用量"}${request.timedOut ? "超时" : "失败"}。`;
     } finally {
       clearTimeout(request.timer);
       if (usageRequest === request) {

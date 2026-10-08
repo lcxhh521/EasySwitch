@@ -8,7 +8,7 @@ import { test, type TestContext } from "node:test";
 import { ProviderBudgetController } from "../src/budget.ts";
 import { GatewayTokenAuthority } from "../src/gateway-auth.ts";
 import { BudgetController } from "../src/global-budget.ts";
-import { Ledger, summarize, summarizeBudgetEntries } from "../src/ledger.ts";
+import { Ledger, rangeStart, summarize, summarizeBudgetEntries } from "../src/ledger.ts";
 import { createReadonlyRelayFixture } from "../src/parallel-tasks.ts";
 import { costOf, ratesFor } from "../src/pricing/cost.ts";
 import { CURRENT_ESTIMATOR, estimateProvenance, selectedRatesFingerprint } from "../src/pricing/provenance.ts";
@@ -220,6 +220,73 @@ async function until(check: () => boolean): Promise<void> {
   const expires = Date.now() + 2_000;
   while (!check()) { if (Date.now() >= expires) assert.fail("synthetic local request did not settle"); await new Promise(resolve => setTimeout(resolve, 5)); }
 }
+
+async function usageFixture(t: TestContext, rows: GatewayLogEntry[]) {
+  t.after(() => assert.equal(readFileSync(file, "utf8"), saved, "Usage summaries never rewrite retained history"));
+  const dir = directory(t), ledger = new Ledger(dir), store = new Store(dir), auth = new GatewayTokenAuthority();
+  const saved = `${rows.map(row => JSON.stringify(row)).join("\n")}\n`, file = join(dir, "usage.jsonl");
+  writeFileSync(file, saved);
+  const forbidden = (): never => assert.fail("Usage reads must not use credentials, probes, clients or issue sessions");
+  auth.issue = forbidden;
+  const base = await listen(t, createEasySwitchServer({ store, ledger, gatewayAuth: auth, port: 0,
+    secrets: { async get() { return forbidden(); }, async set() { forbidden(); }, async delete() { forbidden(); } },
+    sourceHealth: { fetch: async () => forbidden() }, taskRunner: async () => forbidden(),
+    interactiveRuntime: { findBinary: async () => forbidden(), newSessionDir: forbidden, launchInTerminal: async () => forbidden() },
+  }));
+  return { ledger, get: (range: string) => fetch(`${base}/api/usage?range=${range}`, { headers: { "x-easyswitch": "1" } }) };
+}
+
+test("usage API filters unordered, invalid and future rows consistently for every range", async t => {
+  const now = new Date(2026, 0, 2, 12);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const rows = [entry({ at: now.toISOString(), costUsd: 0.2 }), entry({ at: "invalid", costUsd: 100 }),
+    entry({ at: new Date(2025, 11, 1, 12).toISOString(), costUsd: 0.1 }),
+    entry({ at: new Date(now.getTime() + 1).toISOString(), costUsd: 200 }),
+    entry({ at: new Date(2026, 0, 2).toISOString(), costUsd: 0 }), entry({ at: new Date(2025, 11, 30, 23).toISOString(), costUsd: 0.3 })];
+  const fixture = await usageFixture(t, rows);
+  for (const range of ["today", "7d", "30d", "all"] as const) {
+    const response = await fixture.get(range); assert.equal(response.status, 200);
+    const body = await response.json(); assert.deepEqual(body, summarize(rows, range, now));
+    assert.equal(body.totals.calls, body.days.reduce((sum: number, day: { calls: number }) => sum + day.calls, 0));
+  }
+  const invalid = await fixture.get("invalid"); assert.equal(invalid.status, 400);
+});
+
+test("usage API captures one now across ledger reads at local midnight", async t => {
+  const now = new Date(2026, 0, 2, 23, 59, 59, 999), afterMidnight = new Date(now.getTime() + 1);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const rows = [entry({ at: now.toISOString() }), entry({ at: afterMidnight.toISOString() }),
+    entry({ at: new Date(2026, 0, 2).toISOString() }), entry({ at: new Date(2025, 11, 27).toISOString() }), entry({ at: new Date(2025, 11, 4).toISOString() })];
+  const fixture = await usageFixture(t, rows), read = fixture.ledger.read;
+  let observedSince: number | undefined;
+  t.mock.method(fixture.ledger, "read", (since?: Date) => {
+    observedSince = since?.getTime();
+    const entries = read.call(fixture.ledger, since);
+    t.mock.timers.setTime(afterMidnight.getTime());
+    return entries;
+  });
+  for (const range of ["today", "7d", "30d", "all"] as const) {
+    t.mock.timers.setTime(now.getTime());
+    const response = await fixture.get(range); assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), summarize(rows, range, now));
+    assert.equal(observedSince, rangeStart(range, now)?.getTime());
+  }
+});
+
+test("usage API rejects oversized all output explicitly and limited ranges still read the same history", async t => {
+  const now = new Date(2026, 9, 8, 12);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const rows = [entry({ at: now.toISOString(), costUsd: 0.25 }), entry({ at: "0099-01-01T00:00:00Z", costUsd: 5 })];
+  const fixture = await usageFixture(t, rows), response = await fixture.get("all");
+  assert.equal(response.status, 422);
+  const body = await response.json(); assert.equal(body.code, "usage_range_too_large");
+  assert.match(body.error, /10,000.*今天.*7 天.*30 天/); assert.equal(body.totals, undefined); assert.equal(body.days, undefined);
+  for (const range of ["today", "7d", "30d"] as const) {
+    const response = await fixture.get(range); assert.equal(response.status, 200);
+    const summary = await response.json(); assert.equal(summary.totals.calls, 1); assert.equal(summary.totals.costUsd, 0.25);
+    assert.deepEqual(summary, summarize(rows, range, now));
+  }
+});
 
 test("synthetic gateway logs persisted provenance and existing usage/budget APIs keep their amounts", async t => {
   const dir = directory(t), store = new Store(dir), ledger = new Ledger(dir), auth = new GatewayTokenAuthority();

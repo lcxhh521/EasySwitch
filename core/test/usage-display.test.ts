@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
-import { rangeStart, summarize, summarizeBudgetEntries } from "../src/ledger.ts";
+import { rangeStart, summarize, summarizeBudgetEntries, UsageRangeTooLargeError } from "../src/ledger.ts";
 import { estimateProvenance } from "../src/pricing/provenance.ts";
 import type { GatewayLogEntry } from "../src/types.ts";
 
@@ -128,3 +128,102 @@ test("explicit unpriced history remains uncertain even when it carries a recorde
   assert.match(app.cost([subscription]).text, /已记录估算 \$0\.500/);
   assert.match(app.cost([subscription]).provenance, /记录为订阅 1 次/); assert.doesNotMatch(app.cost([subscription]).provenance, /历史出处未记录/);
 });
+
+function withTimezone(zone: string, run: () => void): void {
+  const previous = process.env.TZ;
+  try { process.env.TZ = zone; run(); }
+  finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
+}
+
+function assertUsagePartitions(summary: ReturnType<typeof summarize>): void {
+  for (const parts of [summary.days, Object.values(summary.byProvider), Object.values(summary.byHarness), Object.values(summary.byKey)]) {
+    for (const [field, expected] of Object.entries(summary.totals)) {
+      if (field === "pricingSources") {
+        for (const source of Object.keys(summary.totals.pricingSources) as Array<keyof typeof summary.totals.pricingSources>) {
+          assert.equal(parts.reduce((sum, part) => sum + part.pricingSources[source], 0), summary.totals.pricingSources[source]);
+        }
+      } else {
+        const actual = parts.reduce((sum, part) => sum + (part[field as keyof typeof summary.totals] as number), 0);
+        assert.ok(Math.abs(actual - (expected as number)) < 1e-9, `${field}: ${actual} != ${expected}`);
+      }
+    }
+  }
+}
+
+for (const zone of ["UTC", "Asia/Shanghai", "America/New_York"]) test(`usage ranges share inclusive local boundaries and every grouping in ${zone}`, () => withTimezone(zone, () => {
+  const now = new Date(2026, 0, 2, 0, 0, 0, 5);
+  for (const [range, count] of [["today", 1], ["7d", 7], ["30d", 30]] as const) {
+    const start = rangeStart(range, now)!;
+    const included = [start.getTime(), now.getTime() - 1, now.getTime()].map((at, index) => row({
+      at: new Date(at).toISOString(), providerId: `source-${index}`, harness: `agent-${index}`, keyId: `key-${index}`,
+      inputTokens: 10 + index, outputTokens: 2 + index, cachedTokens: index, costUsd: [0.1, 0.2, 0.3][index], status: index === 1 ? 502 : 200,
+    }));
+    const excluded = [new Date(start.getTime() - 1).toISOString(), new Date(now.getTime() + 1).toISOString(), "invalid", "", null, 0]
+      .map(at => row({ at: at as string, providerId: "excluded", harness: "excluded", keyId: "excluded", costUsd: 100 }));
+    const entries = [excluded[0]!, included[2]!, ...excluded.slice(1), included[0]!, included[1]!], before = JSON.stringify(entries);
+    const summary = summarize(entries, range, now);
+    assert.deepEqual(summary, summarize([included[2]!, included[0]!, included[1]!], range, now));
+    assert.equal(summary.days.length, count); assert.equal(summary.totals.calls, 3);
+    assert.equal(summary.days.at(-1)!.day, "2026-01-02"); assert.equal(summary.byProvider.excluded, undefined);
+    assertUsagePartitions(summary); assert.equal(JSON.stringify(entries), before);
+  }
+}));
+
+test("all uses the earliest included local day without sorting records or changing amounts", () => {
+  const now = new Date(2026, 9, 8, 12), earliest = new Date(2026, 8, 30, 23);
+  const entries = [row({ at: now.toISOString(), costUsd: 1e16 }), row({ at: "invalid" }),
+    row({ at: earliest.toISOString(), costUsd: 1 }), row({ at: new Date(2026, 9, 3).toISOString(), costUsd: 1 }),
+    row({ at: new Date(now.getTime() + 1).toISOString(), costUsd: 20 })];
+  const before = JSON.stringify(entries), summary = summarize(entries, "all", now);
+  assert.equal(summary.days[0]!.day, "2026-09-30"); assert.equal(summary.days.at(-1)!.day, "2026-10-08");
+  assert.equal(summary.days.length, 9); assert.equal(summary.totals.calls, 3);
+  assert.equal(summary.totals.costUsd, 1e16, "retain original iteration order and floating-point addition");
+  assert.equal(JSON.stringify(entries), before);
+});
+
+test("empty, invalid-only and future-only all ranges keep today's empty slot until rows are due", () => {
+  const now = new Date(2026, 9, 8, 0), future = row({ at: new Date(now.getTime() + 1).toISOString(), costUsd: 0.25 });
+  const empty = summarize([], "all", now);
+  assert.equal(empty.days.length, 1); assert.equal(empty.days[0]!.day, "2026-10-08"); assert.equal(empty.cacheHitRate, null);
+  for (const rows of [[row({ at: "invalid" })], [future], [row({ at: "invalid" }), future]]) assert.deepEqual(summarize(rows, "all", now), empty);
+  const due = summarize([future], "all", new Date(now.getTime() + 1));
+  assert.equal(due.totals.calls, 1); assert.equal(due.totals.costUsd, 0.25); assertUsagePartitions(due);
+  assert.throws(() => summarize([], "all", new Date(NaN)), RangeError);
+});
+
+for (const [month, day, hours] of [[2, 8, 23], [10, 1, 25]] as const) test(`usage local calendar handles a ${hours}-hour DST day without missing or duplicate slots`, () => withTimezone("America/New_York", () => {
+  const midnight = new Date(2026, month, day), nextMidnight = new Date(2026, month, day + 1);
+  assert.equal((nextMidnight.getTime() - midnight.getTime()) / 3_600_000, hours);
+  const now = new Date(nextMidnight.getTime() - 1);
+  const offsetEquivalent = new Date(midnight.getTime()).toISOString();
+  const entries = [row({ at: offsetEquivalent }), row({ at: midnight.toString() }), row({ at: now.toISOString() }),
+    row({ at: new Date(midnight.getTime() - 1).toISOString() }), row({ at: nextMidnight.toISOString() })];
+  const today = summarize(entries, "today", now);
+  assert.equal(today.totals.calls, 3); assert.equal(today.days.length, 1); assertUsagePartitions(today);
+  for (const [range, count] of [["7d", 7], ["30d", 30]] as const) {
+    const summary = summarize(entries, range, new Date(2026, month, day + 1, 12));
+    assert.equal(summary.totals.calls, 5); assert.equal(summary.days.length, count);
+    assert.equal(new Set(summary.days.map(d => d.day)).size, count); assertUsagePartitions(summary);
+    const expected: string[] = [];
+    for (let ago = count - 1; ago >= 0; ago--) {
+      const d = new Date(2026, month, day + 1 - ago);
+      expected.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+    }
+    assert.deepEqual(summary.days.map(d => d.day), expected);
+  }
+}));
+
+test("all limits output to 10,000 local daily slots without truncating totals or retained rows", () => withTimezone("America/New_York", () => {
+  const now = new Date(2026, 10, 2, 12), first = new Date(now);
+  first.setDate(first.getDate() - 9_999); first.setHours(0, 0, 0, 0);
+  const entries = [row({ at: now.toISOString() }), row({ at: first.toISOString() })];
+  const allowed = summarize(entries, "all", now);
+  assert.equal(allowed.days.length, 10_000); assert.equal(allowed.totals.calls, 2);
+  const older = new Date(first); older.setDate(older.getDate() - 1);
+  for (const at of [older.toISOString(), "0099-01-01T00:00:00Z", "-271821-04-20T00:00:00Z"]) {
+    const rows = [row({ at }), ...entries], before = JSON.stringify(rows);
+    assert.throws(() => summarize(rows, "all", now), error => error instanceof UsageRangeTooLargeError && error.code === "usage_range_too_large");
+    for (const range of ["today", "7d", "30d"] as const) assert.equal(summarize(rows, range, now).totals.calls, 1);
+    assert.equal(JSON.stringify(rows), before);
+  }
+}));

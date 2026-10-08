@@ -39,7 +39,7 @@ import { handleMcp, mcpEndpoint, type McpDeps } from "./mcp.ts";
 import { handleResponses, listExposedModels, resolveModel } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCapabilities, claudeLoggedIn, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
-import { rangeStart, summarize, Ledger, type UsageRange } from "./ledger.ts";
+import { rangeStart, summarize, Ledger, UsageRangeTooLargeError, type UsageRange } from "./ledger.ts";
 import { iconForBaseUrl, PRESETS } from "./presets.ts";
 import { newProviderUnavailable, withPresetAvailability } from "./preset-availability.ts";
 import { nameFromUrl, parsePaste } from "./import-parse.ts";
@@ -1869,9 +1869,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 400, { error: "未知的时间范围" });
         return;
       }
-      const since = rangeStart(range);
+      const now = new Date(), since = rangeStart(range, now);
       const entries = ledger ? ledger.read(since) : [...log].reverse().filter(e => !since || new Date(e.at) >= since);
-      json(res, 200, summarize(entries, range));
+      try { json(res, 200, summarize(entries, range, now)); }
+      catch (error) {
+        if (!(error instanceof UsageRangeTooLargeError)) throw error;
+        json(res, 422, { error: error.message, code: error.code });
+      }
       return;
     }
 

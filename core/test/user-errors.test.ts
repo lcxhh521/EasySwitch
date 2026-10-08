@@ -42,6 +42,7 @@ test("existing error paths map to useful fixed categories", () => {
     [{ code: "EACCES", message: "private path" }, "permission_denied"],
     [{ status: 429, error: "upstream quota or rate limit reached" }, "quota_limited"],
     [{ status: 429, code: "budget_exceeded" }, "budget_blocked"],
+    [{ status: 422, code: "usage_range_too_large", error: "private retained history" }, "usage_range_too_large"],
     [{ message: "没有检测到这个 agent 的命令" }, "client_not_installed"],
     [{ status: 409, code: "desktop_isolation_unverified" }, "capability_unavailable"],
     [{ code: "keychain_access_required", osStatus: -25308, message: "OSStatus -25308" }, "keychain_unavailable"],
@@ -63,6 +64,14 @@ test("explicit codes take priority and status/technical codes stay in details on
   assert.equal(humanError({ code: "provider_unavailable", status: 503 }).code, "service_unavailable");
   assert.equal(humanError({ code: "agent_not_integrated", status: 409 }).details.technicalCode, "agent_not_integrated");
   assert.equal(humanError({ code: "agent_not_integrated", status: 409 }).code, "capability_unavailable");
+});
+
+test("oversized usage ranges keep their stable code and fixed corrective wording without echoing history", () => {
+  const result = humanError({ code: "usage_range_too_large", status: 422, error: "private time range or log contents" });
+  assert.equal(result.code, "usage_range_too_large"); assert.equal(result.action.target, "usage");
+  assert.match(result.message, /10,000.*今天.*7 天.*30 天/);
+  assert.deepEqual(result.details, { code: "usage_range_too_large", status: 422, technicalCode: "usage_range_too_large" });
+  assert.doesNotMatch(JSON.stringify(result), /private|contents/);
 });
 
 test("ambiguous filesystem and authentication failures use only explicit bounded context", () => {

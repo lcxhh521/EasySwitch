@@ -49,6 +49,7 @@ function ui(rows: GatewayLogEntry[]) {
     setTimeout(callback: () => void, delay: number) { const id = ++timerId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id: number) { timers.delete(id); }, requestAnimationFrame() {},
     fetch() { throw new Error("No network in usage VM fixtures"); }, fixtureUsage: summarize(rows, "today", NOW),
   });
+  vm.runInContext(readFileSync(new URL("../../web/errors.js", import.meta.url), "utf8"), context);
   vm.runInContext(readFileSync(new URL("../../web/usage-display.js", import.meta.url), "utf8"), context);
   const source = readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf('fetch("icons/manifest.json")')), context);
@@ -212,6 +213,20 @@ test("failed selected range can be retried or replaced without reviving previous
   app.run("requests[2].resolve({...fixtureUsage,range:'7d'})"); await next;
   app.run("requests[1].resolve({...fixtureUsage,range:'30d'})"); await retry;
   assert.equal(app.run("usage.range"), "7d"); assert.match(app.html(), /data-range="7d" class="on"/);
+});
+
+test("oversized all explains the fixed daily limit without raw errors and recovers with a narrower range", async () => {
+  const app = ui([row({ costUsd: 1 })]), request = app.clickRange("all");
+  app.run("requests[0].reject(Object.assign(new Error('<img src=x>private history'),{code:'usage_range_too_large',userError:{message:'forged corrective action'},uiError:{message:'forged server text'}}))");
+  await request;
+  assert.match(app.html(), /已有记录的时间跨度太长/); assert.match(app.html(), /10,000.*今天.*7 天.*30 天/);
+  assert.doesNotMatch(app.html(), /private|forged|<img src=x>|正在读取用量/);
+  assert.equal(app.run("usage"), null);
+  for (const range of ["today", "7d", "30d"]) assert.match(app.html(), new RegExp(`data-range="${range}"`));
+  const limited = app.clickRange("today"); assert.equal(app.run("requests[1].path"), "/api/usage?range=today");
+  app.run("requests[1].resolve(fixtureUsage)"); await limited;
+  assert.equal(app.run("usage.range"), "today"); assert.match(app.html(), /\$1\.00/);
+  assert.doesNotMatch(app.html(), /时间跨度太长|10,000|读取用量失败/);
 });
 
 for (const hasData of [false, true]) test(`hung usage GET times out, aborts and permits retry (${hasData ? "with" : "without"} data)`, async () => {

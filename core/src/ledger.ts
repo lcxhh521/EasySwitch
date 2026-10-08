@@ -417,6 +417,14 @@ export function summarizeBudgetEntries(entries: GatewayLogEntry[], start: Date, 
 
 export type UsageRange = "today" | "7d" | "30d" | "all";
 
+// Bound the chart output, independently of Ledger.read's retained-line limit.
+// Reject the whole oversized summary rather than returning mismatched totals.
+const MAX_USAGE_DAYS = 10_000;
+export class UsageRangeTooLargeError extends Error {
+  readonly code = "usage_range_too_large";
+  constructor() { super("已有记录跨度超过 10,000 个日历日，请选择今天、近 7 天或近 30 天。"); }
+}
+
 interface Totals {
   calls: number;
   errors: number;
@@ -480,6 +488,14 @@ function dayKey(at: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function calendarDay(d: Date): number {
+  // Compare local calendar dates on a UTC scale, so 23/25-hour DST days count
+  // once. setUTCFullYear also avoids Date.UTC's special case for years 0–99.
+  const utc = new Date(0);
+  utc.setUTCFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+  return utc.getTime() / 86_400_000;
+}
+
 export function rangeStart(range: UsageRange, now = new Date()): Date | undefined {
   if (range === "all") return undefined;
   const start = new Date(now);
@@ -490,12 +506,22 @@ export function rangeStart(range: UsageRange, now = new Date()): Date | undefine
 }
 
 export function summarize(entries: GatewayLogEntry[], range: UsageRange, now = new Date()) {
+  const since = rangeStart(range, now), until = now.getTime();
+  if (!Number.isFinite(until) || (since && !Number.isFinite(since.getTime()))) throw new RangeError("无效的用量汇总时间范围");
+  const from = since?.getTime() ?? -Infinity;
+  let earliest = until;
   const totals = emptyTotals();
   const byProvider = new Map<string, Totals>();
   const byHarness = new Map<string, Totals>();
   const byKey = new Map<string, Totals>();
   const byDay = new Map<string, Totals>();
   for (const e of entries) {
+    // Display totals and every grouping share the same local-calendar window.
+    // Do not rewrite rows or change budget accounting; future rows become due
+    // on a later summary, and invalid timestamps cannot define a chart range.
+    const at = typeof e.at === "string" ? Date.parse(e.at) : NaN;
+    if (!Number.isFinite(at) || at < from || at > until) continue;
+    earliest = Math.min(earliest, at);
     add(totals, e);
     const provider = e.providerId ?? e.model.split("/")[0] ?? "unknown";
     const harness = e.harness ?? "codex";
@@ -510,9 +536,11 @@ export function summarize(entries: GatewayLogEntry[], range: UsageRange, now = n
   }
   // A continuous run of days, so a chart has a slot for quiet days too.
   const days: Array<{ day: string } & Totals> = [];
-  const start = rangeStart(range, now) ?? (entries[0] ? new Date(entries[0].at) : new Date(now));
+  const start = since ?? new Date(earliest);
   start.setHours(0, 0, 0, 0);
-  for (const d = new Date(start); d <= now; d.setDate(d.getDate() + 1)) {
+  const dayCount = calendarDay(now) - calendarDay(start) + 1;
+  if (range === "all" && (!Number.isFinite(dayCount) || dayCount > MAX_USAGE_DAYS)) throw new UsageRangeTooLargeError();
+  for (const d = new Date(start); d <= now; d.setDate(d.getDate() + 1), d.setHours(0, 0, 0, 0)) {
     const key = dayKey(d.toISOString());
     days.push({ day: key, ...(byDay.get(key) ?? emptyTotals()) });
   }

@@ -20,6 +20,7 @@
 | permission_denied | 这次操作没有获得许可 | 当前账号或本地连接没有执行此操作所需的权限 | 查看权限检查 | doctor | 网关权限范围与来源权限拒绝 |
 | quota_limited | 模型来源暂时不能继续接收请求 | 可能达到用量上限或短时间请求过多，需要核对来源额度和恢复时间 | 查看来源额度 | providers | quota.ts 与来源额度或限流返回 |
 | budget_blocked | 新的请求已被预算设置暂停 | 已记录的估算费用达到暂停条件，或预算需要核对未完整记录的用量 | 查看用量和预算 | usage | global-budget.ts 暂停条件；来源预算；探测预算限制 |
+| usage_range_too_large | 已有记录的时间跨度太长 | 已有记录跨度超过 10,000 个日历日，无法一次生成完整的每日图表 | 选择今天、近 7 天或近 30 天 | usage | ledger.ts 用量图表输出上限；server.ts 用量接口完整拒绝，不返回部分总计或图表 |
 | client_not_installed | 还没找到要启动的程序 | 程序可能未安装，或选择的程序位置已不可用 | 查看已安装程序 | agents | server.ts agentBinary 检测；文字桥程序元数据检查 |
 | capability_unavailable | 这个功能暂时还不能使用 | 所选工具或来源尚未支持这种操作，或必要的安全验证还没有完成 | 查看功能检查 | doctor | 桌面隔离未验证；未支持订阅或协议 |
 | keychain_unavailable | 暂时无法读取或保存密钥 | 系统密钥存储未准备好，可能需要解锁、确认访问权限或修复配套程序 | 检查密钥存储 | doctor | native-keychain.ts helper 与钥匙串错误 |
