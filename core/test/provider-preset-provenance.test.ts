@@ -9,6 +9,7 @@ import { PRESETS, PRESET_CATEGORIES, PRESET_PROVENANCE, letterIcon, iconForBaseU
 import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "../src/presets-official.ts";
 import { OFFICIAL_PRESET_FACTS, type IndependentPresetId } from "../src/preset-facts.ts";
 import { INFERENCE_PRESET_FACTS, INFERENCE_RESEARCH_ONLY, type InferencePresetId } from "../src/preset-facts-inference.ts";
+import type { GatewayPresetId } from "../src/preset-facts-gateway.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { prepareOutbound } from "../src/outbound.ts";
@@ -23,8 +24,16 @@ const inferenceDomains: Record<InferencePresetId, string[]> = {
   scaleway: ["www.scaleway.com"], digitalocean: ["docs.digitalocean.com"], vultr: ["docs.vultr.com"],
   nscale: ["docs.nscale.com"], venice: ["docs.venice.ai"], neuralwatt: ["docs.neuralwatt.com", "portal.neuralwatt.com"], synthetic: ["dev.synthetic.new"],
 };
+const gatewayIds = ["xai", "mistral", "meta", "zenmux", "vercel", "huggingface", "packycode", "bizrouter", "orcarouter", "tokenlab", "opengateway", "nanogpt", "opencode-zen", "kilo", "vertex", "vertex-express", "cloudflare-ai-gateway"] as const;
+const gatewayDomains: Record<GatewayPresetId, string[]> = {
+  xai: ["docs.x.ai"], mistral: ["docs.mistral.ai"], meta: ["dev.meta.ai"], zenmux: ["zenmux.ai"], vercel: ["vercel.com"],
+  huggingface: ["huggingface.co"], packycode: ["docs.packyapi.com"], bizrouter: ["bizrouter.ai"],
+  orcarouter: ["www.orcarouter.ai", "docs.orcarouter.ai"], tokenlab: ["tokenlab.sh"], opengateway: ["opengateway.ai"],
+  nanogpt: ["docs.nano-gpt.com"], "opencode-zen": ["docs.opencode.ai"], kilo: ["kilo.ai"],
+  vertex: ["docs.cloud.google.com"], "vertex-express": ["docs.cloud.google.com", "github.com"], "cloudflare-ai-gateway": ["developers.cloudflare.com"],
+};
 const domesticIds = ["deepseek", "kimi", "zhipu", "qwen", "volcengine", "qianfan", "stepfun", "siliconflow", "xiaomi"] as const;
-const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds, ...inferenceIds] as const;
+const independentIds = ["openai", "anthropic", "gemini", "openrouter", "azure-openai", "cloudflare-workers-ai", "ollama", "lmstudio", "vllm", "litellm", ...domesticIds, ...inferenceIds, ...gatewayIds] as const;
 const reconstructed = new Set<string>(independentIds);
 const preset = (id: string): ProviderPreset => { const p = PRESETS.find(p => p.id === id); assert.ok(p, id); return p; };
 // Deliberate, documented exceptions to the old operational contract. The SDK
@@ -45,7 +54,7 @@ function canonical(value: unknown): unknown {
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
-test("preset reconstruction is exactly 35 disjoint entries, with 32 explicitly attributed legacy rows", () => {
+test("preset reconstruction is exactly 52 disjoint entries, with 15 explicitly attributed legacy rows", () => {
   assert.equal(PRESETS.length, 67);
   assert.equal(new Set(PRESETS.map(p => p.id)).size, 67);
   assert.deepEqual(INDEPENDENT_PRESETS.map(p => p.id), independentIds);
@@ -60,17 +69,22 @@ test("preset reconstruction is exactly 35 disjoint entries, with 32 explicitly a
       assert.match(origin.scope, /Not independently reconstructed or verified/);
     }
   }
-  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 32);
+  assert.equal(PRESETS.filter(p => !reconstructed.has(p.id)).length, 15);
 });
 
 test("all 67 rows retain the baseline contract except explicit documented endpoint corrections", () => {
   // Preserve the original operational hash: normalize only the five explicitly
-  // checked Messages fixes and DeepSeek/Together canonical bases to old values.
+  // checked domestic Messages fixes, the Cloudflare Messages fix, and
+  // DeepSeek/Together canonical bases to old values.
   const originalOperations = PRESETS.map(({ note, keyUrl, ...p }) => {
     const correction = messagesCorrections[p.id];
     if (correction) {
       assert.equal(p.anthropicBaseUrl, correction.corrected, p.id);
       p.anthropicBaseUrl = correction.previous;
+    }
+    if (p.id === "cloudflare-ai-gateway") {
+      assert.equal(p.anthropicBaseUrl, "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/anthropic/v1");
+      p.anthropicBaseUrl = "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/anthropic";
     }
     if (p.id === "deepseek") {
       // The old /v1 alias is unverified, not proven invalid. Select the official
@@ -86,8 +100,8 @@ test("all 67 rows retain the baseline contract except explicit documented endpoi
   });
   assert.equal(digest(originalOperations), "f09d4033eb89b4f8905563a8e4e92e9c62fd09246ad8538d74cf6ef259493d4b");
   assert.equal(digest(PRESETS.map(p => ({ id: p.id, fields: Object.keys(p).sort() }))), "ba74f5e07c68d0008451810cc3420d8712891236b5b9df64af7eb6f95e45e60e");
-  // Independently captured from the unchanged 32-row subset before this batch.
-  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "6b45ea0dd67a14f87b3b8b242a86f5b1b59cdcef0a61bea9fe7de39db69c2fb1");
+  // Independently captured from the unchanged 15-row subset before this batch.
+  assert.equal(digest(PRESETS.filter(p => !reconstructed.has(p.id))), "00612336be41da1a8bd7f115eea69b0de05b0cf87fc86c24211e95a5112f6c35");
   assert.deepEqual(PRESET_CATEGORIES, ["编程套餐", "国内官方", "国际官方", "中转与聚合", "推理平台", "本地", "自定义"]);
   assert.deepEqual(PRESETS.filter(p => p.category === "编程套餐").map(p => p.id), ["zhipu-coding", "zai", "kimi-coding", "minimax-coding-cn", "minimax-coding", "volcengine-coding", "tencent-coding", "alibaba-token-plan", "mimo-token-plan", "opencode-go"]);
 });
@@ -120,6 +134,7 @@ test("each reconstructed output field distinguishes official facts from EasySwit
 test("every fact has dated field-level official evidence and a bounded verification scope", () => {
   const domains: Record<IndependentPresetId, string[]> = {
     ...inferenceDomains,
+    ...gatewayDomains,
     openai: ["developers.openai.com"], anthropic: ["platform.claude.com"], gemini: ["ai.google.dev"],
     "azure-openai": ["learn.microsoft.com"], openrouter: ["openrouter.ai"], "cloudflare-workers-ai": ["developers.cloudflare.com"],
     ollama: ["docs.ollama.com"], lmstudio: ["lmstudio.ai"], vllm: ["docs.vllm.ai"], litellm: ["docs.litellm.ai"],
@@ -228,16 +243,21 @@ test("Messages production adapter sends the five corrected preset URLs to an in-
 });
 
 test("documentation facts do not expand protocol, authentication, model or subscription behavior", () => {
-  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"], ["cerebras", "gpt-oss-120b"], ["vultr", "kimi-k2-instruct"], ["neuralwatt", "glm-5.3"]]);
+  assert.deepEqual(INDEPENDENT_PRESETS.filter(p => p.defaultModel).map(p => [p.id, p.defaultModel]), [["openai", "gpt-5.5"], ["anthropic", "claude-sonnet-5"], ["gemini", "gemini-3.5-flash"], ["deepseek", "deepseek-flash"], ["zhipu", "glm-4.6"], ["volcengine", "doubao-seed-2-1-pro-260628"], ["stepfun", "step-5-preview"], ["xiaomi", "mimo-v2.6-flash"], ["cerebras", "gpt-oss-120b"], ["vultr", "kimi-k2-instruct"], ["neuralwatt", "glm-5.3"], ["mistral", "codestral-latest"], ["meta", "muse-spark-1.3"], ["packycode", "gpt-5.5"], ["bizrouter", "openai/gpt-5.6-sol"], ["orcarouter", "openai/gpt-5.5"], ["tokenlab", "gpt-5.6-terra"], ["vertex", "gemini-3.5-flash"], ["vertex-express", "gemini-3.5-flash"]]);
   for (const id of unexposedGuidanceIds) {
     assert.ok(OFFICIAL_PRESET_FACTS[id].guidance.value);
     assert.equal(Object.hasOwn(preset(id), "note"), false, id);
     assert.equal(Object.hasOwn(INDEPENDENT_PRESET_PROVENANCE[id].fields, "note"), false, id);
   }
   for (const p of INDEPENDENT_PRESETS) {
-    assert.equal(p.protocols, undefined, p.id);
+    if (p.id === "vertex" || p.id === "vertex-express") {
+      assert.deepEqual(p.protocols, ["gemini"], p.id);
+      assert.equal(p.vertexMode, p.id === "vertex" ? "standard" : "express", p.id);
+    } else {
+      assert.equal(p.protocols, undefined, p.id);
+      assert.equal(p.vertexMode, undefined, p.id);
+    }
     assert.equal(p.models, undefined, p.id);
-    assert.equal(p.vertexMode, undefined, p.id);
     assert.notEqual(p.category, "编程套餐", p.id);
     if (p.id !== "azure-openai" && p.id !== "xiaomi") assert.equal(p.wire, undefined, p.id);
   }
@@ -386,6 +406,12 @@ test("serving revised presets never migrates saved providers or user-defined Mes
     models: ["saved-model"], route: "chat-translate", routePinned: true,
     streamUsage: false, createdAt: "2026-10-01T00:00:00.000Z",
   });
+  saved.push({
+    id: "saved-cloudflare", name: "Saved Cloudflare Messages path", baseUrl: "https://gateway.ai.cloudflare.com/v1/fixture-account/fixture-gateway/openai",
+    anthropicBaseUrl: "https://gateway.ai.cloudflare.com/v1/fixture-account/fixture-gateway/anthropic",
+    models: [], route: "chat-translate", routePinned: true,
+    streamUsage: false, createdAt: "2026-10-01T00:00:00.000Z",
+  });
   for (const provider of saved) store.upsertProvider(provider);
   const before = readFileSync(join(root, "state.json"), "utf8");
   const api = createEasySwitchServer({ store, port: 0, secrets: { get: async () => undefined, set: async () => {}, delete: async () => {} } });
@@ -398,6 +424,7 @@ test("serving revised presets never migrates saved providers or user-defined Mes
   assert.equal(readFileSync(join(root, "state.json"), "utf8"), before);
   const reloaded = new Store(root);
   assert.deepEqual(reloaded.providers(), saved);
+  assert.equal(endpointUrl(reloaded.provider("saved-cloudflare")!, "messages"), "https://gateway.ai.cloudflare.com/v1/fixture-account/fixture-gateway/anthropic/messages");
   assert.equal(endpointUrl(reloaded.provider("saved-together")!, "chat"), "https://api.together.xyz/v1/chat/completions");
   assert.equal(endpointUrl(reloaded.provider("saved-deepseek")!, "chat"), "https://api.deepseek.com/v1/chat/completions");
   for (const [id, base] of previousMessagesBases) assert.equal(endpointUrl(reloaded.provider(`saved-${id}`)!, "messages"), `${base}/messages`);

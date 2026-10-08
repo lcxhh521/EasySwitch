@@ -344,3 +344,11 @@ B33预设：`preset-facts.ts`保存OpenAI、Anthropic、Gemini、Azure、OpenRou
 事实模块含83项逐字段事实、8项仅研究记录、36个独立官方来源URL。Hyperbolic推理服务退役、Ollama Cloud精确裸模型标识尚未由本批补全，仍留legacy。测试覆盖Together新旧域名、恶意后缀、存储不迁移及原合同保留；实际厂商请求、账号和Mac验证未执行。
 
 本批独立关联审查21项通过，最终组合安全白名单1015项通过（主998+桌面fake17），1项真实Keychain跳过；类型、待办、差异检查通过。
+
+### 网关预设与已存来源地址诊断（2026-10-08）
+
+网关批新增17条独立事实重建，累计52条、15条legacy。Cline确切gateway模型ID未由官方原文建立，继续legacy。Packy/OpenCode的API Key要求有官方依据，具体原始请求鉴权头仍不作已验证声明；现有默认请求逻辑不变。Cloudflare新预设Messages基础地址补/v1，其他协议/鉴权/模型/字段有无保持；Vertex的区域主机已由既有适配器正确构造，没有改写。六项专门pure/内存请求回归加入安全白名单。
+
+新增endpoint-diagnostics.ts只计算元数据：针对DeepSeek/Kimi/智谱/Qwen/小米5个已知旧有效Messages完整URL给出固定官方修正提示；正确wire.paths.messages覆盖不误报，未知自定义地址不猜测。自检仍保留来源原有探测/鉴权结果，主动检查期间的地址提示继续标metadata，不冒充真实请求结果。没有读取SecretStore、发送诊断请求或改写已存来源；只输出固定公开地址，不返回用户输入URL/原始错误。
+
+本批最终组合安全白名单1030项通过（主1013+桌面fake17），1项真实Keychain跳过；独立网关41项及诊断36项通过，类型/待办/差异检查通过。

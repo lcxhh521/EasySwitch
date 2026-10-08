@@ -3,8 +3,8 @@ import { INDEPENDENT_PRESETS, INDEPENDENT_PRESET_PROVENANCE } from "./presets-of
 
 /**
  * One-click starting points, preserving EasySwitch's public picker contract.
- * 35 entries are freshly reconstructed from official facts in preset-facts.ts
- * and presets-official.ts. The remaining 32 below are explicitly legacy:
+ * 52 entries are freshly reconstructed from official facts in preset-facts.ts
+ * and presets-official.ts. The remaining 15 below are explicitly legacy:
  * Historical repository attribution: adapted from opencodex (MIT),
  * src/providers/registry/entries-core.ts and
  * entries-extended.ts, read 2026-10-05; upstream commit was not recorded by
@@ -82,42 +82,8 @@ const LEGACY_PRESETS: ProviderPreset[] = [
   p("编程套餐", "mimo-token-plan", "小米 MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", { anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic", model: "mimo-v2.6-pro", key: "https://platform.xiaomimimo.com/#/console/plan-manage", wire: { authHeader: "api-key", authScheme: "raw" }, note: "官方订阅，使用专用 tp-/ttp- Key 和套餐端点；扣套餐额度，不与按量 API Key 或 MiMo Free 混用" }),
   p("编程套餐", "opencode-go", "opencode Go", "https://opencode.ai/zen/go/v1", { model: "kimi-k2.7-code" }),
 
-  // 国际官方
-  p("国际官方", "xai", "xAI", "https://api.x.ai/v1", { key: "https://console.x.ai", note: "Grok 官方 API" }),
-  p("国际官方", "mistral", "Mistral", "https://api.mistral.ai/v1", { model: "codestral-latest", key: "https://console.mistral.ai/api-keys" }),
-  p("国际官方", "meta", "Meta Model API", "https://api.meta.ai/v1", { model: "muse-spark-1.3" }),
-
-  // 中转与聚合
-  p("中转与聚合", "zenmux", "ZenMux", "https://zenmux.ai/api/v1"),
-  p("中转与聚合", "vercel", "Vercel AI Gateway", "https://ai-gateway.vercel.sh/v1"),
-  p("中转与聚合", "huggingface", "Hugging Face", "https://router.huggingface.co/v1"),
-  p("中转与聚合", "packycode", "PackyCode", "https://cf.api.fan/v1", { model: "gpt-5.5", note: "API 中转，Codex 分组的令牌" }),
-  p("中转与聚合", "bizrouter", "BizRouter", "https://api.bizrouter.ai/v1", { model: "openai/gpt-5.6-sol" }),
-  p("中转与聚合", "orcarouter", "OrcaRouter", "https://api.orcarouter.ai/v1", { model: "openai/gpt-5.5" }),
-  p("中转与聚合", "tokenlab", "TokenLab", "https://api.tokenlab.sh/v1", { model: "gpt-5.6-terra" }),
-  p("中转与聚合", "opengateway", "OpenGateway", "https://apis.opengateway.ai/v1"),
-  p("中转与聚合", "nanogpt", "NanoGPT", "https://nano-gpt.com/api/v1"),
-  p("中转与聚合", "opencode-zen", "opencode Zen", "https://opencode.ai/zen/v1"),
+  // Exact existing Cline gateway model ID remains unverified; retain attribution.
   p("中转与聚合", "cline", "Cline", "https://api.cline.bot/api/v1", { model: "anthropic/claude-sonnet-5" }),
-  p("中转与聚合", "kilo", "Kilo", "https://api.kilo.ai/api/gateway"),
-
-  p("国际官方", "vertex", "Google Vertex AI（标准）", "https://aiplatform.googleapis.com/v1", {
-    model: "gemini-3.5-flash", icon: "gemini-color", protocols: ["gemini"], vertexMode: "standard",
-    key: "https://cloud.google.com/vertex-ai/generative-ai/docs/start/gcp-auth",
-    note: "Google Gemini 原生协议；填写项目和区域，使用用户提供的短期访问令牌。不会读取 gcloud/ADC 或自动刷新；按 Google Cloud 计费。",
-  }),
-  p("国际官方", "vertex-express", "Google Vertex AI Express", "https://aiplatform.googleapis.com/v1", {
-    model: "gemini-3.5-flash", icon: "gemini-color", protocols: ["gemini"], vertexMode: "express",
-    key: "https://cloud.google.com/vertex-ai/generative-ai/docs/start/api-keys",
-    note: "Google Cloud Express API Key；Gemini 原生协议，不是 AI Studio 或 Gemini CLI 订阅。使用账号的试用/付费配额。",
-  }),
-
-  // 地址里有你自己的名字或 ID 的
-  p("中转与聚合", "cloudflare-ai-gateway", "Cloudflare AI Gateway", "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/openai", {
-    anthropic: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway}/anthropic",
-    params: [{ key: "account_id", label: "Cloudflare 账号 ID" }, { key: "gateway", label: "网关名称", example: "my-gateway" }],
-    note: "套在别的服务商前面的网关；Key 填你要用的那家的 Key",
-  }),
 
   // 推理平台
   p("推理平台", "hyperbolic", "Hyperbolic", "https://api.hyperbolic.xyz/v1"),

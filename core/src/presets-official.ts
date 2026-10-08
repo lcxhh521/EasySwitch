@@ -16,6 +16,8 @@ interface EditorialChoice {
   useDocumentedAuthOverride?: true;
   exposeGuidance?: boolean;
   exposeKeyGuide?: boolean;
+  protocols?: NonNullable<ProviderPreset["protocols"]>;
+  vertexMode?: NonNullable<ProviderPreset["vertexMode"]>;
   params?: NonNullable<ProviderPreset["urlParams"]>;
 }
 
@@ -59,6 +61,25 @@ const choices: EditorialChoice[] = [
   { id: "venice", name: "Venice", category: "推理平台", icon: "venice", exposeGuidance: false, exposeKeyGuide: false },
   { id: "neuralwatt", name: "Neuralwatt", category: "推理平台", icon: "neuralwatt", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
   { id: "synthetic", name: "Synthetic", category: "推理平台", icon: "synthetic", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "xai", name: "xAI", category: "国际官方", icon: "xai", exposeGuidance: true, exposeKeyGuide: true },
+  { id: "mistral", name: "Mistral", category: "国际官方", icon: "mistral-color", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: true },
+  { id: "meta", name: "Meta Model API", category: "国际官方", icon: "meta", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "zenmux", name: "ZenMux", category: "中转与聚合", icon: "zenmux", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "vercel", name: "Vercel AI Gateway", category: "中转与聚合", icon: "vercel-ai-gateway-color", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "huggingface", name: "Hugging Face", category: "中转与聚合", icon: "huggingface-color", exposeGuidance: false, exposeKeyGuide: false },
+  // Their documented API-key requirement does not verify the runtime bearer
+  // fallback. Preserve absent wire overrides without inventing header facts.
+  { id: "packycode", name: "PackyCode", category: "中转与聚合", icon: "packycode", selectDocumentedModel: true, exposeGuidance: true, exposeKeyGuide: false },
+  { id: "bizrouter", name: "BizRouter", category: "中转与聚合", icon: "letter:B", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "orcarouter", name: "OrcaRouter", category: "中转与聚合", icon: "orcarouter", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "tokenlab", name: "TokenLab", category: "中转与聚合", icon: "tokenlab", selectDocumentedModel: true, exposeGuidance: false, exposeKeyGuide: false },
+  { id: "opengateway", name: "OpenGateway", category: "中转与聚合", icon: "opengateway", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "nanogpt", name: "NanoGPT", category: "中转与聚合", icon: "nanogpt", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "opencode-zen", name: "opencode Zen", category: "中转与聚合", icon: "opencode", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "kilo", name: "Kilo", category: "中转与聚合", icon: "kilo", exposeGuidance: false, exposeKeyGuide: false },
+  { id: "vertex", name: "Google Vertex AI（标准）", category: "国际官方", icon: "gemini-color", selectDocumentedModel: true, exposeGuidance: true, exposeKeyGuide: true, protocols: ["gemini"], vertexMode: "standard" },
+  { id: "vertex-express", name: "Google Vertex AI Express", category: "国际官方", icon: "gemini-color", selectDocumentedModel: true, exposeGuidance: true, exposeKeyGuide: true, protocols: ["gemini"], vertexMode: "express" },
+  { id: "cloudflare-ai-gateway", name: "Cloudflare AI Gateway", category: "中转与聚合", icon: "cloudflare-ai-gateway-color", exposeGuidance: true, exposeKeyGuide: false, params: [{ key: "account_id", label: "Cloudflare 账号 ID" }, { key: "gateway", label: "网关名称", example: "my-gateway" }] },
 ];
 
 export interface PresetFieldOrigin {
@@ -114,6 +135,14 @@ function reconstruct(choice: EditorialChoice): PresetReconstruction {
     if (!auth.header || !auth.scheme) throw new Error(`Missing documented authentication: ${choice.id}`);
     preset.wire = { authHeader: auth.header, authScheme: auth.scheme };
     fields.wire = { kind: "official-fact", factKeys: ["authentication"] };
+  }
+  if (choice.protocols) {
+    preset.protocols = structuredClone(choice.protocols);
+    fields.protocols = { kind: "editorial", factKeys: [], choice: "Retain the existing native Gemini adapter selection; documented alternate surfaces do not expand preset protocols." };
+  }
+  if (choice.vertexMode) {
+    preset.vertexMode = choice.vertexMode;
+    fields.vertexMode = { kind: "editorial", factKeys: [], choice: "Retain the existing standard supplied-access-token or Express API-key workflow; no credential discovery, refresh or service-account migration." };
   }
   return { preset, provenance: { status: "independent-reconstruction", scope: "documentation-only; no live request, entitlement, or capability verification", fields } };
 }
