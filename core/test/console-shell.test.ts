@@ -27,7 +27,11 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     attrs: Record<string, string>;
     dataset: Record<string, string>;
     disabled: boolean;
+    parentElement: Element | null = null;
+    get tagName() { return this.tag.toUpperCase(); }
+    contains(node: Element | null): boolean { return node === this || this.children.includes(node!); }
     textContent = "";
+    value = "";
     className = "";
     removed = false;
     values: Record<string, string> = {};
@@ -43,6 +47,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
       // Browser focus is lost when innerHTML detaches the active control.
       if (activeElement && this.children.includes(activeElement)) activeElement = null;
       this.html = value; this.children = parseElements(value);
+      for (const child of this.children) if (!child.parentElement) child.parentElement = this;
     }
     classes = new Set<string>();
     classList = { add: (name: string) => { this.classes.add(name); }, toggle: (name: string, on: boolean) => { if (on) this.classes.add(name); else this.classes.delete(name); } };
@@ -55,17 +60,27 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
       return selector.split(",").some(part => {
         const s = part.trim();
         if (s === "#nav button") return this.tag === "button" && "data-page" in this.attrs;
+        if (s.startsWith(".")) return (this.attrs.class ?? "").split(/\s+/).includes(s.slice(1));
         if (s.startsWith("#")) return this.id === s.slice(1);
         const match = /^(\w+)?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/.exec(s);
         return !!match && (!match[1] || this.tag === match[1]) && (!match[2] || match[2] in this.attrs && (match[3] === undefined || this.attrs[match[2]] === match[3]));
       });
     }
-    closest(selector: string) { return this.matches(selector) ? this : null; }
-    querySelectorAll(selector: string) { return this.children.filter(node => node.matches(selector)); }
+    closest(selector: string): Element | null { return this.matches(selector) ? this : this.parentElement?.closest(selector) ?? null; }
+    querySelectorAll(selector: string): Element[] { const nodes = new Set<Element>(); const visit = (node: Element) => { for (const child of node.children) { if (!nodes.has(child)) { nodes.add(child); visit(child); } } }; visit(this); return [...nodes].filter(node => node.matches(selector)); }
     querySelector(selector: string) { return this.querySelectorAll(selector)[0] ?? null; }
   }
   function parseElements(html: string) {
-    return [...html.matchAll(/<(button|main|div|small|h1|p|nav|form|input|select|textarea)\b([^>]*)>/g)].map(m => new Element(m[1]!, attributes(m[2]!)));
+    const result: Element[] = [], stack: Element[] = [];
+    for (const match of html.matchAll(/<(\/?)([a-z][\w-]*)\b([^>]*)>/g)) {
+      const tag = match[2]!;
+      if (match[1]) { const at = stack.findLastIndex(node => node.tag === tag); if (at >= 0) stack.length = at; continue; }
+      const node = new Element(tag, attributes(match[3]!)); node.parentElement = stack.at(-1) ?? null; node.parentElement?.children.push(node); result.push(node);
+      if (tag === "option") node.value = node.attrs.value ?? html.slice(match.index! + match[0].length).split("<")[0]!.trim();
+      if (!["input", "img", "br", "hr", "meta", "link"].includes(tag)) stack.push(node);
+    }
+    for (const node of result) if (node.tag === "select") { const options = node.querySelectorAll("option"); node.value = (options.find(option => "selected" in option.attrs) ?? options[0])?.value ?? ""; }
+    return result;
   }
   const staticNodes = parseElements(index);
   const page = staticNodes.find(node => node.id === "page")!;
@@ -322,4 +337,96 @@ test("menu-bar panel still opens on agents and keeps its native launch and subsc
   assert.equal(app.root.getAttribute("data-theme"), "dark");
   assert.match(css, /body\.panel \.sidebar[^{}]*\{[^}]*display:\s*none/);
   assert.match(css, /body\.panel main\s*\{[^}]*margin:\s*0/);
+});
+
+
+test("polling refreshes data while restoring the same ordinary control focus", async () => {
+  const app = shell({ hash: "#settings" }); await app.refresh();
+  const old = app.node('[data-acc-launch="codex-fixture"]'); old.focus();
+  app.fixtureState.accounts[0]!.label = "Updated fixture label";
+  const reads = app.requests.length;
+  await app.run("refresh()");
+  assert.ok(app.requests.length > reads); assert.match(app.html(), /Updated fixture label/);
+  const replacement = app.node('[data-acc-launch="codex-fixture"]');
+  assert.notEqual(replacement, old); assert.equal(app.document.activeElement, replacement);
+  await app.run("refresh()"); assert.equal(app.document.activeElement, app.node('[data-acc-launch="codex-fixture"]'));
+});
+
+test("removed, disabled or ambiguous focus targets never transfer to another action", async () => {
+  for (const replacement of ['', '<button data-action="one" disabled>Disabled</button>', '<button data-action="one" aria-disabled="true">Disabled</button>', '<button data-action="one" hidden>Hidden</button>', '<button data-action="one">A</button><button data-action="one">B</button>']) {
+    const app = shell({ hash: "#settings" });
+    app.run(`globalThis.reviewHTML = '<button data-action="one">Original</button><button data-action="two">Other</button>'; renderSettings = () => reviewHTML`);
+    await app.refresh(); app.node('[data-action="one"]').focus();
+    app.run(`reviewHTML = ${JSON.stringify(replacement)}`); await app.run("refresh()");
+    assert.equal(app.document.activeElement, null);
+  }
+});
+
+test("stable disclosure and link identities keep focus but navigation does not transfer it", async () => {
+  const app = shell({ hash: "#settings" });
+  app.run(`renderSettings = () => '<details data-keep="fixture-section"><summary>More</summary><a href="/fixture-help">Help</a></details>'`);
+  await app.refresh();
+  for (const selector of ['summary', 'a']) { app.node(selector).focus(); await app.run("refresh()"); assert.equal(app.document.activeElement, app.node(selector)); }
+  app.run('renderAgents = renderSettings'); await app.hash("#agents");
+  assert.equal(app.document.activeElement, null, "A similar control on a different page must not receive old focus");
+});
+
+test("manual refresh reports core failure accurately and succeeds after recovery", async () => {
+  const app = shell({ hash: "#settings" }); await app.refresh();
+  app.run('globalThis.goodCall = call; call = async () => { throw new Error("fixture offline") }');
+  await app.click("#refresh"); assert.match(app.html(), /连不上 EasySwitch/);
+  assert.match(app.run('fixtureMessages.at(-1)'), /未刷新|失败/);
+  assert.equal(await app.run("refresh()"), false);
+  app.run('call = goodCall'); await app.click("#refresh");
+  assert.match(app.run('fixtureMessages.at(-1)'), /核心状态已刷新/);
+  assert.equal(await app.run("refresh()"), true);
+});
+
+test("doctor refresh failure cannot announce success and active checks are not refreshed", async () => {
+  const app = shell({ hash: "#doctor" }); await app.refresh();
+  app.run('call = async () => { throw new Error("fixture offline") }');
+  await app.click("#refresh"); assert.doesNotMatch(app.run('fixtureMessages.at(-1)'), /已刷新/);
+  assert.equal(await app.run("refresh()"), false);
+  app.run('doctorBusy = true'); assert.equal(await app.run("refresh(true)"), false);
+});
+
+
+test("late manual refresh does not announce success or move focus after navigation", async () => {
+  const app = shell({ hash: "#settings" }); await app.refresh();
+  app.run('globalThis.originalCall = call; globalThis.finishRefresh = null; call = (method, path, ...args) => path === "/api/state" ? new Promise(resolve => { finishRefresh = resolve; }) : originalCall(method, path, ...args)');
+  const pending = app.click("#refresh");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.run("typeof finishRefresh"), "function");
+  await app.hash("#doctor");
+  const button = app.node('[data-doctor-action="refresh-doctor"]'); button.focus();
+  app.run('finishRefresh(state)'); await pending;
+  assert.equal(app.run("page"), "doctor"); assert.equal(app.document.activeElement, button);
+  assert.equal(app.run("fixtureMessages.length"), 0);
+});
+
+
+test("profile action focus is not restored onto a different selected profile", async () => {
+  for (const action of ["data-profile-apply", "data-profile-del"]) {
+    const app = shell({ hash: "#settings" });
+    app.run('state = null; renderSettings = profileBar');
+    app.run('globalThis.reviewProfiles = [{id:"profile-a",name:"A",agents:1},{id:"profile-b",name:"B",agents:1}]');
+    await app.refresh(); app.run('state.profiles = reviewProfiles; render()');
+    assert.equal(app.node('[data-profile-pick]').value, "profile-a");
+    app.node('[data-profile-pick]').value = "profile-b";
+    app.node(`[${action}]`).focus(); await app.run("refresh()");
+    assert.equal(app.node('[data-profile-pick]').value, "profile-a");
+    assert.equal(app.document.activeElement, null, "Enter must not activate the changed target A");
+    assert.equal(app.requests.some(request => request.method !== "GET"), false);
+  }
+});
+
+test("probe action focus includes the selected model rather than only provider identity", async () => {
+  const app = shell({ hash: "#settings" });
+  app.fixtureState.providers[0]!.models = ["model-a", "model-b"];
+  app.run('openProvider = "fixture"; renderSettings = () => providerRow(state.providers[0])');
+  await app.refresh(); assert.equal(app.node('.probe-model').value, "model-a");
+  app.node('.probe-model').value = "model-b"; app.node('[data-probe]').focus();
+  await app.run("refresh()"); assert.equal(app.node('.probe-model').value, "model-a");
+  assert.equal(app.document.activeElement, null, "Enter must not probe the changed model A");
+  assert.equal(app.requests.some(request => request.method !== "GET"), false);
 });

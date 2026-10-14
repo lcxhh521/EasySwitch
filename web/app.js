@@ -1570,20 +1570,57 @@ function loadUsage() {
 
 // ---------------------------------------------------------------- render loop
 
+// Restore only an unambiguous, still-enabled action on the same rendered page.
+// Never use its position or visible label: either can now belong to another record.
+let renderedPage = null;
+function preserveActionFocus(main) {
+  const active = document.activeElement;
+  if (renderedPage !== page || !main?.contains?.(active) || !active?.matches?.("button, a, summary")) return () => {};
+  const identity = element => {
+    const parts = [];
+    for (let node = element; node && node !== main; node = node.parentElement) {
+      const keys = Object.entries(node.dataset ?? {}).sort(([a], [b]) => a.localeCompare(b));
+      const id = node.getAttribute?.("id"), href = node.getAttribute?.("href");
+      if (id || href || keys.length) parts.push([node.tagName, id, href, keys]);
+    }
+    // These actions get their target from a nearby selection, not their own data attributes.
+    // A redraw may reset that selection; never carry keyboard activation onto another target.
+    if (element.matches?.("[data-profile-apply], [data-profile-del]")) parts.push(["profile", main.querySelector("[data-profile-pick]")?.value]);
+    if (element.matches?.("[data-probe], [data-protocol-auto]")) {
+      const detail = element.closest?.("[data-provider]");
+      const selector = element.matches("[data-probe]") ? ".probe-model" : "[data-protocol-model]";
+      parts.push(["model", detail?.querySelector(selector)?.value]);
+    }
+    return parts.length ? JSON.stringify([element.tagName, parts]) : null;
+  };
+  const key = identity(active);
+  const candidates = () => [...main.querySelectorAll("button, a, summary")].filter(node => identity(node) === key);
+  if (!key || candidates().length !== 1) return () => {};
+  return () => {
+    const matches = candidates();
+    const target = matches.length === 1 ? matches[0] : null;
+    if (target && !target.disabled && target.getAttribute?.("aria-disabled") !== "true" && !target.closest?.("[hidden], [inert]")) target.focus({ preventScroll: true });
+  };
+}
+
 function render() {
   renderHeader();
   const main = $("#page");
-  if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=renderDoctor();return;}
-  if (!state && page !== "usage") {
-    main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
-    return;
-  }
-  const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
-  main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
-  if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
-  if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
-  if (page === "sessions") requestAnimationFrame(drawFlowLines);
-  if (page === "usage") requestAnimationFrame(drawChart);
+  const restoreFocus = preserveActionFocus(main);
+  renderedPage = page;
+  try {
+    if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=renderDoctor();return;}
+    if (!state && page !== "usage") {
+      main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
+      return;
+    }
+    const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
+    main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
+    if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
+    if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
+    if (page === "sessions") requestAnimationFrame(drawFlowLines);
+    if (page === "usage") requestAnimationFrame(drawChart);
+  } finally { restoreFocus(); }
 }
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
@@ -1622,23 +1659,29 @@ document.addEventListener("change", async e => {
 /** The onboarding card keeps its state between renders (the user is typing into it). */
 let importFormOpen = false;
 
+/** Result covers the core snapshot (or the dedicated doctor/usage read), not every optional panel. */
 async function refresh(force = false) {
   const navigation = pageNavigationVersion;
   if (page !== "usage") cancelUsageLoad();
   else if (!$("#usage-content")) render();
   // Start the bounded read immediately, even if the general state read is slow.
   const usageRefresh = page === "usage" ? loadUsage() : null;
-  if (page === "doctor" && typeof loadDoctor === "function") {if(!doctorBusy && (force || !doctorReport))await loadDoctor();render();return;}
+  if (page === "doctor" && typeof loadDoctor === "function") {
+    if (doctorBusy) return false;
+    if (force || !doctorReport) await loadDoctor();
+    if (navigation !== pageNavigationVersion) return false;
+    render(); return !!doctorReport && !doctorError;
+  }
   let nextState;
   try {
     nextState = await call("GET", "/api/state");
   } catch {
     nextState = null;
   }
-  if (navigation !== pageNavigationVersion) return;
+  if (navigation !== pageNavigationVersion) return false;
   state = nextState;
   if (state && !PANEL && !state.providers.length && !presets.length) presets = await call("GET", "/api/presets").catch(() => []);
-  if (navigation !== pageNavigationVersion) return;
+  if (navigation !== pageNavigationVersion) return false;
   if (typeof firstRunSync === "function" && state) firstRunSync();
   if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
   if (page === "agents" && !PANEL) {
@@ -1656,16 +1699,17 @@ async function refresh(force = false) {
     if (agentList) force = true;
   }
   if (page === "doctor" && typeof loadDoctor === "function" && !doctorBusy && (force || !doctorReport)) await loadDoctor();
-  if (navigation !== pageNavigationVersion) return;
+  if (navigation !== pageNavigationVersion) return false;
   if (page === "usage") {
     const host = $("#usage-content");
     if (!host || (!busy() && !host.contains?.(document.activeElement))) render();
     else { renderHeader(); updateUsageView(); }
     await usageRefresh;
-    return;
+    return navigation === pageNavigationVersion && !!usage && !usageError;
   }
   if (force || !busy()) render();
   else renderHeader();
+  return !!nextState;
 }
 
 // ---------------------------------------------------------------- events
@@ -1700,8 +1744,11 @@ document.addEventListener("click", async e => {
   }
   if (t.closest("#refresh")) {
     const navigation = pageNavigationVersion;
-    await refresh(true);
-    if (navigation === pageNavigationVersion && page !== "usage") toast("已刷新");
+    const refreshed = await refresh(true);
+    if (navigation === pageNavigationVersion && page !== "usage") {
+      const subject = page === "doctor" ? "自检状态" : "核心状态";
+      toast(refreshed ? `${subject}已刷新` : `${subject}未刷新，请稍后重试`);
+    }
     return;
   }
   if (t.closest("#guard-chip")) { if (popover) closePopover(); else if (state) openGuard($("#guard-chip")); return; }
