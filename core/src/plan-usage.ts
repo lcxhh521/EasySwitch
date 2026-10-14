@@ -88,16 +88,60 @@ function readerFor(provider: Provider): Reader | undefined {
 
 export const hasPlanUsage = (provider: Provider): boolean => readerFor(provider) !== undefined;
 
+const MAX_USAGE_BYTES = 256 * 1024;
+const MAX_USAGE_CHUNKS = 4096;
+
+function discardBody(response: Response): void {
+  // A source need not acknowledge cancellation. Never let cleanup hold a poll open.
+  void response.body?.cancel().catch(() => {});
+}
+
+/** Complete, bounded JSON only: truncation must never become a new quota observation. */
+async function readUsageJson(response: Response, deadline: Promise<never>): Promise<Json> {
+  if (!response.body) throw new Error("Missing quota body");
+  const reader = response.body.getReader();
+  const buffer = Buffer.alloc(MAX_USAGE_BYTES);
+  let bytes = 0;
+  try {
+    // Also bound empty/tiny chunks; an endlessly ready stream must not starve the deadline.
+    for (let chunks = 0; chunks <= MAX_USAGE_CHUNKS; chunks++) {
+      const next = await Promise.race([reader.read(), deadline]);
+      // Response.json() uses UTF-8 decoding that strips a leading BOM as well.
+      if (next.done) return JSON.parse(new TextDecoder().decode(buffer.subarray(0, bytes))) as Json;
+      if (chunks === MAX_USAGE_CHUNKS || next.value.byteLength > MAX_USAGE_BYTES - bytes) throw new Error("Quota body exceeds limit");
+      buffer.set(next.value, bytes);
+      bytes += next.value.byteLength;
+    }
+    throw new Error("Quota body exceeds limit");
+  } finally {
+    void reader.cancel().catch(() => {});
+    try { reader.releaseLock(); } catch { /* A timed-out read may still be settling. */ }
+  }
+}
+
 /** Asks the vendor how much of the plan is left and remembers the answer (the pools skip a plan that is used up). */
 export async function refreshPlanUsage(provider: Provider, apiKey: string | undefined, now = Date.now(), fetchFn: typeof fetch = fetch): Promise<QuotaWindow[] | undefined> {
   const reader = readerFor(provider);
   if (!reader || !apiKey) return undefined;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error("Quota request timed out")); }, 10_000);
+  });
   try {
-    const response = await fetchFn(reader.url(provider), { redirect: "error", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) { await response.body?.cancel(); return undefined; }
-    const windows = reader.parse((await response.json()) as Json, now);
+    const pending = fetchFn(reader.url(provider), { redirect: "error", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: controller.signal }).then(response => {
+      // An injected or delayed transport may resolve after our deadline has returned.
+      if (controller.signal.aborted) { discardBody(response); throw new Error("Quota request expired"); }
+      return response;
+    });
+    const response = await Promise.race([pending, deadline]);
+    if (!response.ok) { discardBody(response); return undefined; }
+    const body = await readUsageJson(response, deadline);
+    controller.signal.throwIfAborted();
+    const windows = reader.parse(body, now);
     if (!windows.length) return undefined;
     recordWindows(provider.id, windows, now);
     return windows;
   } catch { return undefined; }
+  finally { clearTimeout(timer); controller.abort(); }
 }

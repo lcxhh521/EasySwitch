@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import { test } from "node:test";
 import { hasPlanUsage, refreshPlanUsage } from "../src/plan-usage.ts";
 import { clearQuota, describeQuota, exhaustedUntil, isExhausted, quotaOf } from "../src/quota.ts";
@@ -149,4 +151,176 @@ test("plan usage rejects insecure, ambiguous and cross-account destinations befo
     await refreshPlanUsage(provider("valid", base), "fixture-key", NOW, transport);
   }
   assert.equal(calls, 4);
+});
+
+const BODY_LIMIT = 256 * 1024;
+const validUsage = { usage: { limit: 100, remaining: 80 } };
+const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test("quota JSON accepts the exact byte limit but rejects larger bodies without replacing the last observation", async () => {
+  clearQuota();
+  const p = provider("body-limit", "https://api.kimi.com/coding/v1");
+  const base = JSON.stringify({ ...validUsage, padding: "", note: "额度" });
+  const exact = JSON.stringify({ ...validUsage, padding: "x".repeat(BODY_LIMIT - Buffer.byteLength(base)), note: "额度" });
+  assert.equal(Buffer.byteLength(exact), BODY_LIMIT);
+  assert.equal((await refreshPlanUsage(p, "fixture-key", NOW, async () => new Response(exact)))?.[0]?.usedPercent, 20);
+  const before = quotaOf(p.id);
+  assert.equal(await refreshPlanUsage(p, "fixture-key", NOW + 1, async () => new Response(exact + " ")), undefined);
+  assert.equal(quotaOf(p.id), before);
+});
+
+test("an oversized streaming quota body is cancelled without waiting for cancel acknowledgement", async () => {
+  clearQuota();
+  const p = provider("stream-limit", "https://api.kimi.com/coding/v1");
+  let pulls = 0, cancelled = 0;
+  let signal: AbortSignal | null | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) { pulls++; c.enqueue(new Uint8Array(64 * 1024)); },
+    cancel() { cancelled++; return new Promise<void>(() => {}); },
+  }, { highWaterMark: 0 });
+  assert.equal(await refreshPlanUsage(p, "fixture-key", NOW, async (_url, init) => { signal = init?.signal; return new Response(body); }), undefined);
+  assert.equal(pulls, 5);
+  assert.equal(cancelled, 1);
+  assert.equal(body.locked, false);
+  assert.equal(signal?.aborted, true);
+  assert.equal(quotaOf(p.id), undefined);
+});
+
+test("empty chunks cannot keep a quota poll in an unbounded ready-stream loop", async () => {
+  let pulls = 0, cancelled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) { pulls++; c.enqueue(new Uint8Array()); },
+    cancel() { cancelled++; },
+  }, { highWaterMark: 0 });
+  assert.equal(await refreshPlanUsage(provider("empty-chunks", "https://api.kimi.com/coding/v1"), "fixture-key", NOW, async () => new Response(body)), undefined);
+  assert.equal(pulls, 4097);
+  assert.equal(cancelled, 1);
+  assert.equal(body.locked, false);
+});
+
+test("quota JSON keeps split UTF-8 intact and rejects malformed or incomplete bodies without changing state", async () => {
+  clearQuota();
+  const p = provider("split-json", "https://api.kimi.com/coding/v1");
+  const bytes = new TextEncoder().encode(JSON.stringify({ ...validUsage, note: "额度" }));
+  const split = bytes.indexOf(0xe9) + 1;
+  const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes.subarray(0, split)); c.enqueue(bytes.subarray(split)); c.close(); } });
+  assert.equal((await refreshPlanUsage(p, "fixture-key", NOW, async () => new Response(body)))?.[0]?.usedPercent, 20);
+  const before = quotaOf(p.id);
+  for (const text of ["{", "not JSON", "null", "[]", '{"usage":{"limit":100,"remaining":0}']) {
+    assert.equal(await refreshPlanUsage(p, "fixture-key", NOW + 1, async () => new Response(text)), undefined);
+    assert.equal(quotaOf(p.id), before);
+  }
+});
+
+test("quota JSON preserves Response.json compatibility for a split leading UTF-8 BOM", async () => {
+  clearQuota();
+  const p = provider("bom-json", "https://api.kimi.com/coding/v1");
+  const bytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(validUsage))]);
+  assert.deepEqual(await new Response(bytes).json(), validUsage);
+  const body = new ReadableStream<Uint8Array>({ start(c) {
+    c.enqueue(bytes.subarray(0, 1)); c.enqueue(bytes.subarray(1, 2)); c.enqueue(bytes.subarray(2)); c.close();
+  } });
+  assert.equal((await refreshPlanUsage(p, "fixture-key", NOW, async () => new Response(body)))?.[0]?.usedPercent, 20);
+});
+
+test("a non-success quota response returns even when its cancel promise never settles", async () => {
+  let cancelled = 0;
+  const body = new ReadableStream<Uint8Array>({ cancel() { cancelled++; return new Promise<void>(() => {}); } });
+  const work = refreshPlanUsage(provider("error-cancel", "https://api.kimi.com/coding/v1"), "fixture-key", NOW, async () => new Response(body, { status: 503 }));
+  const outcome = await Promise.race([work.then(value => ({ value })), flush().then(() => "still pending")]);
+  assert.deepEqual(outcome, { value: undefined });
+  assert.equal(cancelled, 1);
+});
+
+test("the fixed quota deadline covers a stalled body, aborts transport and preserves the last observation", async t => {
+  clearQuota();
+  const p = provider("body-deadline", "https://api.kimi.com/coding/v1");
+  await refreshPlanUsage(p, "fixture-key", NOW, answering(validUsage));
+  const before = quotaOf(p.id);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let signal: AbortSignal | null | undefined, cancelled = 0;
+  const body = new ReadableStream<Uint8Array>({ cancel() { cancelled++; return new Promise<void>(() => {}); } }, { highWaterMark: 0 });
+  const work = refreshPlanUsage(p, "fixture-key", NOW + 1, async (_url, init) => { signal = init?.signal; return new Response(body); });
+  await flush();
+  t.mock.timers.tick(9999);
+  assert.equal(signal?.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(await work, undefined);
+  assert.equal(signal?.aborted, true);
+  assert.equal(cancelled, 1);
+  assert.equal(body.locked, false);
+  assert.equal(quotaOf(p.id), before);
+});
+
+test("a timed-out transport's late response is discarded rather than read or recorded", async t => {
+  clearQuota();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const p = provider("late-response", "https://api.kimi.com/coding/v1");
+  let resolveResponse!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined, cancelled = 0, pulls = 0;
+  const work = refreshPlanUsage(p, "fixture-key", NOW, (_url, init) => {
+    signal = init?.signal;
+    return new Promise<Response>(resolve => { resolveResponse = resolve; });
+  });
+  t.mock.timers.tick(10_000);
+  assert.equal(await work, undefined);
+  assert.equal(signal?.aborted, true);
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) { pulls++; c.enqueue(new TextEncoder().encode(JSON.stringify(validUsage))); c.close(); },
+    cancel() { cancelled++; return new Promise<void>(() => {}); },
+  }, { highWaterMark: 0 });
+  resolveResponse(new Response(body));
+  await flush();
+  assert.equal(pulls, 0);
+  assert.equal(cancelled, 1);
+  assert.equal(quotaOf(p.id), undefined);
+});
+
+test("quota headers and body share one deadline rather than receiving ten seconds each", async t => {
+  clearQuota();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const p = provider("shared-deadline", "https://api.kimi.com/coding/v1");
+  let resolveResponse!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined, cancelled = 0;
+  const body = new ReadableStream<Uint8Array>({ cancel() { cancelled++; } }, { highWaterMark: 0 });
+  const work = refreshPlanUsage(p, "fixture-key", NOW, (_url, init) => {
+    signal = init?.signal;
+    return new Promise<Response>(resolve => { resolveResponse = resolve; });
+  });
+  t.mock.timers.tick(9000);
+  assert.equal(signal?.aborted, false);
+  resolveResponse(new Response(body));
+  await flush();
+  t.mock.timers.tick(999);
+  assert.equal(signal?.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(await work, undefined);
+  assert.equal(signal?.aborted, true);
+  assert.equal(cancelled, 1);
+  assert.equal(body.locked, false);
+  assert.equal(quotaOf(p.id), undefined);
+});
+
+test("real gzip loopback fetch enforces the decoded quota-body limit without changing the selected vendor endpoint", async t => {
+  clearQuota();
+  const decoded = Buffer.from(JSON.stringify({ ...validUsage, padding: "x".repeat(BODY_LIMIT) }));
+  const compressed = gzipSync(decoded);
+  assert.ok(decoded.byteLength > BODY_LIMIT);
+  assert.ok(compressed.byteLength < BODY_LIMIT);
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": compressed.byteLength });
+    res.end(compressed);
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const p = provider("loopback-limit", "https://api.kimi.com/coding/v1");
+  const result = await refreshPlanUsage(p, "fixture-key", NOW, (url, init) => {
+    assert.equal(url, "https://api.kimi.com/coding/v1/usages");
+    assert.equal(init?.redirect, "error");
+    // Only this test transport maps the fixed vendor request to its local fixture.
+    return fetch(`http://127.0.0.1:${port}/quota`, init);
+  });
+  assert.equal(result, undefined);
+  assert.equal(quotaOf(p.id), undefined);
 });
