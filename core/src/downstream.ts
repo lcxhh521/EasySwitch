@@ -1,8 +1,9 @@
+import { CustomToolInput, validateCustomToolObject } from "./custom-tool-input.ts";
 import { randomUUID } from "node:crypto";
 import type { ApiProtocol } from "./types.ts";
 import { OUTPUT_LIMITS, packState, ProtocolError, type OutputKind, type Json, type OutputEvent, type Stop, type Tool, type Usage } from "./protocol.ts";
 
-interface Item { kind: "text" | "reasoning" | "call"; id: string; text: string; index: number; callId?: string; name?: string; signature?: string; encrypted?: string; redacted?: boolean; wireStarted?: boolean; ended?: boolean }
+interface Item { kind: "text" | "reasoning" | "call"; id: string; text: string; index: number; callId?: string; name?: string; signature?: string; encrypted?: string; redacted?: boolean; wireStarted?: boolean; ended?: boolean; customDecoder?: CustomToolInput; customEmitted?: string }
 const chatStop = (s: Stop) => ({ stop: "stop", tool: "tool_calls", length: "length", filter: "content_filter" })[s];
 const messageStop = (s: Stop) => ({ stop: "end_turn", tool: "tool_use", length: "max_tokens", filter: "refusal" })[s];
 
@@ -59,7 +60,9 @@ export class Downstream {
     // A truncated custom wrapper cannot safely become an executable custom-tool input.
     if (this.incomplete() && !this.validArguments(i)) return "";
     const value = JSON.parse(i.text || "{}");
+    validateCustomToolObject(i.text || "{}");
     if (typeof value.input !== "string") throw new ProtocolError("自定义工具缺少 input 字符串。", 502);
+    if (i.customEmitted && !value.input.startsWith(i.customEmitted)) throw new ProtocolError("自定义工具 input 与已输出的增量不一致。", 502);
     return value.input;
   }
   private responseItem(i: Item, complete: boolean): Json {
@@ -137,6 +140,13 @@ export class Downstream {
       if (kind === "text") this.emit("response.output_text.delta", { ...base, content_index: 0, logprobs: [] });
       else if (kind === "reasoning") this.emit("response.reasoning_summary_text.delta", { ...base, summary_index: 0 });
       else if (!this.spec(i)?.custom) this.emit("response.function_call_arguments.delta", base);
+      else {
+        const input = (i.customDecoder ??= new CustomToolInput()).add(delta);
+        if (input) {
+          i.customEmitted = (i.customEmitted ?? "") + input;
+          this.emit("response.custom_tool_call_input.delta", { ...base, delta: input });
+        }
+      }
     } else if (this.protocol === "messages") {
       this.beginMessage(i);
       if (delta) this.emit("content_block_delta", { index: i.index, delta: kind === "text" ? { type: "text_delta", text: delta } : kind === "call" ? { type: "input_json_delta", partial_json: delta } : { type: "thinking_delta", thinking: delta } });
@@ -187,7 +197,8 @@ export class Downstream {
           this.emit("response.reasoning_summary_part.done", { ...base, summary_index: 0, part: { type: "summary_text", text: i.text } });
         } else if (this.spec(i)?.custom) {
           const input = this.customInput(i);
-          this.emit("response.custom_tool_call_input.delta", { ...base, delta: input });
+          const remaining = input.slice((i.customEmitted ?? "").length);
+          if (remaining) this.emit("response.custom_tool_call_input.delta", { ...base, delta: remaining });
           this.emit("response.custom_tool_call_input.done", { ...base, input });
         } else this.emit("response.function_call_arguments.done", { ...base, arguments: i.text || "{}" });
         this.emit("response.output_item.done", { output_index: i.index, item: this.responseItem(i, true) });

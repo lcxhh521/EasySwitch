@@ -3,15 +3,15 @@ import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import { Downstream } from "../src/downstream.ts";
 import { readOutput } from "../src/upstream-events.ts";
-import { OUTPUT_LIMITS, ProtocolError, unpackState, type Json } from "../src/protocol.ts";
+import { OUTPUT_LIMITS, ProtocolError, unpackState, type Json, type Tool } from "../src/protocol.ts";
 import type { ApiProtocol } from "../src/types.ts";
 
 /** Deliberately withhold the next frame: assertions below prove output arrives before EOF. */
-function staged(source: ApiProtocol, target: ApiProtocol) {
+function staged(source: ApiProtocol, target: ApiProtocol, tools: Tool[] = []) {
   let controller!: ReadableStreamDefaultController<Uint8Array>; let cancelled = false;
   const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; }, cancel() { cancelled = true; } });
   const chunks: string[] = [];
-  const out = new Downstream(target, "m", "source", source, [], chunk => chunks.push(chunk));
+  const out = new Downstream(target, "m", "source", source, tools, chunk => chunks.push(chunk));
   const done = (async () => {
     for await (const e of readOutput(new Response(body, { headers: { "content-type": "text/event-stream" } }), source)) out.accept(e);
     out.finish();
@@ -169,4 +169,101 @@ test("Gemini thinking signature closes before visible text while the source stay
   assert.ok(close >= 0 && close < text);
   assert.equal(unpackState(events[close - 1]!.delta.signature, "source", "m")?.signature, "gemini-sig");
   await r.end({ candidates: [{ finishReason: "STOP" }] });
+});
+
+const customTools: Tool[] = [{ name: "patch", description: "", parameters: {}, custom: true }];
+const customDeltas = (r: ReturnType<typeof staged>) => r.events().filter(e => e.type === "response.custom_tool_call_input.delta").map(e => e.delta).join("");
+const toolFragment = (arguments_: string, first = false): Json => ({ choices: [{ delta: { tool_calls: [{ index: 0, ...(first ? { id: "c1" } : {}), function: { ...(first ? { name: "patch" } : {}), arguments: arguments_ } }] } }] });
+
+test("Chat -> Responses custom input streams before wrapper completion without exposing JSON escapes", async () => {
+  const r = staged("chat", "responses", customTools);
+  await r.push(toolFragment('{"input":"first', true));
+  assert.equal(customDeltas(r), "first");
+  assert.ok(!r.events().some(e => e.type.endsWith(".done")));
+  await r.push(toolFragment(' second"}'));
+  assert.equal(customDeltas(r), "first second");
+  await r.end({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+  assert.equal(customDeltas(r), "first second", "finish must not duplicate the streamed input");
+  assert.equal(r.out.result().output[0].input, "first second");
+});
+
+test("custom input decodes fragmented escapes and emits Unicode surrogate pairs together", async () => {
+  const r = staged("chat", "responses", customTools);
+  await r.push(toolFragment('{"input":"', true));
+  const encoded = JSON.stringify('你好😀\n"\\end').slice(1, -1).replace('😀', '\\uD83D\\uDE00');
+  for (const char of encoded) await r.push(toolFragment(char));
+  assert.equal(customDeltas(r), '你好😀\n"\\end');
+  for (const e of r.events().filter(e => e.type === "response.custom_tool_call_input.delta")) assert.equal(e.delta.isWellFormed(), true);
+  await r.push(toolFragment('"}'));
+  await r.end({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+  assert.equal(customDeltas(r), r.out.result().output[0].input);
+});
+
+for (const tail of ['","input":"changed"}', '","input":"first plus"}', '"}garbage']) test(`custom input refuses inconsistent or malformed completion: ${tail}`, async () => {
+  const r = staged("chat", "responses", customTools);
+  await r.push(toolFragment('{"input":"first', true));
+  assert.equal(customDeltas(r), "first");
+  await r.push(toolFragment(tail));
+  if (!r.cancelled()) {
+    await r.push({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    if (!r.cancelled()) r.controller.close();
+  }
+  assert.ok(await r.done instanceof Error);
+  assert.ok(!r.events().some(e => e.type === "response.completed" || e.type === "response.output_item.done"));
+});
+
+test("truncated custom input reports incomplete and never a completed executable item", async () => {
+  const r = staged("chat", "responses", customTools);
+  await r.push(toolFragment('{"input":"partial', true));
+  await r.end({ choices: [{ delta: {}, finish_reason: "length" }] });
+  assert.equal(r.out.result().status, "incomplete");
+  assert.equal(r.out.result().output[0].input, "");
+  assert.ok(!r.events().some(e => e.type === "response.completed" || e.type === "response.output_item.done" && e.item.status === "completed"));
+});
+
+for (const source of ["responses", "messages"] as const) test(`${source} -> Responses: custom wrapper emits input while upstream is paused`, async () => {
+  const r = staged(source, "responses", customTools);
+  await r.push(source === "responses"
+    ? { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "c1", name: "patch", arguments: "" } }
+    : { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "c1", name: "patch", input: {} } });
+  const push = async (delta: string) => r.push(source === "responses"
+    ? { type: "response.function_call_arguments.delta", output_index: 0, delta }
+    : { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: delta } });
+  await push('{"input":"visible'); assert.equal(customDeltas(r), "visible");
+  await push('"}');
+  if (source === "responses") await r.end({ type: "response.completed", response: { output: [{ type: "function_call", call_id: "c1", name: "patch", arguments: '{"input":"visible"}' }] } });
+  else { await r.push({ type: "message_delta", delta: { stop_reason: "tool_use" } }); await r.end({ type: "message_stop" }); }
+  assert.equal(customDeltas(r), "visible");
+});
+
+test("noncanonical custom wrapper keeps the safe buffered fallback", async () => {
+  const r = staged("chat", "responses", customTools);
+  await r.push(toolFragment('{"extra":true,"input":"safe"}', true));
+  assert.equal(customDeltas(r), "");
+  await r.end({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+  assert.equal(customDeltas(r), "safe");
+});
+
+test("ordinary function arguments reach Responses before completion and preserve split UTF-16", async () => {
+  const r = staged("chat", "responses");
+  await r.push(toolFragment('{"cmd":"', true));
+  assert.equal(r.events().find(e => e.type === "response.function_call_arguments.delta")?.delta, '{"cmd":"');
+  await r.push(toolFragment('\ud83d')); await r.push(toolFragment('\ude00"}'));
+  await r.end({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+  const args = r.events().filter(e => e.type === "response.function_call_arguments.delta").map(e => e.delta).join("");
+  assert.equal(JSON.parse(args).cmd, "😀");
+  assert.equal(args, r.out.result().output[0].arguments);
+});
+
+for (const raw of [
+  '{"extra":true,"input":"first","input":"second"}',
+  '{"\\u0069nput":"first","input":"second"}',
+  '{"extra":true,"extra":false,"input":"second"}',
+]) test(`custom wrapper rejects duplicate fields even when progress decoding is buffered: ${raw}`, async () => {
+  const r = staged("chat", "responses", customTools);
+  await r.push(toolFragment(raw, true));
+  await r.push({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+  if (!r.cancelled()) r.controller.close();
+  assert.ok(await r.done instanceof Error);
+  assert.ok(!r.events().some(e => e.type === "response.completed" || e.type === "response.output_item.done"));
 });

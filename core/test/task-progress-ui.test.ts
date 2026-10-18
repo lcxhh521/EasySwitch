@@ -181,3 +181,59 @@ test("real app clears a failed cancel attempt, refreshes authoritative running s
   await second;
   assert.match(app.run("messages.at(-1)"), /清理尚未确认/);
 });
+
+test("terminal results remain readable while resource cleanup is pending or failed", () => {
+  const app = ui();
+  for (const cleanup of [{ cleanupPending: true }, { cleanupFailed: 1 }]) {
+    const html = app.render({ tree: [task("t-result", { status: "failed", output: "fixture failure <script>alert(1)</script>", ...cleanup })] });
+    assert.match(html, /任务失败/);
+    assert.match(html, /查看任务输出/);
+    assert.match(html, /fixture failure &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /<script>/);
+    assert.match(html, /正在清理|清理未确认/);
+  }
+});
+
+test("terminal result labels do not confuse process completion with cleanup confirmation", () => {
+  const app = ui();
+  for (const [status, label] of [["done", "任务完成"], ["stopped", "任务已取消"], ["timeout", "任务超时"]] as const) {
+    const html = app.render({ tree: [task("t-result", { status, cleanupPending: true })] });
+    assert.ok(html.includes(label)); assert.match(html, /正在清理/); assert.match(html, /没有输出/);
+  }
+  assert.doesNotMatch(app.render({ tree: [task("t-live", { output: "not a live output contract" })] }), /查看任务输出|not a live output contract/);
+});
+
+test("retained terminal output is bounded and its disclosure has a stable per-task identity", () => {
+  const app = ui();
+  const html = app.render({ tree: [task("t-large", { status: "done", cleanupFailed: 1, output: "x".repeat(70000) + "TRAILING" })] });
+  assert.match(html, /data-keep="task-result-t-large"/);
+  assert.match(html, /输出过长，仅展示前 65536 个字符/);
+  assert.doesNotMatch(html, /TRAILING/);
+  assert.ok(html.length < 69000);
+});
+
+test("actual task page exposes retained output then returns it to history after cleanup", () => {
+  const retained = task("t-retained", { status: "failed", cleanupFailed: 1, output: "important fixture diagnostic", at: "2026-10-18T00:00:00Z" });
+  const app = integratedUi({ tasks: [retained], tree: [retained], running: 0 });
+  assert.match(app.run("html"), /important fixture diagnostic/);
+  assert.match(app.run("html"), /清理未确认/);
+  app.run('taskList.tasks[0].cleanupFailed=0; taskList.tree[0].cleanupFailed=0; taskOpenIds.add("t-retained"); render();');
+  assert.match(app.run("html"), /important fixture diagnostic/);
+  assert.doesNotMatch(app.run("html"), /data-task-progress-id="t-retained"/);
+});
+
+
+test("unknown status cannot inherit an outcome and disclosure restoration is task-specific", () => {
+  const app = ui();
+  for (const status of ["unknown", "constructor", "toString", "__proto__"]) {
+    assert.doesNotMatch(app.render({ tree: [task("t-unknown", { status, cleanupFailed: 1, output: "hidden" })] }), /查看任务输出|native code|hidden/);
+  }
+  const integrated = integratedUi({ tasks: [], tree: [task("t-open", { status: "failed", cleanupFailed: 1 }), task("t-closed", { status: "done", cleanupFailed: 1 })], running: 0 });
+  integrated.run('openDetails.add("task-result-t-open"); render();');
+  assert.match(integrated.run("html"), /data-keep="task-result-t-open" open/);
+  assert.doesNotMatch(integrated.run("html"), /data-keep="task-result-t-closed" open/);
+  integrated.run('render();');
+  assert.match(integrated.run("html"), /data-keep="task-result-t-open" open/);
+  integrated.run('openDetails.delete("task-result-t-open"); render();');
+  assert.doesNotMatch(integrated.run("html"), /data-keep="task-result-t-open" open/);
+});

@@ -324,3 +324,25 @@ test("an agent's saved off switch reaches the source as its model-owned none spe
     assert.equal(received.at(-1)!.body.reasoning_effort, "none");
   } finally { store.setPrefs("pi", { effort: "" }); }
 });
+
+test("Responses hosted search stays native even when Chat is the source's first preference", async () => {
+  store.upsertProvider(provider(["chat", "responses"])); rawReply = undefined;
+  reply = { status: "completed", output: [{ type: "web_search_call", id: "ws1", status: "completed", action: { type: "search", query: "fixture" } }] };
+  const tools = [{ type: "web_search", filters: { allowed_domains: ["example.test"] }, search_context_size: "low" }];
+  const tool_choice = { type: "web_search" };
+  const result = await post("responses", { input: "fixture search", tools, tool_choice });
+  assert.equal(result.status, 200); assert.deepEqual(await result.json(), reply);
+  assert.equal(received.at(-1)!.path, "/responses");
+  assert.deepEqual(received.at(-1)!.body.tools, tools);
+  assert.deepEqual(received.at(-1)!.body.tool_choice, tool_choice);
+});
+
+test("a forced hosted search cannot silently become a cross-protocol function call", () => {
+  assert.throws(() => prepareOutbound(provider(["chat"]), { protocol: "responses", model: "m", stream: false, body: { input: "search", tools: [{ type: "web_search" }], tool_choice: { type: "web_search" } } }), /服务端或未知工具/);
+});
+
+test("opaque Responses compaction refuses cross-protocol translation before any network call", () => {
+  for (const target of ["chat", "messages", "gemini"] as const) {
+    assert.throws(() => prepareOutbound(provider([target]), { protocol: "responses", model: "m", stream: false, body: { input: [{ type: "compaction", encrypted_content: "synthetic-only" }] } }), /compaction/);
+  }
+});
