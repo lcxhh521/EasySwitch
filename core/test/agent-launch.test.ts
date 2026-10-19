@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { commandLine, dshMcpPlugin, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless } from "../src/agent-launch.ts";
+import { commandLine, hasLauncher, LAUNCHERS, materialize, newSessionDir } from "../src/agent-launch.ts";
 import { createSecretStore } from "../src/secrets.ts";
 import { createEasySwitchServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -43,7 +43,7 @@ after(() => {
 });
 
 test("each launcher says what it can do, and which forms were run against the real program", () => {
-  assert.deepEqual(hasLauncher("dsh"), { interactive: false, headless: true, verified: true,
+  assert.deepEqual(hasLauncher("dsh"), { interactive: false, verified: true,
     efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], anyEffort: false, tiers: LAUNCHERS.dsh!.tiers });
   assert.deepEqual(hasLauncher("claude")?.efforts, ["low", "medium", "high", "xhigh", "max"], "agents with their own setting use their own words");
   assert.equal(hasLauncher("qwen-code")?.verified, false, "documented but not yet run here");
@@ -53,7 +53,7 @@ test("each launcher says what it can do, and which forms were run against the re
 test("launch specs pass the gateway address, token and model per process, and clear nothing global", () => {
   const input = { bin: "/bin/qwen", port: 18765, model: "ds/deepseek-chat", token: "es-session-qwencode-x", sessionDir: "/tmp/s" };
   const spec = LAUNCHERS["qwen-code"]!.interactive!(input);
-  // The system-settings file (MCP + auth type) lives in the session directory, not in the user's own settings.
+  // The system-settings file (model list + auth type) lives in the session directory, not in the user's own settings.
   assert.deepEqual(spec.env, { OPENAI_BASE_URL: "http://127.0.0.1:18765/v1", OPENAI_API_KEY: "es-session-qwencode-x", OPENAI_MODEL: "ds/deepseek-chat", EASYSWITCH_GATEWAY_TOKEN: "es-session-qwencode-x", QWEN_HOME: "/tmp/s/qwen-home", QWEN_RUNTIME_DIR: "/tmp/s/qwen-home", QWEN_CODE_SYSTEM_SETTINGS_PATH: "/tmp/s/qwen-system-settings.json" });
   assert.match(commandLine(spec), /^env OPENAI_BASE_URL='http:\/\/127\.0\.0\.1:18765\/v1' .* '\/bin\/qwen' '--auth-type' 'openai'$/);
   const oc = JSON.parse(LAUNCHERS.opencode!.headless!({ ...input, task: "x" }).env.OPENCODE_CONFIG_CONTENT!) as { provider: { easyswitch: { options: { baseURL: string } } } };
@@ -68,65 +68,6 @@ test("a dsh patch is written under the private session directory, not under ~/.d
   materialize(spec, dir);
   assert.ok(existsSync(join(dir, "patch.yml")));
   assert.equal(spec.env.DSH_HOME, join(dir, "dsh-home"), "a private DSH_HOME, so ~/.dsh is untouched");
-});
-
-test("the real DeepSeek Harness, handed a task headlessly, answers through the gateway, with its levels, small-job models and (when its plugin is there) our MCP tools", async t => {
-  if (!existsSync(DSH)) { t.skip("DeepSeek Harness not installed"); return; }
-  const before = relay.requests.length;
-  const mini = `${providerId}/mock-mini`;
-  const plugin = dshMcpPlugin(DSH);
-  const result = await runHeadless("dsh", { bin: DSH, port, model: `${providerId}/mock-coder`, models: [`${providerId}/mock-coder`, mini], effort: "high", tiers: { subagent: mini, small: mini }, task: "Reply with exactly the word: pong" }, { timeoutMs: 90_000, attachMcp: Boolean(plugin) });
-  assert.equal(result.timedOut, false);
-  assert.match(result.output, /Hello from the mock relay|pong/i, `a patch with levels and small-job models is accepted: ${result.output.slice(0, 300)}`);
-  assert.ok(relay.requests.length > before, "the request went through the gateway to the provider");
-  // dsh's MCP client is a plugin of the person's own dsh: when it is there, our tools reach the model.
-  if (plugin) {
-    // The last request may be a small job (the session title) with no tools: look at every request of this run.
-    const asked = relay.requests.slice(before) as Array<{ tools?: Array<{ function?: { name?: string } }>; model?: string }>;
-    const names = asked.flatMap(r => (r.tools ?? []).map(x => x.function?.name ?? "?"));
-    assert.ok(names.some(n => /easyswitch/i.test(n)), `the model was offered EasySwitch's MCP tools: ${names.join(", ") || "(no tools at all)"}`);
-    // The small-job tier is used: the session title is asked of the other model.
-    assert.ok(asked.some(r => r.model === "mock-mini"), `a small job ran on the small-job model: ${asked.map(r => r.model).join(", ")}`);
-  }
-});
-
-test("the task endpoint refuses without a task, and never touches an agent that is not installed", async () => {
-  const H = { "content-type": "application/json", "x-easyswitch": "1" };
-  const empty = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST", headers: H, body: JSON.stringify({ agent: "dsh", task: "  " }) });
-  assert.equal(empty.status, 400);
-  const missing = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST", headers: H, body: JSON.stringify({ agent: "aider", task: "x", model: `${providerId}/mock-coder` }) });
-  assert.equal(missing.status, 409, "aider is not installed here");
-  const unknown = await fetch(`http://127.0.0.1:${port}/api/bindings/not-an-agent`, { method: "PUT", headers: H, body: JSON.stringify({ providerId, model: "mock-coder" }) });
-  assert.equal(unknown.status, 404);
-});
-
-test("a task handed over from the console is recorded, runs in the background and ends with its answer", async t => {
-  if (!existsSync(DSH)) { t.skip("DeepSeek Harness not installed"); return; }
-  const H = { "content-type": "application/json", "x-easyswitch": "1" };
-  const started = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: "POST", headers: H, body: JSON.stringify({ agent: "dsh", task: "Reply with exactly the word: pong", model: `${providerId}/mock-coder` }) });
-  assert.equal(started.status, 202);
-  const { task } = (await started.json()) as { task: { id: string; status: string; from: string } };
-  assert.equal(task.status, "running");
-  assert.equal(task.from, "console");
-  let final: { status: string; output?: string } | undefined;
-  for (let i = 0; i < 120 && !final; i++) {
-    const list = (await (await fetch(`http://127.0.0.1:${port}/api/tasks`)).json()) as { tasks: Array<{ id: string; status: string; output?: string }> };
-    const mine = list.tasks.find(x => x.id === task.id);
-    if (mine && mine.status !== "running") final = mine;
-    else await new Promise(r => setTimeout(r, 500));
-  }
-  assert.equal(final?.status, "done");
-  assert.match(final?.output ?? "", /Hello from the mock relay|pong/i);
-  assert.equal((await fetch(`http://127.0.0.1:${port}/api/tasks/${task.id}/stop`, { method: "POST", headers: H })).status, 404, "a finished task cannot be stopped");
-});
-
-test("the real Hermes, handed a task headlessly with a private HERMES_HOME, answers through the gateway", async t => {
-  const hermes = process.env.HOME + "/.local/bin/hermes";
-  if (!existsSync(hermes)) { t.skip("Hermes not installed"); return; }
-  const before = relay.requests.length;
-  const result = await runHeadless("hermes", { bin: hermes, port, model: `${providerId}/mock-coder`, task: "Reply with exactly the word: pong", stateDir: join(tmpdir(), "easyswitch-test-state") }, { timeoutMs: 120_000, attachMcp: false });
-  assert.ok(relay.requests.length > before, `the request went through the gateway: ${result.output.slice(0, 300)}`);
-  assert.match(result.output, /Hello from the mock relay|pong/i);
 });
 
 test("a reasoning level becomes each agent's own flag, and nothing when none is asked for", () => {

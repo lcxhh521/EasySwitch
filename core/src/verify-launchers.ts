@@ -14,7 +14,6 @@ const run = promisify(execFile);
 const PROBE: LaunchInput = {
   bin: "/bin/agent", port: 1, model: "prov/alpha-1", models: ["prov/alpha-1", "prov/beta-2"], token: "es-session-probe-0",
   sessionDir: "/tmp/es-verify", stateDir: "/tmp/es-verify-state", task: "TASK_TEXT", effort: "high",
-  mcp: { url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer probe" } },
 };
 
 export interface LauncherFlags {

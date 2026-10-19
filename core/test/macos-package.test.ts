@@ -23,7 +23,7 @@ function fixture(t:{after(fn:()=>void):void},arch:MacArchitecture="arm64") {
   const root=mkdtempSync(join(realpathSync(tmpdir()),"es-package-"));t.after(()=>rmSync(root,{recursive:true,force:true}));const source=join(root,"source"),out=join(root,"out");
   const put=(name:string,content:string|Buffer)=>{const path=join(source,name);mkdirSync(dirname(path),{recursive:true});writeFileSync(path,content);};
   put("package.json",JSON.stringify({version:"1.2.3",type:"module"}));put("LICENSE","Fixture project license");put("third_party/example/LICENSE","Fixture attribution");
-  for(const name of ["core/src/main.ts","core/src/app-supervisor.ts","core/src/core-supervisor.ts","core/src/user-cli-install.ts","web/index.html","web/errors.js","bin/es.ts","bin/es-mcp-stdio.ts"])put(name,"// fixture only\n");
+  for(const name of ["core/src/main.ts","core/src/app-supervisor.ts","core/src/core-supervisor.ts","core/src/user-cli-install.ts","web/index.html","web/errors.js","bin/es.ts"])put(name,"// fixture only\n");
   put("core/src/.private.json","must not ship");put(".env","must not ship");put("core/test/private.test.ts","must not ship");
   for(const name of ["AppIcon.icns","MenubarOn.png","MenubarOn@2x.png","MenubarOff.png","MenubarOff@2x.png"])put(`menubar/Resources/${name}`,`unchanged icon fixture ${name}`);
   const prefix=`node-v24.21.0-darwin-${arch}/`;const archive=tar([{name:prefix+"bin/node",data:macho(arch)},{name:prefix+"LICENSE",data:Buffer.from("Complete fixture license\nThird party fixture notices\n")}]);

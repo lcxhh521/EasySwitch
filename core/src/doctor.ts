@@ -88,7 +88,7 @@ const sourceAction = (p: DoctorProvider) => action(p.authKind === "subscription"
 const probeAction = (p: DoctorProvider) => p.probeAllowed === true && safeTarget(p.id) ? [action("probe-provider", "检测这个来源", p.id, true)] : [];
 
 function providerFinding(p: DoctorProvider): DoctorFinding {
-  if (p.off) return finding("provider","source_disabled","warn","来源已关闭","这个来源不会用于模型菜单或派活。","如果仍要使用，在模型来源页确认后开启。",[action("open-providers","检查并开启来源",p.id)],p.id);
+  if (p.off) return finding("provider","source_disabled","warn","来源已关闭","这个来源不会用于模型菜单或请求。","如果仍要使用，在模型来源页确认后开启。",[action("open-providers","检查并开启来源",p.id)],p.id);
   if (p.budgetBlocked) return finding("provider","source_budget_exceeded","error","来源预算已暂停请求","该来源的预算条件阻止了新请求。","到来源预算查看用量；等待周期重置，或由你调整额度。",[action("open-providers","查看来源预算",p.id)],p.id);
   if (p.lastStatus === 401 || p.lastStatus === 403) return finding("provider",p.authKind === "subscription" ? "subscription_login_required" : "provider_auth_failed","error","来源拒绝了身份验证","最近一次请求的登录或密钥没有被来源接受。","检查是否过期、缺少权限或复制错误，再重新检测。",[sourceAction(p)],p.id);
   const checks = Array.isArray(p.probe?.checks) ? p.probe.checks.filter(c=>c && typeof c === "object") : [];

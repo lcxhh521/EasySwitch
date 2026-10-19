@@ -26,7 +26,7 @@
 | keychain_unavailable | 暂时无法读取或保存密钥 | 系统密钥存储未准备好，可能需要解锁、确认访问权限或修复配套程序 | 检查密钥存储 | doctor | native-keychain.ts helper 与钥匙串错误 |
 | storage_unavailable | 本地记录暂时无法保存或读取 | 记录文件可能不完整、不可写，或磁盘空间不足；先检查再重试，避免覆盖原记录 | 检查本地存储 | doctor | gateway-session-store.ts；账本或配置写入失败 |
 | session_invalid | 这个窗口的连接凭据已失效 | 当前窗口没有有效的本地访问权限，可能已过期或被撤销 | 重新准备连接 | agents | server.ts invalid_gateway_session 与已撤销或过期本地会话 |
-| request_busy | 当前正在处理的任务太多 | 同时运行的任务或连接达到本地上限，需要先等待或停止不再使用的会话 | 查看正在运行的会话 | sessions | cli-text-process.ts 本地并发；手动会话签发限制 |
+| request_busy | 当前正在处理的请求太多 | 同时运行的请求或连接达到本地上限，需要先等待或停止不再使用的会话 | 查看正在运行的会话 | sessions | cli-text-process.ts 本地并发；手动会话签发限制 |
 
 ## 接入合同
 

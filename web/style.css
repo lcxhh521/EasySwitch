@@ -276,6 +276,12 @@ body.panel .panel-foot button:hover { color: var(--fg); background: var(--pill);
   .flow { grid-template-columns: 1fr; gap: 14px; }
   .flow svg { display: none; }
   .row { flex-wrap: wrap; }
+  /* Keep the source identity above its badges/actions instead of shrinking it
+     to the space left by non-wrapping controls. */
+  .row[data-toggle] > .grow { flex: 1 1 calc(100% - 48px); }
+  .row[data-toggle] .title { overflow-wrap: anywhere; }
+  .row[data-toggle] .sub { white-space: normal; overflow-wrap: anywhere; }
+  .detail[data-provider] .hint { overflow-wrap: anywhere; }
   .popbtn { min-width: 0; max-width: 100%; }
   .detail { padding-left: 16px; }
   .section-head { flex-wrap: wrap; }

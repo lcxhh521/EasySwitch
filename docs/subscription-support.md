@@ -1,5 +1,8 @@
 # 订阅来源与官方 agent 接入
 
+2026-10-18 更新。唯一需求清单为 BACKLOG.md。B115已取消任务派发、规则/评价/建议、并行互审、EasySwitch MCP互调与自动注册，以及专用后台执行器；不再规划替代调度路线。历史设计只保留在Git历史，用户已有记录和规则文件不删除、不迁移、不自动执行。
+
+
 核对日期：2026-10-06。官方 API Key、官方 agent 接口和原生订阅登录复用是不同能力；下面分别说明实现范围、认证方式和真实验收限制。
 
 Kiro、Antigravity、Cursor、Kimi 有专用来源入口，默认关闭，需使用者明确登录或导入后主动开启。测试只使用临时目录、合成登录数据与本地假服务，没有使用真实账号或调用真实模型。私有协议实现存在，不等于其用途已获厂商认可。
@@ -7,7 +10,7 @@ Kiro、Antigravity、Cursor、Kimi 有专用来源入口，默认关闭，需使
 ## 先区分两个方向
 
 - **把订阅变成模型来源**：其他 harness 把原始 Chat / Responses / Messages / Gemini 请求交给 EasySwitch，由来源适配器发送并返回。工具调用、历史、取消、流、用量等必须保留协议语义。
-- **调用厂商自己的 agent**：官方 SDK、CLI 或 ACP 负责它自己的 agent 循环和工具。可接入派活，但不能直接宣称上面的模型来源已经可用。
+- **调用厂商自己的 agent**：官方 SDK、CLI 或 ACP 负责它自己的 agent 循环和工具。不属于EasySwitch当前交付范围，不能作为模型来源可用的证据。
 
 官方文档存在不等于 EasySwitch 已实现。纯假服务测试通过也不等于真实账号实测。
 
@@ -19,11 +22,11 @@ Kiro、Antigravity、Cursor、Kimi 有专用来源入口，默认关闭，需使
 
 SDK 支持自定义工具、限制内置工具、系统提示和本地会话存储。这些是 agent 接口；当前没有核实到一个将个人订阅直接提供为 OpenAI / Responses / Messages 模型 API 的官方合同。不要把“可调用 agent”标成“通用模型来源可用”。
 
-[服务条款](https://cursor.com/terms-of-service) 对逆向、提取服务等另有限制。后续应基于官方 SDK 合同设计，而不是移植私有 `agent.v1.AgentService/Run` 的客户端身份或读取本机登录。
+[服务条款](https://cursor.com/terms-of-service) 对逆向、提取服务等另有限制。后续仅核查官方支持的模型来源合同；不设计SDK任务接入，不移植私有客户端身份或读取本机登录来冒称官方兼容。
 
 当前 `cursor/` 专用实现提供：独立 PKCE 登录、secret store 刷新令牌、HTTP/2 Connect 纯文字推理，新增来源默认关闭。它不是上述官方 SDK 接入；私有接口用途与适用条款仍未核实。工具列表不转发，历史工具消息仅作为文本，图像等媒体不能完整保留；兼容层明确记录这些损失，不能称为完整通用多模态/工具来源。
 
-官方 SDK agent 任务适配仍是另一个未实现的方向。当前验证只有合成账号和环回 HTTP/2 假服务验证，未使用真实 Cursor 账号或接口。
+官方 SDK agent 任务适配路线已取消。当前验证只有合成账号和环回 HTTP/2 假服务验证，未使用真实 Cursor 账号或接口。
 
 ## Kiro
 
@@ -31,7 +34,7 @@ SDK 支持自定义工具、限制内置工具、系统提示和本地会话存�
 
 [无界面模式](https://kiro.dev/docs/cli/headless/) 支持 `kiro-cli chat --no-interactive`，以及模型、思考档位、JSON Lines 输出。工具授权应按任务收窄，不能因无需交互就默认信任全部工具。
 
-[ACP](https://kiro.dev/docs/cli/acp/) 是官方编辑器接入途径：通过标准输入输出传递 JSON-RPC，由 Kiro 处理会话和 agent 行为。V2 / V3 在模型配置、通知和结束信号方面不同，接入要按能力协商和所支持版本测试。
+[ACP](https://kiro.dev/docs/cli/acp/) 是官方编辑器接入途径：通过标准输入输出传递 JSON-RPC，由 Kiro 处理会话和 agent 行为。V2 / V3 在模型配置、通知和结束信号方面不同；这些事实不构成本项目的ACP实施计划。
 
 当前没有核实到原生登录令牌可用于第三方通用模型 API 的官方接口说明。这是“缺少支持依据”，不是断言任何第三方集成都被禁止。[Kiro 许可证](https://kiro.dev/license/) 指向 AWS 协议；[AWS Customer Agreement 第 6.4 节](https://aws.amazon.com/agreement/) 限制逆向、规避收费或用量限制等行为。
 
@@ -57,7 +60,7 @@ Antigravity 专用登录入口创建的来源默认关闭。OAuth 与刷新流�
 
 `core/src/subscription-support.ts` 为同一份可供控制台展示的纯数据提供：
 
-- `subscriptionSupport()`：返回副本，包含核对日期、官方 agent 路径、认证 / 计费说明、来源链接；agentRoutes 记录尚未实现的订阅 agent 适配；apiRoutes 记录已有通用 Key 通道，均没有真实账号验收
+- `subscriptionSupport()`：返回副本，包含核对日期、官方 agent 路径、认证 / 计费说明、来源链接；agentRoutes仅记录厂商agent接口资料及未实现状态，不表示本项目待开发适配；apiRoutes 记录已有通用 Key 通道，均没有真实账号验收
 - `subscriptionSourceCapability(vendor)`：描述已核实的官方支持依据；不等于所有既有实验代码的开关或运行时总表
 - `subscriptionSourceIssue(provider)`：通用新增来源入口仍拒绝订阅预留字段与未知 `plan.kind`，避免把不支持的通用订阅当普通 API 或误落入 ChatGPT
 - `subscriptionSignInIssue(mode)`：通用登录入口拒绝未知模式，避免错误触发 Codex；Kiro/Antigravity/Cursor/Kimi 有各自保留的专用入口
@@ -69,15 +72,15 @@ Antigravity 专用登录入口创建的来源默认关闭。OAuth 与刷新流�
 
 ## 后续适配器验收要求
 
-现有专用来源与后续官方 agent 接入都需要遵循以下边界。
+现有专用模型来源与仍有效的模型协议核查需要遵循以下边界；不包含官方agent任务接入。
 
-1. 后续新接入优先采用厂商明确支持的 SDK / CLI / ACP，核实凭据来源、账号权限与条款；当前私有协议路径不能因假服务通过而称为厂商支持
+1. 仅在厂商明确支持的模型来源合同下核实凭据、账号权限、协议与条款；SDK/CLI/ACP的agent能力不能替代模型协议证据，私有路径不能因假服务通过而称为厂商支持
 2. 区分 agent 任务与模型请求，不静默压平工具历史或把工具结果伪装成普通文本
 3. 禁止自动安装依赖、登录、创建持久凭据或开启额外收费；这些需要明确的用户操作或授权
 4. mock 覆盖流终止、取消、超时、额度错误、无权限、工具授权、版本不兼容和重复提交
 5. 获得明确许可后再验证真实官方客户端，核实原生配置前后不变；没有完成前不标“已实测”
 
-Kiro/Antigravity/Cursor 及 Kimi 专用来源已接入；真实厂商/账号验收与适用条款仍未完成，Cursor 仍限纯文字，不能宣称工具/多模态完整。官方 agent 接入是独立的后续方向，不能用它替代原始通用模型来源需求。
+Kiro/Antigravity/Cursor 及 Kimi 专用来源已接入；真实厂商/账号验收与适用条款仍未完成，Cursor 仍限纯文字，不能宣称工具/多模态完整。官方agent任务接入已取消，不能用它替代原始通用模型来源需求。
 
 
 ## 其余十家逐项结论
@@ -104,7 +107,7 @@ Kiro/Antigravity/Cursor 及 Kimi 专用来源已接入；真实厂商/账号验�
 - Kimi 官方 Key 接入指南提示不要篡改 User-Agent 绕过工具识别。现有设备码实现携带 KimiCLI/X-Msh 头；其适用许可与真实验收单独待核实，不能由 API Key 支持范围推导
 - MiniMax 旧套餐名仍保留预设 ID 兼容已存配置，但文案解释最新 M Plan 与专用 Subscription Key。生产/批量服务与个人交互式开发的许可、价格和额度不能混为一谈
 - Grok 的共享用量新说明意味着不能写“SuperGrok 永不覆盖 API”；也不能从该事实推导未公开的 OAuth 接法已受支持
-- 当前没有实现上述厂商官方 agent SDK 的任务适配。已有 BYOK 启动器与此是两个方向，不改变其原生配置或登录
+- 本项目不再规划上述厂商官方 agent SDK 的任务适配。已有 BYOK 启动器与此是两个方向，不改变其原生配置或登录
 
 ### 官方来源（2026-10-06 核对）
 

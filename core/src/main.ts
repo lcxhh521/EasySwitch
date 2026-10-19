@@ -4,7 +4,7 @@ import { gatewayPort } from "./paths.ts";
 import { Ledger } from "./ledger.ts";
 import { ensureKeychainHelper } from "./native-keychain.ts";
 import { createSecretStore } from "./secrets.ts";
-import { createEasySwitchServer, stopClaudeDesktopSessions, stopOwnedTasks } from "./server.ts";
+import { createEasySwitchServer, stopClaudeDesktopSessions } from "./server.ts";
 import { Store } from "./store.ts";
 
 const port = gatewayPort();
@@ -28,8 +28,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     if (closing) return;
     closing = true;
     let failed = false;
-    const cleanup = await Promise.allSettled([stopOwnedTasks(server),stopClaudeDesktopSessions(server)]);
-    if(cleanup.some(r=>r.status==="rejected")){failed=true;console.error("自有任务或桌面会话清理未确认，请检查本机进程");}
+    const cleanup = await Promise.allSettled([stopClaudeDesktopSessions(server)]);
+    if(cleanup.some(r=>r.status==="rejected")){failed=true;console.error("独立桌面会话清理未确认，请检查本机进程");}
     server.closeAllConnections();
     server.close(() => process.exit(failed?1:0));
   });

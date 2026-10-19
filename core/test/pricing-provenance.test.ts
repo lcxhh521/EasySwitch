@@ -9,16 +9,10 @@ import { ProviderBudgetController } from "../src/budget.ts";
 import { GatewayTokenAuthority } from "../src/gateway-auth.ts";
 import { BudgetController } from "../src/global-budget.ts";
 import { Ledger, rangeStart, summarize, summarizeBudgetEntries } from "../src/ledger.ts";
-import { createReadonlyRelayFixture } from "../src/parallel-tasks.ts";
 import { costOf, ratesFor } from "../src/pricing/cost.ts";
 import { CURRENT_ESTIMATOR, estimateProvenance, selectedRatesFingerprint } from "../src/pricing/provenance.ts";
 import { createEasySwitchServer, priceEntry } from "../src/server.ts";
 import { Store } from "../src/store.ts";
-import { buildRuleSuggestions } from "../src/suggestions.ts";
-import { TaskAccounting } from "../src/task-accounting.ts";
-import type { DispatchRule } from "../src/dispatch.ts";
-import type { TaskFeedback } from "../src/feedback.ts";
-import type { Task } from "../src/tasks.ts";
 import type { GatewayLogEntry, Provider, Rates } from "../src/types.ts";
 
 const NOW = new Date("2026-10-08T12:00:00Z");
@@ -173,14 +167,12 @@ test("new metadata survives persistence and restart, while history and changed c
   assert.deepEqual(new Ledger(dir).readForBudget(), persisted);
 });
 
-test("metadata leaves usage amounts, budget decisions, task totals and rule suggestions identical", t => {
+test("metadata leaves usage amounts, budget decisions, provider totals identical", t => {
   const dir = directory(t), store = new Store(join(dir, "store"));
   store.upsertProvider(provider({ prices: { expensive: rates, cheap: { ...rates, input: 0.4, output: 0.8 } } }));
-  const rows: GatewayLogEntry[] = [], tasks: Task[] = [], feedback: TaskFeedback[] = [];
+  const rows: GatewayLogEntry[] = [];
   for (const [model, agent] of [["expensive", "claude"], ["cheap", "codex"]]) for (let i = 0; i < 5; i++) {
     const id = `${model}-${i}`, row = entry({ model: `p/${model}`, taskId: id }); priceEntry(store, row); rows.push(row);
-    tasks.push({ id, at: NOW.toISOString(), agent: agent!, model: row.model, from: "console", task: "review this synthetic example", status: "done" });
-    feedback.push({ taskId: id, rating: "good", at: NOW.toISOString() });
   }
   const oldRows = rows.map(withoutProvenance);
   const currentSummary = summarize(rows, "all", NOW), oldSummary = summarize(oldRows, "all", NOW);
@@ -199,16 +191,7 @@ test("metadata leaves usage amounts, budget decisions, task totals and rule sugg
     return controller.status();
   };
   assert.deepEqual(globalStatus(rows, "new-budget"), globalStatus(oldRows, "old-budget"));
-  const usage = (input: GatewayLogEntry[], name: string) => {
-    const book = new TaskAccounting(join(dir, name));
-    for (const row of input) { book.beginTask(row.taskId!); const call = book.beginCall(row.taskId!); call.record(row, { complete: row.usageComplete }); call.end(); book.finishTask(row.taskId!); }
-    return book.usage();
-  };
-  const currentUsage = usage(rows, "new-tasks"), oldUsage = usage(oldRows, "old-tasks"); assert.deepEqual(currentUsage, oldUsage);
-  const rules: DispatchRule[] = [{ id: "review", name: "Review", enabled: true, when: { anyWords: ["review"] }, then: { agent: "claude", model: "p/expensive" } }];
-  const report = buildRuleSuggestions({ tasks, feedback, rules, usage: currentUsage, now: NOW });
-  assert.deepEqual(report, buildRuleSuggestions({ tasks, feedback, rules, usage: oldUsage, now: NOW }));
-  assert.equal(report.suggestions.length, 1); assert.ok(Math.abs(report.suggestions[0]!.evidence.savingsRate - 0.6) < 1e-12);
+
 });
 
 async function listen(t: TestContext, server: Server): Promise<string> {
@@ -230,7 +213,7 @@ async function usageFixture(t: TestContext, rows: GatewayLogEntry[]) {
   auth.issue = forbidden;
   const base = await listen(t, createEasySwitchServer({ store, ledger, gatewayAuth: auth, port: 0,
     secrets: { async get() { return forbidden(); }, async set() { forbidden(); }, async delete() { forbidden(); } },
-    sourceHealth: { fetch: async () => forbidden() }, taskRunner: async () => forbidden(),
+    sourceHealth: { fetch: async () => forbidden() },
     interactiveRuntime: { findBinary: async () => forbidden(), newSessionDir: forbidden, launchInTerminal: async () => forbidden() },
   }));
   return { ledger, get: (range: string) => fetch(`${base}/api/usage?range=${range}`, { headers: { "x-easyswitch": "1" } }) };
@@ -319,22 +302,4 @@ test("synthetic gateway logs persisted provenance and existing usage/budget APIs
   const saved = readFileSync(join(dir, "usage.jsonl"), "utf8");
   assert.equal(saved.includes(token), false); assert.equal(saved.includes(upstream), false); assert.equal(saved.includes("forged-official"), false);
   assert.deepEqual(new Ledger(dir).read()[0]!.pricingProvenance, row.pricingProvenance);
-});
-
-test("readonly fixture pricing bypass stays unattributed to the gateway estimator", async t => {
-  const dir = directory(t), store = new Store(dir), ledger = new Ledger(dir);
-  store.upsertProvider(provider({ models: ["a", "b"], prices: { a: rates, b: rates } }));
-  const upstream = await listen(t, createServer(async (req, res) => {
-    for await (const _chunk of req) { /* discard synthetic request */ }
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ choices: [{ message: { content: "fixture" }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5 } }));
-  }));
-  const selections = [{ agent: "hermes", model: "p/a" }, { agent: "aider", model: "p/b" }];
-  const base = await listen(t, createEasySwitchServer({ store, ledger, gatewayAuth: new GatewayTokenAuthority(), port: 0,
-    secrets: { async get() { assert.fail("no fixture secrets"); }, async set() { assert.fail("no writes"); }, async delete() { assert.fail("no deletes"); } },
-    readonlyFixtures: selections.map(s => createReadonlyRelayFixture({ agent: s.agent, endpoint: `${upstream}/v1/chat/completions`, models: { [s.model]: { inputUsdPerMillion: 2, outputUsdPerMillion: 4 } } })),
-  }));
-  const response = await fetch(`${base}/api/task-groups`, { method: "POST", headers: { "x-easyswitch": "1", "content-type": "application/json" }, body: JSON.stringify({ task: "Explain synthetic text", kind: "explain", selections }) });
-  assert.equal(response.status, 202); await response.text(); await until(() => ledger.read().length === 2);
-  for (const row of ledger.read()) { assert.equal(row.adapter, "readonly-relay-fixture"); assert.equal(row.costUsd, 0.00004); assert.equal(row.pricingProvenance, undefined); }
 });

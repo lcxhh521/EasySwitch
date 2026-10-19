@@ -35,9 +35,9 @@ function ui() {
     {id:'droid',name:'Unsupported bridge',models:['unsupported'],cliTextBridge:{kind:'droid'}},
     {id:'qoder',name:'Supported bridge',models:['text'],cliTextBridge:{kind:'qoder'}},
     {id:'default',name:'Default source',models:[],defaultModel:'default-only'}
-    ],pools:[{id:'empty',name:'Empty pool',members:[]},{id:'closed',name:'Closed pool',members:['off/closed']},{id:'mixed',name:'Mixed pool',members:['off/closed','on/m']}],bindings:{},prefs:{},rules:[],profiles:[],sessionDetails:[],sessions:[],native:[],log:[],codexPath:'/fixture/codex',claudePath:'/fixture/claude'};
+    ],pools:[{id:'empty',name:'Empty pool',members:[]},{id:'closed',name:'Closed pool',members:['off/closed']},{id:'mixed',name:'Mixed pool',members:['off/closed','on/m']}],bindings:{},prefs:{},profiles:[],sessionDetails:[],sessions:[],native:[],log:[],codexPath:'/fixture/codex',claudePath:'/fixture/claude'};
     agentList=[{id:'claude',name:'Claude Code',installed:true,can:{headless:true,interactive:true,efforts:[],tiers:[{id:'small',label:'后台小任务',hint:'Fixture'}]}},{id:'aider',name:'Aider',installed:true,can:{headless:true,interactive:true,efforts:[],tiers:[]}}];
-    globalThis.requests=[];globalThis.messages=[];render=()=>{};refresh=async()=>{};toast=m=>messages.push(m);call=async(method,path,body)=>{requests.push({method,path,body});return {task:{id:'fixture-task'}}};
+    globalThis.requests=[];globalThis.messages=[];render=()=>{};refresh=async()=>{};toast=m=>messages.push(m);call=async(method,path,body)=>{requests.push({method,path,body});return {}};
     globalThis.anchor={getBoundingClientRect:()=>({right:450,bottom:50,top:20})};`);
   const dispatch = async (name: string, target: any) => { for (const h of handlers[name] ?? []) await h({ target, preventDefault() {}, stopImmediatePropagation() {} }); };
   const target = (selector: string, extra: Record<string, unknown> = {}) => { const node: any = { ...extra, matches: (s: string) => s === selector, closest: (s: string) => s === selector ? node : null }; return node; };
@@ -55,12 +55,6 @@ test("all existing model selectors use catalog eligibility, including unknown he
   assert.match(list, /Active source|Supported bridge|模型池/); assert.match(list, />mixed</);
   assert.doesNotMatch(list, />closed<|>blocked<|>unsupported<|>empty</);
   assert.match(picker.parts[".rail"]!.innerHTML, /data-only="on"/);
-  const tasks = app.run("renderTasks()") as string;
-  assert.match(tasks, /value="pool\/mixed"/); assert.match(tasks, /value="on\/vendor\/model"/);
-  assert.doesNotMatch(tasks, /value="(?:off|budget|droid)\//);
-  app.run("ruleForm={name:'Rule',agent:'claude',model:'',words:''}");
-  const rules = app.run("rulesCard(agentList,selectableModelNames())") as string;
-  assert.match(rules, /value="pool\/mixed"/); assert.doesNotMatch(rules, /value="pool\/empty"|value="off\//);
   const controls = app.run("agentControls('claude')") as string;
   assert.match(controls, /value="qoder\/text"/); assert.doesNotMatch(controls, /value="pool\/|value="droid\/|value="off\//);
 });
@@ -120,20 +114,6 @@ test("a stale menu cannot submit a newly unavailable choice and failed saves ret
   app.run("delete state.selectableModels;call=async(method,path,body)=>{requests.push({method,path,body});throw {code:'provider_disabled'}}");
   picker = app.open(); await app.search(picker, "vendor/model"); await app.key(picker, "Enter");
   assert.equal(app.run("requests.length"), 1); assert.equal(app.run("JSON.stringify(state)===before"), true);
-});
-
-test("task and rule drafts preserve disabled selected values even when FormData omits them", async () => {
-  const app = ui();
-  app.run("taskForm.model='off/closed';taskForm.task='Explain';ruleForm={name:'Rule',agent:'claude',model:'budget/blocked',words:''}");
-  assert.match(app.run("renderTasks()"), /value="off\/closed" selected disabled/);
-  assert.match(app.run("rulesCard(agentList,selectableModelNames())"), /value="budget\/blocked" selected disabled/);
-  const task = app.target("form[data-task-form]", { values: { task: "Explain" }, elements: { model: { value: "off/closed" } } });
-  await app.dispatch("submit", task); assert.equal(app.run("requests.length"), 0); assert.equal(app.run("taskForm.model"), "off/closed"); assert.match(app.run("taskNote"), /重新选择/);
-  const rule = app.target("form[data-rule-form]", { values: { name: "Renamed", agent: "claude" }, elements: { model: { value: "budget/blocked" } } });
-  await app.dispatch("input", rule); assert.equal(app.run("ruleForm.model"), "budget/blocked");
-  await app.dispatch("submit", rule); assert.equal(app.run("requests.length"), 0); assert.match(app.run("ruleForm.error"), /预算阻断/);
-  rule.elements.model.value = ""; await app.dispatch("submit", rule);
-  assert.equal(app.run("requests[0].body.then.model"), "", "only an explicitly selected blank clears the model");
 });
 
 test("desktop saved choices and arbitrary upstream IDs are displayed without automatic replacement", async () => {

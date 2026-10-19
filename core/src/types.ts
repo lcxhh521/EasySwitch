@@ -65,7 +65,7 @@ export interface Provider {
   budget?: { monthlyUsd: number; stop?: boolean };
   /**
    * The user has switched this subscription off: it is kept (login and settings stay) but used nowhere: not in
-   * model menus, pools or dispatch, and a request that names it is refused with a plain reason. New
+   * model menus or pools, and a request that names it is refused with a plain reason. New
    * subscriptions start switched off.
    */
   off?: boolean;
@@ -184,8 +184,6 @@ export interface Account {
 
 /** Switches that apply to every launch. */
 export interface Settings {
-  /** Augmented sessions get the EasySwitch MCP server, so any agent can hand work to the others. */
-  agentCalls: boolean;
   /** Claude Code sessions keep the user's own Claude login, so Claude's own models and ours share one menu. */
   claudeNative: boolean;
 }

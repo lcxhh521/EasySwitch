@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AgentLauncher, LaunchInput, LaunchSpec } from "./agent-launch.ts";
 
 /**
@@ -8,7 +7,7 @@ import type { AgentLauncher, LaunchInput, LaunchSpec } from "./agent-launch.ts";
  * config is never read or written, and the directory is deleted afterwards.
  *
  * None of these has been run against the real program here, so `verified` is false everywhere and
- * `caveat` / `mcpCaveat` say exactly which parts were written from the vendors' own file formats
+ * `caveat` say exactly which parts were written from the vendors' own file formats
  * (reliable) and which were guessed from memory (check with `--help` before relying on them).
  * A private directory also means none of the user's own logins or settings are visible to the agent.
  */
@@ -92,7 +91,6 @@ function ompFiles(i: LaunchInput): Record<string, string> {
     ].join("\n"),
     [join(dir(i, "omp-agent"), "config.yml")]: ["modelRoles:", ...roles, ...(i.effort ? [`defaultThinkingLevel: ${q(i.effort)}`] : []),
       "enabledProviders: []", "mcp:", "  enableProjectConfig: false", ""].join("\n"),
-    ...(i.mcp ? { [join(dir(i, "omp-agent"), "mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers } } }) } : {}),
   };
 }
 
@@ -106,7 +104,6 @@ function droidFiles(i: LaunchInput): Record<string, string> {
       sessionDefaultSettings: { model: id, ...(i.effort ? { reasoningEffort: i.effort } : {}) },
     }),
   };
-  if (i.mcp) files[join(dir(i, "factory-home"), ".factory", "mcp.json")] = JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers } } });
   return files;
 }
 
@@ -124,7 +121,6 @@ function clineFiles(i: LaunchInput): Record<string, string> {
       providers: { "openai-compatible": { provider: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, defaultModelId: i.model }, models: Object.fromEntries(allModels(i).map(m => [m, { id: m, name: bare(m), capabilities: ["streaming", "tools", "reasoning"], contextWindow: 200000, maxTokens: 32000 }])) } },
     }),
   };
-  if (i.mcp) files[join(data, "settings", "cline_mcp_settings.json")] = JSON.stringify({ mcpServers: { easyswitch: { url: i.mcp.url, type: "streamableHttp", headers: i.mcp.headers } } });
   return files;
 }
 
@@ -139,12 +135,6 @@ function gooseFiles(i: LaunchInput): Record<string, string> {
       models: allModels(i).map(m => ({ name: m, reasoning: true, context_limit: 200000 })),
     }),
   };
-  if (i.mcp) {
-    files[join(config, "config.yaml")] = [
-      "extensions:", "  easyswitch:", "    enabled: true", "    name: easyswitch", "    type: streamable_http", `    uri: ${q(i.mcp.url)}`,
-      "    headers:", ...Object.entries(i.mcp.headers).map(([k, v]) => `      ${q(k)}: ${q(v)}`), "    timeout: 300", "",
-    ].join("\n");
-  }
   return files;
 }
 
@@ -156,7 +146,6 @@ function crushFiles(i: LaunchInput): Record<string, string> {
     [join(dir(i, "crush-config"), "crush.json")]: JSON.stringify({
       providers: { easyswitch: { type: "openai", name: "EasySwitch", base_url: `${gateway(i)}/v1`, api_key: i.token, models: models.map(m => ({ id: m, name: bare(m), context_window: 200000, default_max_tokens: 16384, can_reason: true })) } },
       models: { large: { provider: "easyswitch", model: i.model, ...(i.effort ? { reasoning_effort: i.effort } : {}) }, small: { provider: "easyswitch", model: i.tiers?.small ?? i.model } },
-      ...(i.mcp ? { mcp: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers } } } : {}),
     }),
   };
 }
@@ -175,7 +164,6 @@ function grokToml(i: LaunchInput): string {
     ]),
     "[features]",
     "campaigns = false",
-    ...(i.mcp ? ["", "[mcp_servers.easyswitch]", `url = ${q(i.mcp.url)}`, "", "[mcp_servers.easyswitch.headers]", ...Object.entries(i.mcp.headers).map(([k, v]) => `${q(k)} = ${q(v)}`)] : []),
     "",
   ].join("\n");
 }
@@ -212,7 +200,6 @@ function qoderSettings(i: LaunchInput): string {
     providers: { easyswitch: { displayName: "EasySwitch", protocol: "openai", baseUrl: `${gateway(i)}/v1`, apiKey: i.token, model: i.model,
       models: allModels(i).map(m => ({ model: m, displayName: bare(m), contextWindow: 200000, maxOutputTokens: 16384, capabilities: { tools: true, vision: false, thinking: { modes: ["enabled"], supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"], requiresBudgetForEnabled: false } } })) } },
     model: { name: alias, ...(i.effort ? { preferences: { [alias]: { reasoning: { effort: i.effort } } } } : {}) },
-    ...(i.mcp ? { mcpServers: { easyswitch: { type: "http", url: i.mcp.url, headers: i.mcp.headers } } } : {}),
   });
 }
 
@@ -222,7 +209,6 @@ function openclawConfig(i: LaunchInput): string {
   return JSON.stringify({
     models: { mode: "merge", providers: { easyswitch: { baseUrl: `${gateway(i)}/v1`, apiKey: "${EASYSWITCH_OPENCLAW_KEY}", api: "openai-completions", models: allModels(i).map(m => ({ id: m, name: bare(m), contextWindow: 200000, input: ["text", "image"] })) } } },
     agents: { defaults: { model: { primary: `easyswitch/${i.model}` }, ...(i.tiers?.subagent ? { subagents: { model: `easyswitch/${i.tiers.subagent}` } } : {}) } },
-    ...(i.mcp ? { mcp: { servers: { easyswitch: { url: i.mcp.url, headers: i.mcp.headers, transport: "streamable-http" } } } } : {}),
   });
 }
 
@@ -250,7 +236,6 @@ function atomcodeToml(i: LaunchInput): string {
 }
 
 // ---------------------------------------------------------------- trae-agent
-const MCP_BRIDGE = fileURLToPath(new URL("../../bin/es-mcp-stdio.ts", import.meta.url));
 
 /** Trae reads JSON-compatible YAML; its HTTP config fields currently throw at runtime. */
 function traeFiles(i: LaunchInput): Record<string, string> {
@@ -262,10 +247,6 @@ function traeFiles(i: LaunchInput): Record<string, string> {
     model_providers: { easyswitch: { provider: "openai", api_key: i.token, base_url: `${gateway(i)}/v1` } },
     models: { main: model(i.model), ...(i.tiers?.small ? { small: model(i.tiers.small) } : {}) },
     ...(i.tiers?.small ? { lakeview: { model: "small" } } : {}),
-    ...(i.mcp ? { allow_mcp_servers: ["easyswitch"], mcp_servers: { easyswitch: {
-      command: process.execPath, args: [MCP_BRIDGE],
-      env: { EASYSWITCH_MCP_URL: i.mcp.url, EASYSWITCH_MCP_HEADERS: JSON.stringify(i.mcp.headers) },
-    } } } : {}),
   }) };
 }
 
@@ -276,7 +257,8 @@ function traeFiles(i: LaunchInput): Record<string, string> {
 function codebuddyLaunch(i: LaunchInput, headless: boolean): LaunchSpec {
   const home = dir(i, "codebuddy");
   const settings = join(home, "settings.json");
-  const mcpFile = join(home, "easyswitch-mcp.json");
+  // An explicit empty file preserves isolation from native/project MCP settings.
+  const mcpFile = join(home, "empty-mcp.json");
   const env = {
     CODEBUDDY_CONFIG_DIR: home, CODEBUDDY_CODE_DEBUG_LOGS_DIR: join(home, "logs"),
     CODEBUDDY_BASE_URL: gateway(i), CODEBUDDY_API_KEY: i.token, CODEBUDDY_MODEL: i.model,
@@ -291,7 +273,7 @@ function codebuddyLaunch(i: LaunchInput, headless: boolean): LaunchSpec {
       ...(headless ? ["-p", i.task ?? "", "--output-format", "text"] : [])],
     unset: ["CODEBUDDY_AUTH_TOKEN", "CODEBUDDY_CUSTOM_HEADERS", "CODEBUDDY_ENV_FILE", "CODEBUDDY_IS_SANDBOX",
       "CODEBUDDY_RECORD_DIR", "CODEBUDDY_REPLAY_DIR", "CODEBUDDY_INTERNET_ENVIRONMENT"],
-    files: { [settings]: JSON.stringify({ env }), [mcpFile]: JSON.stringify({ mcpServers: i.mcp ? { easyswitch: { type: "http", ...i.mcp } } : {} }) },
+    files: { [settings]: JSON.stringify({ env }), [mcpFile]: JSON.stringify({ mcpServers: {} }) },
   };
 }
 
@@ -305,7 +287,6 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
       { id: "subagent", label: "子 agent", hint: "覆盖所有子 agent 的模型" },
     ],
     caveat: "当前官方文档支持 CODEBUDDY_BASE_URL 的 Anthropic 兼容端点；使用私有 CODEBUDDY_CONFIG_DIR 和一次性参数，未实测；没有开启自动审批",
-    mcpCaveat: "官方 HTTP MCP 格式配合 --strict-mcp-config，排除原有用户/项目/插件 MCP；尚未实测",
     ...forms(codebuddyLaunch),
   },
   "kimi-cli": {
@@ -313,11 +294,9 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
     efforts: levels(["low", "medium", "high"]),
     tiers: [{ id: "subagent", label: "子 agent", hint: "secondary_model 用这个模型" }],
     caveat: "面向当前 TypeScript 版 @moonshot-ai/kimi-code；配置和 -p 来自官方文档，尚未实测。旧 Python 版 Kimi CLI 使用不同配置，不能混用",
-    mcpCaveat: "当前 TypeScript 版支持私有 KIMI_CODE_HOME/mcp.json 的 HTTP+headers；尚未实测，项目同名 MCP 可覆盖此项",
     ...forms((i, h) => ({ command: i.bin, args: ["--model", `es/${i.model}`, ...task(i, h, "-p")],
       env: { KIMI_CODE_HOME: dir(i, "kimi-home") }, unset: ["KIMI_MODEL_NAME", "KIMI_CODE_CUSTOM_HEADERS"],
       files: { [join(dir(i, "kimi-home"), "config.toml")]: kimiToml(i),
-        ...(i.mcp ? { [join(dir(i, "kimi-home"), "mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { url: i.mcp.url, headers: i.mcp.headers } } }) } : {}),
       } })),
   },
   pi: {
@@ -334,7 +313,6 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
       { id: "small", label: "后台小任务", hint: "侦察、小任务用这个模型" },
     ],
     caveat: "配置文件、-p 和 --config 覆盖层来自官方文档，尚未实测；max 档要 omp 16.4 以上。关闭外部用户配置与项目 MCP 发现",
-    mcpCaveat: "私有 PI_CODING_AGENT_DIR/mcp.json 支持 type:http、url 和 headers；尚未实测",
     ...forms((i, h) => ({ command: i.bin, args: ["--config", join(dir(i, "omp-agent"), "config.yml"), ...task(i, h, "-p")], env: { PI_CODING_AGENT_DIR: dir(i, "omp-agent") },
       unset: ["OMP_PROFILE", "PI_PROFILE", "CLAUDE_CONFIG_DIR", "PI_CONFIG_FILES", "PI_SMOL_MODEL", "PI_SLOW_MODEL", "PI_PLAN_MODEL"], files: ompFiles(i) })),
   },
@@ -342,14 +320,12 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
     verified: false,
     efforts: levels(["low", "medium", "high"]),
     caveat: "配置格式和 `droid exec --model` 来自 Factory 的文档；它可能仍要求先登录 Factory 才能启动，要实测",
-    mcpCaveat: "MCP 文件的位置和格式是推测的",
     ...forms((i, h) => ({ command: i.bin, args: h ? ["exec", "--model", `custom:easyswitch/${i.model}`, i.task ?? ""] : ["--model", `custom:easyswitch/${i.model}`], env: { FACTORY_HOME_OVERRIDE: dir(i, "factory-home") }, files: droidFiles(i) })),
   },
   cline: {
     verified: false,
     efforts: levels(["low", "medium", "high", "xhigh"]),
     caveat: "设置文件格式来自 Cline 的文件格式；无界面参数 `-y` 是推测的",
-    mcpCaveat: "MCP 设置文件的位置和格式是推测的",
     ...forms((i, h) => ({ command: i.bin, args: h ? ["-y", i.task ?? ""] : [], env: { CLINE_DATA_DIR: dir(i, "cline-data") }, files: clineFiles(i) })),
   },
   goose: {
@@ -392,7 +368,6 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
     efforts: levels(["off", "minimal", "low", "medium", "high", "xhigh"]),
     tiers: [{ id: "subagent", label: "子 agent", hint: "它派出去的子 agent 用这个模型" }],
     caveat: "私有配置文件和环境变量来自它的文档；`openclaw agent --message` 这类命令是推测的",
-    mcpCaveat: "MCP 在配置里的写法是推测的",
     ...forms((i, h) => ({
       command: i.bin, args: h ? ["agent", "--local", ...(i.effort ? ["--thinking", i.effort] : []), "--message", i.task ?? ""] : ["tui", ...(i.effort ? ["--thinking", i.effort] : [])],
       env: { OPENCLAW_CONFIG_PATH: join(i.sessionDir, "openclaw.json"), EASYSWITCH_OPENCLAW_KEY: i.token },
@@ -403,7 +378,6 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
     verified: false,
     tiers: [{ id: "small", label: "后台摘要", hint: "Lakeview 的摘要请求用这个模型" }],
     caveat: "按官方 CLI 和 YAML 模式实现；OpenAI 通道实际使用 Responses。基础工具允许文件和 shell 操作，未声明只读；尚未实测",
-    mcpCaveat: "官方 MCP 客户端只实现 stdio；通过 EasySwitch 自带的本地 HTTP 桥连接，桥已用假服务测试，真实客户端未实测",
     ...forms((i, h) => ({
       command: i.bin,
       args: [...(h ? ["run", i.task ?? ""] : ["interactive"]), "--config-file", join(i.sessionDir, "trae-config.yaml"),
@@ -417,10 +391,8 @@ export const EXTRA_LAUNCHERS: Record<string, AgentLauncher> = {
     verified: false,
     efforts: levels(["low", "medium", "high", "xhigh", "max"]),
     caveat: "私有 ATOMCODE_HOME、config.toml 和 -p 来自官方文档/源码；尚未实测",
-    mcpCaveat: "4.20.4 起内置 MCP；私有 ATOMCODE_HOME/mcp.json 支持 URL+headers，项目 .mcp.json 可覆盖同名项；尚未实测",
     ...forms((i, h) => ({ command: i.bin, args: task(i, h, "-p"), env: { ATOMCODE_HOME: dir(i, "atomcode") },
       files: { [join(dir(i, "atomcode"), "config.toml")]: atomcodeToml(i),
-        ...(i.mcp ? { [join(dir(i, "atomcode"), "mcp.json")]: JSON.stringify({ mcpServers: { easyswitch: { url: i.mcp.url, headers: i.mcp.headers } } }) } : {}),
       } })),
   },
 };

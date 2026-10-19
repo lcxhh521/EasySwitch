@@ -1,5 +1,8 @@
 # 测试范围与运行方法
 
+2026-10-18 更新。唯一需求清单为 BACKLOG.md。B115已取消任务派发、规则/评价/建议、并行互审、EasySwitch MCP互调与自动注册，以及专用后台执行器；不再规划替代调度路线。历史设计只保留在Git历史，用户已有记录和规则文件不删除、不迁移、不自动执行。
+
+
 项目有两个测试入口，结果不能互相替代。通过本地白名单，只说明经过审计的纯函数、假服务和假程序用例通过，不能据此声称真实客户端、macOS 系统行为或真实账号已经验收。
 
 ## 日常开发：受控本地测试
@@ -48,8 +51,7 @@ node --test --test-force-exit core/test/*.test.ts
 
 - `chatgpt-e2e.test.ts`：真实 app-server 路径；文件级初始化也可能执行模型发现，跳过单个测试体仍不够
 - `claude-e2e.test.ts`、`codex-e2e.test.ts`：真实客户端工具回合、目录发现及实际配置检查
-- `agent-launch.test.ts`、`es-cli.test.ts`：真实启动器、后台任务、命令行进程与会话清理
-- `mcp.test.ts`：既有假的工具处理，也有真实客户端 MCP 回合；先拆分或注入依赖，不能整文件当作纯测试
+- `agent-launch.test.ts`、`es-cli.test.ts`：真实交互启动器、命令行进程与会话清理
 - `accounts.test.ts`、`efforts.test.ts`：包含真实账号目录或已安装程序的帮助/档位发现
 - `chatgpt-launcher.test.ts`：包含 shell 脚本、真实进程参数和程序发现检查
 - `ledger.test.ts`：五项纯数据/文件断言已审计加入；图标清单生成用例会启动脚本，在本地入口按精确测试名称排除，不是通过
@@ -62,7 +64,7 @@ node --test --test-force-exit core/test/*.test.ts
 
 ### 网关认证与桌面边界
 
-本地覆盖看 `gateway-auth*`、`server-auth-persistence`、`server-security`、`chatgpt-boundary`、`gateway-upgrade`。必须同时检查完整套件中的 Claude、Codex、ChatGPT、MCP 和 `es` 请求是否仍使用真正签发、来源正确的 capability。
+本地覆盖看 `gateway-auth*`、`server-auth-persistence`、`server-security`、`chatgpt-boundary`、`gateway-upgrade`。必须同时检查完整套件中的 Claude、Codex、ChatGPT 和 `es` 请求是否仍使用真正签发、来源正确的 capability。
 
 - 令牌格式可读不等于认证有效；假客户端也要通过自己的测试 authority 签发
 - 外接模型和合并本地目录需要本地权限，原生厂商登录只授权其固定厂商路径
@@ -78,9 +80,7 @@ node --test --test-force-exit core/test/*.test.ts
 
 `es-cli-local.test.ts` 使用注入的子进程和本地 API 验证这些边界；它不替代 `es-cli.test.ts` 的真实客户端回合。
 
-MCP 的并发测试要延迟发现和执行两步，让多个请求同时竞争名额；仅测试一个串行 fake runner 或 stdio 消息并行，不能证明后台任务的并发上限正确。
 
-`mcp-capacity.test.ts` 覆盖发现前同步预留、发现/执行失败后释放名额，以及调用方和深度只能来自已认证会话。
 
 ### macOS 路径
 

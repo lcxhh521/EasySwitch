@@ -1,11 +1,6 @@
-import { TaskRuntime, TaskCancelledError } from "./task-runtime.ts";
 import { SourceHealthMonitor, modelsHealthFingerprint } from "./source-health.ts";
 import { resolveAgentFallback } from "./agent-fallback.ts";
-import { FeedbackBook, FeedbackStoreError } from "./feedback.ts";
 import { buildPoolSuggestions } from "./pool-suggestions.ts";
-import { buildRuleSuggestions } from "./suggestions.ts";
-import { TaskAccounting, type TaskAccountingCall } from "./task-accounting.ts";
-import { ParallelTaskCoordinator, ParallelTaskError, TaskCapacity, type ReadonlyRelayFixtureAdapter } from "./parallel-tasks.ts";
 import { buildDoctorReport, runDoctorChecks, DoctorCheckRequestError, type DoctorInput, type DoctorAgent, type DoctorCheckRunners } from "./doctor.ts";
 import { verifyLauncher, type Verdict } from "./verify-launchers.ts";
 import { humanError, type UserErrorContext } from "./user-errors.ts";
@@ -35,7 +30,6 @@ import { claudeModelId, fromClaudeModelId, writeCodexCatalog } from "./catalog.t
 import { handleChatgpt, isChatgptPath } from "./chatgpt-gateway.ts";
 import { handleChatCompletions } from "./gateway-chat.ts";
 import { GEMINI_PATH, handleGemini, listGeminiModels } from "./gateway-gemini.ts";
-import { handleMcp, mcpEndpoint, type McpDeps } from "./mcp.ts";
 import { handleResponses, listExposedModels, resolveModel } from "./gateway.ts";
 import { handleCountTokens, handleMessages } from "./gateway-messages.ts";
 import { augmentedSessions, claudeCapabilities, claudeLoggedIn, findClaude, findCodex, launchInTerminal, sessionDetails } from "./launch.ts";
@@ -46,7 +40,7 @@ import { nameFromUrl, parsePaste } from "./import-parse.ts";
 import { ProviderImportService, ProviderImportError, type ImportSource } from "./provider-import.ts";
 import { homedir } from "node:os";
 import { AGENTS, detectAgents, type DetectedAgent } from "./agents.ts";
-import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, runHeadless, type LaunchSpec } from "./agent-launch.ts";
+import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSessionDir, type LaunchSpec } from "./agent-launch.ts";
 import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setAntigravityToken, setCursorToken, setKimiToken, setPlanToken, setVertexToken } from "./keypool.ts";
@@ -55,12 +49,10 @@ import { DEFAULT_VERTEX_MODELS, forgetServiceAccount, mintAccessToken, parseServ
 import { isNativeClaude, nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
 import { describeQuota, exhaustedUntil, quotaOf } from "./quota.ts";
-import { AUTO_AGENT, describeWhen, matchingRules, parseRule, type TaskFacts } from "./dispatch.ts";
 import { isMimoFree, mimoFreeIssue } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
 import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
-import { TaskBook, type Task, type TaskParentAdmission } from "./tasks.ts";
 import { sessionToken } from "./gateway-chat.ts";
 import { GatewayTokenAuthority, GatewayIssuanceLimitError, GatewaySessionStoreError, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
 import { BudgetController, BudgetExceededError } from "./global-budget.ts";
@@ -100,15 +92,10 @@ export interface ServerDeps {
   /** Durable usage ledger; tests leave it out and usage comes from memory. */
   ledger?: Ledger;
   gatewayAuth?: GatewayTokenAuthority;
-  taskRunner?: typeof runHeadless;
   /** Fixture clock/transport only; HTTP cannot supply them. */
   sourceHealth?: { now?: () => number; fetch?: typeof fetch };
   /** Trusted fixture inputs only; paths are never accepted from HTTP. */
   providerImport?: { home: string; environment: () => Record<string, string | undefined>; now?: () => number };
-  /** Known availability only; test seam avoids executing program discovery for suggestions. */
-  taskAgentAvailable?: (id: string) => boolean;
-  /** Opaque Node-test-only relay fixtures; the production registry is empty. */
-  readonlyFixtures?: readonly ReadonlyRelayFixtureAdapter[];
   /** Explicit metadata/runner seams for fake diagnostics. Never configurable through HTTP. */
   doctor?: { agents?: () => DoctorAgent[]; runners?: DoctorCheckRunners };
   /** In-process fake executor for bridge integration tests; not a production switch. */
@@ -125,9 +112,6 @@ export interface ServerDeps {
   /** Explicit dependency injection for local fixture tests; never accepted from HTTP input. */
   claudeDesktop?: Pick<ClaudeDesktopOptions, "executable" | "baseDir" | "parentEnv" | "platform">;
 }
-
-const taskShutdown = new WeakMap<Server, () => Promise<void>>();
-export async function stopOwnedTasks(server: Server): Promise<void> { await taskShutdown.get(server)?.(); }
 
 const desktopShutdown = new WeakMap<Server, () => Promise<void>>();
 /** The main process awaits this before exiting; it never stops a native app. */
@@ -177,13 +161,6 @@ function sourceTargetIssue(store: Store, providerId: unknown, model: string): { 
     : source?.cliTextBridge?.kind === "droid" ? { code: "capability_unavailable", error: "此文字桥暂未支持使用" }
     : null;
   return issue ? { status: 409, body: issue } : undefined;
-}
-
-/** Split only the source prefix; an upstream model ID may contain more slashes. */
-function ruleTargetIssue(store: Store, target: string | undefined) {
-  if (!target) return undefined; // The agent's own model remains a valid choice.
-  const slash = target.indexOf("/");
-  return sourceTargetIssue(store, slash > 0 ? target.slice(0, slash) : "", slash > 0 ? target.slice(slash + 1) : "");
 }
 
 /** Stamps an estimated cost on a finished call, using the price in force right now. */
@@ -272,7 +249,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   } : undefined;
   let fallbackHistory: GatewayLogEntry[] | undefined;
   const fallbackRows = () => fallbackHistory ??= ledger.read().filter(e=>e.fallback).slice(-2000);
-  const routeChanges = (taskId?: string, sessionId?: string) => fallbackRows().filter(e=>e.fallback && (taskId ? e.taskId===taskId : e.sessionId===sessionId)).slice(-20).map(e=>e.fallback!);
   const sessionsPublic = () => { const rows=fallbackRows().filter(e=>e.fallback&&e.sessionId);return auth.list().map(session=>({...session,fallbackChanges:rows.filter(e=>e.sessionId===session.id).slice(-20).map(e=>e.fallback!)})); };
   const publicProvider = (p: Provider, hasKey: boolean, usedBy: Harness[] = []) => {
     const status = providerBudgets.budgetStatus(p);
@@ -303,108 +279,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     return found?.installed && found.where && !found.where.endsWith(".app") ? found.where : undefined;
   }
 
-  const tasks = new TaskBook(store.dir);
-  const feedback = new FeedbackBook(store.dir);
   const providerImports = new ProviderImportService({ home: deps.providerImport?.home ?? homedir(), environment: deps.providerImport?.environment ?? (() => process.env), ...(deps.providerImport?.now ? { now: deps.providerImport.now } : {}), store, secrets });
-  const taskAccounting = new TaskAccounting(store.dir);
-  const sessionTasks = new Map<string,{taskId:string;expiresAt:string}>();
-  const accountingSafely = (action:()=>void) => {try{action();}catch{/* Incomplete attribution remains unknown; this never substitutes for the budget ledger. */}};
-  const taskUsage = () => taskAccounting.usage(tasks.list(5000).map(t=>t.id));
-  const taskRuntime = new TaskRuntime({book:tasks,usage:taskUsage});
-  let tasksClosing = false;
-  const taskAvailable = (id:string) => Boolean(LAUNCHERS[id]?.headless) && (deps.taskAgentAvailable?.(id) ?? agentCache?.list.some(a=>a.id===id&&a.installed) ?? false);
-  const suggestions = () => buildRuleSuggestions({tasks:tasks.list(5000),feedback:feedback.list(),usage:taskUsage(),rules:store.rules(),
-    isTargetAvailable:target=>taskAvailable(target.agent)&&Boolean(resolveModel(store,target.model)),
-    resolveRuleTarget:rule=>{const b=store.binding(rule.then.agent),first=store.catalog()[0];const model=rule.then.model??(b?`${b.providerId}/${b.model}`:first?`${first.providerId}/${first.model}`:undefined);const effort=rule.then.effort??store.prefs(rule.then.agent).effort;return {...rule.then,...(model?{model}:{}),...(effort?{effort}:{})};},
-  });
   const poolSuggestions = () => buildPoolSuggestions({ models: store.catalog(), pools: store.pools(), dismissed: store.dismissedPoolSuggestions() });
-  const taskCapacity = new TaskCapacity();
-  const taskGroups = new ParallelTaskCoordinator({book:tasks,adapters:deps.readonlyFixtures,limiter:taskCapacity,
-    assertBudget: ({model,taskId}) => {accountingSafely(()=>taskAccounting.beginTask(taskId));budget.assertAllowed();if(!resolveModel(store,model))throw new ParallelTaskError("model_unavailable","所选来源或模型暂不可用。",409);},
-    recordUsage: entry => {
-      const row:GatewayLogEntry={at:new Date().toISOString(),taskId:entry.taskId,taskGroupId:entry.groupId,taskPhase:entry.phase,model:entry.model,providerId:entry.model.split("/")[0],harness:entry.agent,route:"chat-translate",inboundProtocol:"chat",outboundProtocol:"chat",adapter:"readonly-relay-fixture",usageComplete:!entry.unknownCost,status:entry.status,ms:entry.ms,inputTokens:entry.inputTokens,outputTokens:entry.outputTokens,costUsd:entry.costUsd,costNote:entry.unknownCost?"unpriced":entry.costNote,note:"只读模拟通道；未运行真实agent"};pushLog(row,false);
-      accountingSafely(()=>{const call=taskAccounting.beginCall(entry.taskId);call.record(row,{complete:!entry.unknownCost&&entry.status>=200&&entry.status<300});call.end();taskAccounting.finishTask(entry.taskId);});
-    },
-  });
-
-  /** Whether an agent can take a task right now: installed, and it has a headless form. */
-  async function canTake(id: string): Promise<boolean> {
-    return Boolean(LAUNCHERS[id]?.headless) && Boolean(await agentBinary(id));
-  }
-
-  /**
-   * "auto": which agent, model and level the dispatch rules pick for this task. A rule whose agent
-   * is not available is skipped for the next matching one; with none left, the first agent that
-   * can take a task is used, and the answer says so.
-   */
-  async function decideAuto(facts: TaskFacts): Promise<{ agent: string; model?: string; effort?: string; why: string }> {
-    const skipped: string[] = [];
-    for (const rule of matchingRules(store.rules(), facts)) {
-      if (await canTake(rule.then.agent)) {
-        const name = AGENTS.find(a => a.id === rule.then.agent)?.name ?? rule.then.agent;
-        return {
-          agent: rule.then.agent, ...(rule.then.model ? { model: rule.then.model } : {}), ...(rule.then.effort ? { effort: rule.then.effort } : {}),
-          why: `按规则「${rule.name}」（${describeWhen(rule.when)}）派给 ${name}${skipped.length ? `；${skipped.join("；")}` : ""}`,
-        };
-      }
-      skipped.push(`规则「${rule.name}」要派给 ${rule.then.agent}，但它现在接不了活，已跳过`);
-    }
-    for (const a of AGENTS) {
-      if (await canTake(a.id)) return { agent: a.id, why: `没有规则接这个任务，交给第一个能接活的 ${a.name}${skipped.length ? `；${skipped.join("；")}` : ""}` };
-    }
-    throw new Error("现在没有任何 agent 能接活：先在 Agent 页确认至少一个已安装");
-  }
-
-  /** Hands a task to an agent ("auto": the dispatch rules choose): records it, runs it headlessly in the background, records how it ended. */
-  async function startTask(requested: string, input: { task: string; model?: string; cwd?: string; effort?: string; depth: number; from: string; parentTaskId?: string; parentAdmission?: TaskParentAdmission }): Promise<{ task: Task; done: Promise<Task> }> {
-    if(tasksClosing)throw new TaskCancelledError();
-    if(!Number.isInteger(input.depth)||input.depth<1||input.depth>2)throw new ParallelTaskError("invalid_depth","任务深度不能超过两层。",403);
-    const release=taskCapacity.reserve(1);
-    try {
-    budget.assertAllowed();
-    let id = requested;
-    let why: string | undefined;
-    if (requested === AUTO_AGENT) {
-      const picked = await decideAuto({ task: input.task, from: input.from, ...(input.cwd ? { cwd: input.cwd } : {}) });
-      id = picked.agent;
-      why = picked.why;
-      // What the caller asked for explicitly wins over what the rule says.
-      input = { ...input, ...(input.model ? {} : picked.model ? { model: picked.model } : {}), ...(input.effort ? {} : picked.effort ? { effort: picked.effort } : {}) };
-    }
-    const bin = await agentBinary(id);
-    if (!bin) throw new Error(`没有找到 ${id} 的命令`);
-    const b = store.binding(id);
-    // A model is never a dead end: the one asked for, else the agent's own, else the first one EasySwitch serves.
-    const first = store.catalog()[0];
-    const model = input.model ?? (b ? `${b.providerId}/${b.model}` : first ? `${first.providerId}/${first.model}` : "");
-    if (!model || !resolveModel(store, model)) throw new Error("还没有可用的模型：先在「模型来源」里添加一个");
-    const wanted = input.effort ?? store.prefs(id).effort;
-    const effort = wanted && (await levelsFor(id, model)).includes(wanted) ? wanted : undefined;
-    if(tasksClosing)throw new TaskCancelledError();
-    const { task, signal } = tasks.start({ agent: id, model, from: input.from, task: input.task, ...(input.parentTaskId ? {parentTaskId:input.parentTaskId} : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(effort ? { effort } : {}), ...(why ? { why } : {}) },{parentAdmission:input.parentAdmission});
-    accountingSafely(()=>taskAccounting.beginTask(task.id,input.parentTaskId));
-    const taskAuthority: Pick<GatewayTokenAuthority,"issue"|"revoke"> = {
-      issue:(agent,options)=>{
-        if(tasksClosing||tasks.isCancelled(task.id)||tasks.get(task.id)?.status!=="running")throw new TaskCancelledError();
-        const session=auth.issue(agent,options);
-        for(const [id,value] of sessionTasks)if(Date.parse(value.expiresAt)<=Date.now())sessionTasks.delete(id);
-        sessionTasks.set(session.id,{taskId:task.id,expiresAt:session.expiresAt});
-        taskRuntime.ownToken(task.id,session.token,()=>{try{return auth.revoke(session.token);}finally{sessionTasks.delete(session.id);}});
-        return session;
-      },
-      revoke:token=>taskRuntime.revokeToken(task.id,token),
-    };
-    const done = Promise.resolve().then(()=>(deps.taskRunner ?? runHeadless)(id, { bin, port, model, models: modelsFor(model), task: input.task, stateDir: store.dir, tiers: tiersFor(id), modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(effort ? { effort } : {}) }, { gatewayAuth: taskAuthority, depth: input.depth, attachMcp: store.settings().agentCalls, signal, ...(input.cwd ? { cwd: input.cwd } : {}) }))
-      .then(r => tasks.finish(task.id, r)!)
-      .catch(error => {
-        const cleanupFailed=error && typeof error==="object" && (error as {code?:unknown}).code==="process_cleanup_failed";
-        if(cleanupFailed)taskRuntime.noteCleanupFailure(task.id);
-        return tasks.finish(task.id,{exitCode:null,output:cleanupFailed?"任务进程清理未能确认，请检查本机进程后再重试。":signal.aborted?"任务已取消":humanError(error,{context:"launch"}).message,timedOut:false})!;
-      }).finally(async()=>{accountingSafely(()=>taskAccounting.finishTask(task.id));await taskRuntime.release(task.id);release();});
-    taskRuntime.trackRun(task.id,done);
-    return { task, done };
-    } catch(error) {release();throw error;}
-  }
 
   /** The levels the installed program itself reports (asked once, remembered), else the launcher's fallback. */
   async function levelsOf(id: string): Promise<string[] | undefined> {
@@ -453,10 +329,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const sessionDir = deps.interactiveRuntime?.newSessionDir() ?? newSessionDir();
     let token: string | undefined;
     try {
-    const issued = auth.issue(id, { depth: 0, allowMcp: store.settings().agentCalls, allowNativeClaude: keepLogin });
+    const issued = auth.issue(id, { depth: 0, allowMcp: false, allowNativeClaude: keepLogin });
     token = issued.token;
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
-    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}), ...(store.settings().agentCalls ? { mcp: mcpEndpoint(port, token, 0) } : {}) });
+    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
     materialize(spec, sessionDir);
     return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
     } catch (error) { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
@@ -606,23 +482,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     try { return await vertexAccessToken(secrets, provider); } catch (error) { throw new Error(String((error as Error).message)); }
   });
 
-  const mcpDeps: McpDeps = {
-    store, secrets, log: pushLog,
-    async agents() {
-      const out: Array<{ id: string; name: string; model?: string }> = [];
-      for (const a of AGENTS) {
-        if (!LAUNCHERS[a.id]?.headless || !(await agentBinary(a.id))) continue;
-        const b = store.binding(a.id);
-        out.push({ id: a.id, name: a.name, ...(b ? { model: `${b.providerId}/${b.model}` } : {}) });
-      }
-      return out;
-    },
-    async run(id, input) {
-      const { done } = await startTask(id, input);
-      const t = await done;
-      return { exitCode: t.exitCode ?? null, output: t.output ?? "", timedOut: t.status === "timeout", model: t.model, agent: t.agent };
-    },
-  };
   // A test that asks for port 0 learns the real one only after listen(); both spellings are allowed.
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const allowBoundPort = (bound: number | undefined): void => {
@@ -785,7 +644,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         if (typeof body.agentId !== "string" || !AGENTS.some(a => a.id === body.agentId)) { json(res, 400, { error: "请选择已登记的 agent" }); return; }
         if (body.allowNativeClaude === true && body.agentId !== "claude") { json(res, 400, { error: "只有 Claude Code 会话可请求保留原生登录" }); return; }
         try {
-          const made = auth.issueManual(body.agentId, { allowMcp: body.allowMcp === true, allowNativeClaude: body.allowNativeClaude === true, ...(typeof body.ttlMs === "number" ? { ttlMs: body.ttlMs } : {}) });
+          const made = auth.issueManual(body.agentId, { allowMcp: false, allowNativeClaude: body.allowNativeClaude === true, ...(typeof body.ttlMs === "number" ? { ttlMs: body.ttlMs } : {}) });
           json(res, 201, made);
         } catch (error) {
           if (error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError) json(res, error.status, { error: error.message, code: error.code });
@@ -837,7 +696,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
         selectableModels: store.catalog().map(m => `${m.providerId}/${m.model}`),
-        rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })),
         pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
         poolSuggestions: poolSuggestions(),
         profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
@@ -1193,127 +1051,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
     }
 
-    // --- dispatch rules: who gets a task ---------------------------------------
-    if (path === "/api/rules" && method === "GET") {
-      json(res, 200, { rules: store.rules().map(r => ({ ...r, summary: describeWhen(r.when) })) });
-      return;
-    }
-    const knownAgents = { agents: AGENTS.filter(a => LAUNCHERS[a.id]?.headless).map(a => a.id) };
-    if (path === "/api/rules" && method === "POST") {
-      const parsed = parseRule(body, knownAgents);
-      if ("error" in parsed) { json(res, 400, { error: parsed.error }); return; }
-      const issue = ruleTargetIssue(store, parsed.rule.then.model);
-      if (issue) { json(res, issue.status, issue.body); return; }
-      json(res, 201, store.addRule(parsed.rule));
-      return;
-    }
-    if (path === "/api/rules/test" && method === "POST") {
-      // A dry run for the console: which rule would catch this task, and who would get it.
-      const facts: TaskFacts = { task: String(body.task ?? ""), from: String(body.from ?? "console"), ...(typeof body.cwd === "string" && body.cwd ? { cwd: body.cwd } : {}) };
-      try {
-        const picked = await decideAuto(facts);
-        json(res, 200, picked);
-      } catch (error) {
-        json(res, 409, { error: String((error as Error).message ?? error) });
-      }
-      return;
-    }
-    const ruleMatch = /^\/api\/rules\/(r-[a-f0-9]+)(?:\/(move))?$/.exec(path);
-    if (ruleMatch) {
-      const id = ruleMatch[1] ?? "";
-      const saved = store.rules().find(r => r.id === id);
-      if (!saved) { json(res, 404, { error: "没有这条规则" }); return; }
-      if (method === "POST" && ruleMatch[2] === "move") {
-        json(res, 200, { ok: store.moveRule(id, body.direction === "up" ? -1 : 1) });
-        return;
-      }
-      if (method === "PUT") {
-        const parsed = parseRule(body, knownAgents);
-        if ("error" in parsed) { json(res, 400, { error: parsed.error }); return; }
-        // Keep existing unavailable targets editable, including name/condition/toggle changes.
-        const issue = parsed.rule.then.model !== saved.then.model ? ruleTargetIssue(store, parsed.rule.then.model) : undefined;
-        if (issue) { json(res, issue.status, issue.body); return; }
-        json(res, 200, store.updateRule(id, parsed.rule));
-        return;
-      }
-      if (method === "DELETE") { store.removeRule(id); json(res, 200, { ok: true }); return; }
-    }
-
-    if (path === "/api/task-groups" || path.startsWith("/api/task-groups/")) {
-      if(req.headers["x-easyswitch"]!=="1"){json(res,403,{error:"missing x-easyswitch header"});return;}
-      try {
-        if(path==="/api/task-groups"&&method==="GET"){json(res,200,{groups:taskGroups.list(),capabilities:taskGroups.capabilities([...AGENTS.map(a=>a.id),...(deps.readonlyFixtures??[]).map(a=>a.agent)]),running:taskCapacity.running,limit:3,productionEnabled:false});return;}
-        if(path==="/api/task-groups"&&method==="POST"){
-          if(Object.keys(body).some(k=>!["task","kind","selections"].includes(k)))throw new ParallelTaskError("invalid_input","只读并行不接受工作目录、执行权限或额外选项。");
-          const made=await taskGroups.start({task:body.task as string,kind:body.kind as "explain",selections:body.selections as Array<{agent:string;model:string}>,depth:1,from:"console"});
-          void made.done.catch(()=>{});json(res,202,{group:made.group});return;
-        }
-        const review=/^\/api\/task-groups\/([a-zA-Z0-9-]+)\/review\/(t-[a-z0-9]+)$/.exec(path);
-        if(review&&method==="POST"){if(Object.keys(body).length)throw new ParallelTaskError("invalid_input","审查只使用已选结果，不接受额外权限。");const made=await taskGroups.review(review[1]!,review[2]!,{from:"console"});void made.done.catch(()=>{});json(res,202,{task:made.task});return;}
-        const stop=/^\/api\/task-groups\/([a-zA-Z0-9-]+)\/stop$/.exec(path);
-        if(stop&&method==="POST"){const stopped=taskGroups.stop(stop[1]!);json(res,stopped?200:404,{ok:stopped,...(!stopped?{error:"没有可停止的并行任务"}:{})});return;}
-        json(res,404,{error:"没有这个并行任务操作"});return;
-      }catch(error){if(error instanceof ParallelTaskError||error instanceof BudgetExceededError){json(res,error.status,{error:error.message,code:error.code});return;}throw error;}
-    }
-
-    const feedbackMatch=/^\/api\/tasks\/(t-[a-z0-9]+)\/feedback$/.exec(path);
-    if(feedbackMatch&&method==="PUT"){
-      const task=tasks.get(feedbackMatch[1]!);if(!task){json(res,404,{error:"没有这个任务"});return;}
-      if(Object.keys(body).some(k=>k!=="rating")||!["good","bad",null].includes(body.rating as any)){json(res,400,{error:"请选择好、不好或取消评价"});return;}
-      try{json(res,200,{feedback:feedback.set(task,body.rating as "good"|"bad"|null)??null});}
-      catch(error){json(res,error instanceof FeedbackStoreError?503:400,{error:(error as Error).message,...(error instanceof FeedbackStoreError?{code:error.code}:{})});}return;
-    }
-    if(path==="/api/rules/suggestions"&&method==="GET"){
-      if(req.headers["x-easyswitch"]!=="1"){json(res,403,{error:"missing x-easyswitch header"});return;}
-      try{json(res,200,{...suggestions(),accounting:taskAccounting.status(),taskLimit:5000});}
-      catch(error){json(res,503,{error:(error as Error).message,code:error instanceof FeedbackStoreError?error.code:"task_accounting_unavailable"});}return;
-    }
-    const applySuggestion=/^\/api\/rules\/suggestions\/(suggestion-[a-f0-9]{20})\/apply$/.exec(path);
-    if(applySuggestion&&method==="POST"){
-      if(Object.keys(body).length){json(res,400,{error:"建议操作只接受当前建议标识"});return;}
-      try{const suggestion=suggestions().suggestions.find(s=>s.id===applySuggestion[1]);if(!suggestion){json(res,409,{error:"建议已变化或不再适用，请刷新后重新选择"});return;}
-        json(res,201,{rule:store.addRule(suggestion.draft,suggestion.insertBeforeRuleId)});
-      }catch(error){json(res,503,{error:(error as Error).message,code:"task_accounting_unavailable"});}return;
-    }
-
-    // --- tasks: hand work to an agent, watch it, read what came back ---------
-    if (path === "/api/tasks" && method === "GET") {
-      let ratings:ReturnType<FeedbackBook["list"]>=[],feedbackUnavailable=false;try{ratings=feedback.list();}catch{feedbackUnavailable=true;}
-      const snapshot=taskRuntime.snapshot();
-      const decorate=(t:typeof snapshot.tasks[number])=>({...t,fallbackChanges:routeChanges(t.id),feedback:ratings.find(r=>r.taskId===t.id)??null});
-      const tree=(nodes:typeof snapshot.tree):unknown[]=>nodes.map(t=>({...decorate(t),children:tree(t.children)}));
-      json(res,200,{...snapshot,tasks:snapshot.tasks.map(decorate),tree:tree(snapshot.tree),feedbackUnavailable,accounting:taskAccounting.status()});
-      return;
-    }
-    if (path === "/api/tasks" && method === "DELETE") {
-      json(res, 200, { cleared: tasks.clearFinished() });
-      return;
-    }
-    if (path === "/api/tasks" && method === "POST") {
-      const agent = String(body.agent ?? "");
-      const text = String(body.task ?? "").trim();
-      if (!agent || !text) { json(res, 400, { error: "需要选一个 agent，并写清楚任务" }); return; }
-      if (agent !== AUTO_AGENT && !LAUNCHERS[agent]?.headless) { json(res, 409, { error: "这个 agent 还没有无界面的调用方式" }); return; }
-      try {
-        const { task } = await startTask(agent, {
-          task: text, from: "console", depth: 1,
-          ...(typeof body.model === "string" && body.model ? { model: body.model } : {}),
-          ...(typeof body.effort === "string" && body.effort ? { effort: body.effort } : {}),
-          ...(typeof body.cwd === "string" && body.cwd.startsWith("/") ? { cwd: body.cwd } : {}),
-        });
-        json(res, 202, { task });
-      } catch (error) {
-        json(res, error instanceof ParallelTaskError || error instanceof BudgetExceededError ? error.status : 409, { error: String((error as Error).message ?? error), ...((error instanceof ParallelTaskError || error instanceof BudgetExceededError) ? {code:error.code} : {}) });
-      }
-      return;
-    }
-    const taskStop = /^\/api\/tasks\/(t-[a-z0-9]+)\/stop$/.exec(path);
-    if (taskStop && method === "POST") {
-      const result=await taskRuntime.cancelTree(taskStop[1]??"");
-      json(res,result.found?200:404,{ok:result.found&&result.cleanup.pending===0&&result.cleanup.failed===0,...result,...(!result.found?{error:"没有这个任务"}:{})});
-      return;
-    }
-
     // --- Claude Desktop: a separate, disposable third-party instance --------
     if (path === "/api/claude-desktop" && method === "GET") {
       json(res, 200, {
@@ -1391,7 +1128,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (method === "GET") { json(res, 200, store.settings()); return; }
       if (method === "PUT") {
         json(res, 200, store.setSettings({
-          ...(typeof body.agentCalls === "boolean" ? { agentCalls: body.agentCalls } : {}),
           ...(typeof body.claudeNative === "boolean" ? { claudeNative: body.claudeNative } : {}),
         }));
         return;
@@ -1977,15 +1713,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const path = url.pathname;
     let session: GatewaySession | undefined;
     let isDesktop = false;
-    let accountingCall: TaskAccountingCall | undefined, ownerTaskId:string|undefined, routeSettled=false,responseSettled=false,ending=false;
-    const endAccounting=()=>{if(routeSettled&&responseSettled&&!ending){ending=true;setImmediate(()=>accountingSafely(()=>accountingCall?.end()));}};
-    res.once("finish",()=>{responseSettled=true;endAccounting();});res.once("close",()=>{responseSettled=true;endAccounting();});
-    const beginAccounting=()=>{if(ownerTaskId||!session)return;ownerTaskId=sessionTasks.get(session.id)?.taskId;if(ownerTaskId)accountingSafely(()=>{accountingCall=taskAccounting.beginCall(ownerTaskId!);});};
-    const taskLog=(ctx?:{pool:string;attempt:number;attempts:number})=>(entry:GatewayLogEntry)=>{
-      const attributed={...entry,...(ownerTaskId?{taskId:ownerTaskId}:{}),...(ctx?{pool:ctx.pool,attempt:ctx.attempt,attempts:ctx.attempts}:{})};
-      try{pushLog(attributed);}catch(error){accountingSafely(()=>accountingCall?.record({}));throw error;}
-      let unavailable=true;try{const status=budget.status();unavailable=status.accountingUnavailable||status.pendingPartialLine;}catch{}
-      accountingSafely(()=>accountingCall?.record(attributed,{complete:!unavailable&&attributed.status>=200&&attributed.status<300&&attributed.usageComplete===true}));
+    const requestLog = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) => {
+      pushLog({ ...entry, ...(ctx ? { pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : {}) });
     };
     try {
       // DNS-rebinding guard: only our own loopback authority may talk to us.
@@ -1999,19 +1728,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       }
       const gemini = GEMINI_PATH.exec(path);
       const isModels = req.method === "GET" && ["/v1/models", "/models", "/v1beta/models", "/v1beta/openai/models"].includes(path);
-      const isMcp = path === "/mcp";
       const regularPost = req.method === "POST" && (["/v1/responses", "/responses", "/v1/chat/completions", "/chat/completions", "/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"].includes(path) || Boolean(gemini));
       // Native vendor forwarding and access to local sources have separate authority below.
-      const protectedRoute = isModels || isMcp || regularPost;
+      const protectedRoute = isModels || regularPost;
       const protocol: ApiProtocol = gemini || path.startsWith("/v1beta/") ? "gemini" : path.includes("messages") ? "messages" : path.includes("responses") ? "responses" : "chat";
       if (protectedRoute) {
         if (repeatedGatewayCredential(req)) { gatewayError(res, protocol, 401, "重复的鉴权字段无效", "invalid_gateway_session"); return; }
-        session = auth.authenticate(req.headers, url, isMcp ? "mcp" : isModels ? "models" : "inference");
+        session = auth.authenticate(req.headers, url, isModels ? "models" : "inference");
         if (!session) { gatewayError(res, protocol, 401, "需要本次启动签发且未过期的 EasySwitch 会话令牌；旧版长期令牌请在控制台重新生成，不会自动续用", "invalid_gateway_session"); return; }
         isDesktop = session.agentId === "claude-desktop";
-        const inference = req.method === "POST" && !isMcp && !path.endsWith("count_tokens") && gemini?.[3] !== "countTokens";
+        const inference = req.method === "POST" && !path.endsWith("count_tokens") && gemini?.[3] !== "countTokens";
         if (inference || (isChatgptPath(path) && req.method !== "GET")) {
-          beginAccounting();
           try { budget.assertAllowed(); }
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
@@ -2022,26 +1749,16 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const localSupplied = req.headers["x-easyswitch-session"] !== undefined || [req.headers.authorization, req.headers["x-api-key"], req.headers["x-goog-api-key"]].some(value => typeof value === "string" && /^(?:Bearer\s+)?es-session-/i.test(value));
         if (localSupplied && !session) { gatewayError(res, protocol, 401, "本地会话令牌无效、已撤销或已过期", "invalid_gateway_session"); return; }
         if (req.method !== "GET") {
-          beginAccounting();
           try { budget.assertAllowed(); }
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
-        await handleChatgpt(req, res, path, url.search, { store, secrets, log: taskLog(), session, fallback: fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+        await handleChatgpt(req, res, path, url.search, { store, secrets, log: requestLog(), session, fallback: fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         return;
       }
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
-        return;
-      }
-      if (path === "/mcp") {
-        const parentTaskId=session?sessionTasks.get(session.id)?.taskId:undefined;
-        let hold:{end():void}|undefined;let parentAdmission:TaskParentAdmission|undefined;
-        if(parentTaskId){try{parentAdmission=tasks.admitChild(parentTaskId);}catch{gatewayError(res,"chat",409,"上级任务已结束或取消，不能创建新的子任务。","task_cancelled");return;}accountingSafely(()=>{hold=taskAccounting.beginHold(parentTaskId);});}
-        try{await handleMcp(req,res,req.method==="POST"?await readBody(req):"",{...mcpDeps,session,
-          run:async(id,input)=>{const {done}=await startTask(id,{...input,...(parentTaskId?{parentTaskId,parentAdmission}:{})});const t=await done;return {exitCode:t.exitCode??null,output:t.output??"",timedOut:t.status==="timeout",cancelled:t.status==="stopped",model:t.model,agent:t.agent};},
-        });}finally{parentAdmission?.release();accountingSafely(()=>hold?.end());}
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
@@ -2056,27 +1773,27 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+          return handleGemini(req, r, m, raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         });
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await handleCountTokens(req, res, raw, { store, secrets, log: taskLog(), session });
+        await handleCountTokens(req, res, raw, { store, secrets, log: requestLog(), session });
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages" || path === "/messages")) {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: taskLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
@@ -2110,7 +1827,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, authError ? error.status : 500, { error: String((error as Error).message ?? error), ...(authError ? { code: error.code } : {}) });
       }
       else res.end();
-    } finally {routeSettled=true;endAccounting();}
+    }
   });
   function nativeRequestAllowed(raw: string, req: IncomingMessage, res: ServerResponse, session?: GatewaySession): boolean {
     const model = modelOfBody(raw);
@@ -2130,13 +1847,6 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     json(res, 400, { error: { type: "invalid_request_error", message: "独立桌面会话只能使用 EasySwitch 已添加的模型，不会回退到 Claude 原生账号" } });
     return false;
   }
-  taskShutdown.set(server,async()=>{
-    tasksClosing=true;
-    const ids=taskRuntime.snapshot(5000).tasks.filter(t=>t.status==="running"||t.cleanupPending||t.cleanupFailed).map(t=>t.id);
-    const results=await Promise.all(ids.map(id=>taskRuntime.cancelTree(id)));
-    if(results.some(r=>r.cleanup.pending||r.cleanup.failed))throw new Error("任务清理未确认");
-  });
-  server.once("close",()=>{void stopOwnedTasks(server).catch(()=>console.error("任务清理未确认，请检查本机进程"));});
   desktopShutdown.set(server, async () => {
     desktopClosing = true;
     const stopped = await Promise.allSettled([...desktopSessions.values()].map(s => s.stop()));

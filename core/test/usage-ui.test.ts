@@ -55,15 +55,14 @@ function ui(rows: GatewayLogEntry[]) {
   vm.runInContext(source.slice(0, source.lastIndexOf('fetch("icons/manifest.json")')), context);
   const run = (code: string): any => vm.runInContext(code, context);
   run(`globalThis.fixtureState={providers:[{id:'fixture',name:'Fixture',icon:'letter:F'}],display:{currency:'USD',usdToCny:8}};
-    state=fixtureState; usage=fixtureUsage; usageRange='today'; agentList=[]; taskList={tasks:[]};
+    state=fixtureState; usage=fixtureUsage; usageRange='today'; agentList=[];
     globalThis.requests=[];globalThis.otherRequests=[];globalThis.messages=[];
-    renderHeader=()=>{};renderTasks=()=>'<form>Task draft</form>';renderSettings=()=>'<form>Settings draft</form>';
-    renderAgents=()=>'<form>Quick task draft</form>';budgetSettingsCard=()=>'<form>Budget draft</form>';toast=message=>messages.push(message);
+    renderHeader=()=>{};renderSettings=()=>'<form>Settings draft</form>';
+    renderAgents=()=>'<form>Agent settings draft</form>';budgetSettingsCard=()=>'<form>Budget draft</form>';toast=message=>messages.push(message);
     call=(method,path,body,options)=>{
       if(path.startsWith('/api/usage?'))return new Promise((resolve,reject)=>requests.push({method,path,resolve,reject,signal:options?.signal}));
       otherRequests.push({method,path});
       if(path==='/api/state')return Promise.resolve(fixtureState);
-      if(path==='/api/tasks')return Promise.resolve({tasks:[]});
       if(path==='/api/chatgpt'||path==='/api/claude-desktop')return Promise.resolve(null);
       throw new Error('Unexpected fixture route: '+path);
     };render();`);
@@ -278,10 +277,10 @@ test("range changes during a general refresh cannot be overwritten by its comple
 
 for (const method of ["nav", "hash"] as const) test(`${method} navigation cancels usage reads, never fetches off-page and returning loads once`, async () => {
   const app = ui([row({ costUsd: 1 })]);
-  const first = app.retry(); await app[method]("tasks");
+  const first = app.retry(); await app[method]("settings");
   assert.equal(app.run("requests[0].signal.aborted"), true); const before = app.writes();
   app.run("requests[0].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:9}})"); await first; await turn();
-  assert.deepEqual(app.writes(), before); assert.equal(app.run("usage.totals.costUsd"), 1); assert.equal(app.run("page"), "tasks");
+  assert.deepEqual(app.writes(), before); assert.equal(app.run("usage.totals.costUsd"), 1); assert.equal(app.run("page"), "settings");
   await app.run("loadUsage()"); await app.run("refresh()"); assert.equal(app.run("requests.length"), 1);
   const back = app[method]("usage"); await turn(); assert.equal(app.run("requests.length"), 2);
   app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await back; await turn();
@@ -290,7 +289,7 @@ for (const method of ["nav", "hash"] as const) test(`${method} navigation cancel
 
 test("returning to the same usage range before an old reply arrives preserves the new visit", async () => {
   const app = ui([row({ costUsd: 1 })]); const old = app.retry();
-  await app.nav("tasks"); const back = app.nav("usage"); await turn();
+  await app.nav("settings"); const back = app.nav("usage"); await turn();
   assert.equal(app.run("requests.length"), 2);
   app.run("requests[1].resolve({...fixtureUsage,totals:{...fixtureUsage.totals,costUsd:2}})"); await back;
   const before = app.writes(); app.run("requests[0].reject(new Error('old visit failure'))"); await old; await turn();
@@ -302,20 +301,20 @@ test("navigation during initial preset loading prevents old usage refresh from f
   app.run("fixtureState.providers=[];globalThis.originalCall=call;globalThis.delayState=true;call=(m,p,b,o)=>p==='/api/presets'?new Promise(resolve=>globalThis.finishPresets=()=>resolve([])):originalCall(m,p,b,o)");
   const refresh = app.run("refresh(true)"); await turn();
   // Subsequent navigation already has its own state/preset result.
-  app.run("presets=[{}]"); await app.nav("tasks");
+  app.run("presets=[{}]"); await app.nav("settings");
   const before = app.run("otherRequests.length"), writes = app.writes();
   app.run("finishPresets();requests[0].resolve(fixtureUsage)"); await refresh;
-  assert.equal(app.run("otherRequests.length"), before); assert.deepEqual(app.writes(), writes); assert.equal(app.run("page"), "tasks");
+  assert.equal(app.run("otherRequests.length"), before); assert.deepEqual(app.writes(), writes); assert.equal(app.run("page"), "settings");
 });
 
-test("late general refresh never replaces a newer task page or its focused draft", async () => {
+test("late general refresh never replaces a newer settings page or its focused draft", async () => {
   const app = ui([row({ costUsd: 1 })]);
   app.run("globalThis.originalCall=call;globalThis.delayState=true;call=(m,p,b,o)=>p==='/api/state'&&delayState?(delayState=false,new Promise(resolve=>globalThis.finishState=()=>resolve(fixtureState))):originalCall(m,p,b,o)");
-  const refresh = app.run("refresh(true)"); await app.nav("tasks");
-  const input = { value: "Fresh task draft", matches: () => true }; app.document.activeElement = input;
+  const refresh = app.run("refresh(true)"); await app.nav("settings");
+  const input = { value: "Fresh settings draft", matches: () => true }; app.document.activeElement = input;
   const before = app.writes(); app.run("finishState();requests[0].resolve(fixtureUsage)"); await refresh;
-  assert.deepEqual(app.writes(), before); assert.equal(app.document.activeElement, input); assert.equal(input.value, "Fresh task draft");
-  assert.equal(app.run("page"), "tasks");
+  assert.deepEqual(app.writes(), before); assert.equal(app.document.activeElement, input); assert.equal(input.value, "Fresh settings draft");
+  assert.equal(app.run("page"), "settings");
 });
 
 test("background and manual usage refresh preserve focused budget input and its DOM", async () => {

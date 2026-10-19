@@ -121,7 +121,7 @@ export function packageMacApp(options: MacPackageOptions, fixture?: MacPackageTe
     };
     copyTree(join(root,"core","src"),join(app,"core","src"),name=>/\.(ts|json)$/.test(name));
     copyTree(join(root,"web"),join(app,"web"),name=>/\.(js|css|html|json|svg|png|ico)$/.test(name));
-    for(const name of ["es.ts","es-mcp-stdio.ts"])put(join(app,"bin",name),regular(join(root,"bin",name),1024*1024));
+    for(const name of ["es.ts"])put(join(app,"bin",name),regular(join(root,"bin",name),1024*1024));
     put(join(app,"core","native","build","easyswitch-keychain"),helper,0o755);
     put(join(app,"package.json"),JSON.stringify({name:"easyswitch",version:pkg.version,type:"module",private:true}));
     put(join(app,"LICENSE"),regular(join(root,"LICENSE"),1024*1024));

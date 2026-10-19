@@ -95,7 +95,7 @@
     },
     "off": {
       "type": "boolean",
-      "description": "Disabled sources keep their settings but are excluded from requests, model lists, pools and dispatch. New subscriptions default to off."
+      "description": "Disabled sources keep their settings but are excluded from requests, model lists and pools. New subscriptions default to off."
     },
     "billing": {
       "enum": [

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
@@ -20,6 +20,8 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   const storage = new Map(options.stored === undefined ? [] : [["easyswitch.theme", options.stored]]);
   const location = { search: options.panel ? "?panel=1" : "", hash: options.hash ?? "" };
   const history: string[] = [];
+  const visits = [location.hash];
+  let visit = 0;
   const messages: string[] = [];
   let activeElement: Element | null = null;
   class Element {
@@ -36,6 +38,10 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     removed = false;
     values: Record<string, string> = {};
     children: Element[] = [];
+    listeners: Record<string, Handler[]> = {};
+    append(...children: Element[]) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
+    addEventListener(name: string, handler: Handler) { (this.listeners[name] ??= []).push(handler); }
+    async emit(name: string) { for (const handler of this.listeners[name] ?? []) await handler({ target: this }); }
     private html = "";
     constructor(tag: string, attrs: Record<string, string> = {}) {
       this.tag = tag; this.attrs = attrs; this.disabled = "disabled" in attrs;
@@ -91,9 +97,11 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   const document = { documentElement: root, body, get activeElement() { return activeElement; }, querySelectorAll,
     querySelector: (selector: string) => querySelectorAll(selector)[0] ?? null,
     addEventListener: (name: string, handler: Handler) => { (documentHandlers[name] ??= []).push(handler); },
+    createElement: (tag: string) => new Element(tag),
   };
   const fixtureState = {
-    version: "shell-fixture", native: [], sessions: [], sessionDetails: [], log: [], bindings: {}, prefs: {}, profiles: [], pools: [], rules: [], gatewaySessions: [],
+    version: "shell-fixture", native: [], sessions: [], sessionDetails: [], log: [], bindings: {}, prefs: {}, profiles: [], pools: [], gatewaySessions: [],
+    poolSuggestions: [{ id: "pool-suggestion-0123456789abcdef01234567", model: "fixture-model", members: [{ providerName: "Fixture source" }, { providerName: "Second fixture" }] }],
     providers: [{ id: "fixture", name: "Fixture source", icon: "letter:F", models: ["fixture-model"], usedBy: [], hasKey: true, baseUrl: "http://127.0.0.1:1/v1", supportedProtocols: ["chat"] }],
     accounts: [{ id: "codex-fixture", label: "Codex fixture", harness: "codex", enabled: true }, { id: "claude-fixture", label: "Claude fixture", harness: "claude", enabled: true }],
     accountSettings: { autoPick: false },
@@ -103,13 +111,15 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     "/api/state": fixtureState,
     "/api/agents": { agents: [fixtureAgent] },
     "/api/chatgpt": null, "/api/claude-desktop": null,
-    "/api/tasks": { tasks: [] },
     "/api/plan": { accounts: [{ id: "plan-fixture", label: "Plan fixture", kind: "codex", planUsage: true, needsSignIn: false, on: false }] },
     "/api/doctor": { notice: "Read-only fixture report", findings: [] },
     "/api/usage?range=7d": { range: "7d", totals: { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, costUsd: 0, unpriced: 0 }, byProvider: {}, byHarness: {}, days: [] },
   };
   const sandbox: Record<string, unknown> = { URLSearchParams, URL, AbortController, console, location, document,
-    history: { replaceState(_state: unknown, _title: string, hash: string) { location.hash = hash; history.push(hash); } },
+    history: {
+      replaceState(_state: unknown, _title: string, hash: string) { location.hash = hash; history.push(hash); visits[visit] = hash; },
+      pushState(_state: unknown, _title: string, hash: string) { location.hash = hash; history.push(hash); visits.splice(++visit, Infinity, hash); },
+    },
     window: { addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); } },
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: () => 0,
     FormData: class { form: Element; constructor(form: Element) { this.form = form; } get(name: string) { return this.form.values[name] ?? null; } },
@@ -135,12 +145,12 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   // Define a throwing browser getter inside the VM: its global proxy suppresses
   // exceptions from host-defined accessors and would otherwise test undefined.
   if (options.storage === "getter") run('Object.defineProperty(globalThis, "localStorage", { get() { throw new Error("Storage denied"); } })');
-  for (const file of ["theme.js", "controls.js", "doctor.js", "usage-display.js"]) run(web(file));
+  for (const file of ["theme.js", "controls.js", "doctor.js", "pool-suggestions.js", "usage-display.js"]) run(web(file));
   const app = web("app.js"), startup = app.lastIndexOf('fetch("icons/manifest.json")');
   assert.ok(startup > 0, "Load all app handlers and panel setup, excluding startup polling and icon fetch");
   run(app.slice(0, startup));
   context.fixtureMessages = messages;
-  run("toast = message => fixtureMessages.push(message)");
+  run("globalThis.actualToast=toast;toast = message => fixtureMessages.push(message)");
   const dispatch = async (handlers: Record<string, Handler[]>, name: string, target?: Element) => {
     let stopped = false;
     for (const handler of handlers[name] ?? []) { await handler({ target, preventDefault() {}, stopImmediatePropagation() { stopped = true; } }); if (stopped) break; }
@@ -153,7 +163,10 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     refresh: () => run("refresh(true)"),
     click: (selector: string) => dispatch(documentHandlers, "click", node(selector)),
     submit: (selector: string, values: Record<string, string>) => { const form = node(selector); form.values = values; return dispatch(documentHandlers, "submit", form); },
-    hash: async (hash: string) => { location.hash = hash; await dispatch(windowHandlers, "hashchange"); },
+    hash: async (hash: string) => { location.hash = hash; visits.splice(++visit, Infinity, hash); await dispatch(windowHandlers, "hashchange"); },
+    visits: () => visits.slice(), visit: () => visit,
+    traverse: async (offset: number) => { const next = visit + offset; if (next < 0 || next >= visits.length) return; visit = next; location.hash = visits[visit]!; await dispatch(windowHandlers, "hashchange"); },
+    toastAction: async (target: string) => { run(`actualToast("Fixture issue", {action:{label:"Open",target:${JSON.stringify(target)}},details:{}})`); await body.children.at(-1)!.children[0]!.emit("click"); },
   };
 }
 
@@ -161,7 +174,7 @@ test("shell uses the approved navigation hierarchy, stable brand and pre-paint t
   const primary = index.match(/class="nav-primary"[\s\S]*?<\/div>/)![0];
   const secondary = index.match(/class="nav-secondary"[\s\S]*?<\/div>/)![0];
   const pages = (html: string) => [...html.matchAll(/data-page="([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(pages(primary), ["overview", "agents", "providers", "tasks"]);
+  assert.deepEqual(pages(primary), ["overview", "agents", "providers"]);
   assert.deepEqual(pages(secondary), ["usage", "sessions", "doctor", "settings"]);
   assert.match(primary, /data-page="overview"[^>]*disabled[^>]*aria-disabled="true"/);
   assert.match(primary, /待接入/);
@@ -176,9 +189,10 @@ test("real sidebar navigation renders every existing page and preserves settings
   const app = shell();
   await app.refresh();
   assert.equal(app.run("page"), "agents");
-  assert.match(app.html(), /data-quick-task|data-launch-agent/);
+  assert.match(app.html(), /data-agent-launch="pi"/);
+  assert.doesNotMatch(app.html(), /data-quick-task|data-task-/);
   const pages = [
-    ["providers", "模型", /Fixture source/], ["tasks", "任务", /data-task-form/],
+    ["providers", "模型", /data-pool-suggestion=/],
     ["usage", "用量", /data-range="7d"/], ["sessions", "会话记录", /id="flow"/],
     ["doctor", "自检", /Read-only fixture report/], ["settings", "设置", /订阅账号/],
   ] as const;
@@ -200,13 +214,14 @@ test("real sidebar navigation renders every existing page and preserves settings
 });
 
 test("legacy and invalid deep links resolve safely, including later hash navigation", async () => {
-  for (const [hash, expected] of [["#accounts", "settings"], ["#overview", "agents"], ["#unknown", "agents"], ["", "agents"]]) {
+  for (const [hash, expected] of [["#accounts", "settings"], ["#tasks", "agents"], ["#overview", "agents"], ["#unknown", "agents"], ["", "agents"]]) {
     const app = shell({ hash }); await app.refresh(); assert.equal(app.run("page"), expected);
     if (expected === "settings") assert.match(app.html(), /data-add-account="codex"/);
+    if (hash) assert.equal(app.location.hash, `#${expected}`);
   }
   const app = shell(); await app.refresh();
   await app.hash("#accounts"); assert.equal(app.run("page"), "settings"); assert.match(app.html(), /订阅账号/);
-  await app.hash("#tasks"); assert.equal(app.run("page"), "tasks"); assert.match(app.html(), /data-task-form/);
+  await app.hash("#tasks"); assert.equal(app.run("page"), "agents"); assert.equal(app.location.hash, "#agents"); assert.doesNotMatch(app.html(), /data-task-form/);
   await app.hash("#unknown"); assert.equal(app.run("page"), "agents");
 });
 
@@ -429,4 +444,77 @@ test("probe action focus includes the selected model rather than only provider i
   await app.run("refresh()"); assert.equal(app.node('.probe-model').value, "model-a");
   assert.equal(app.document.activeElement, null, "Enter must not probe the changed model A");
   assert.equal(app.requests.some(request => request.method !== "GET"), false);
+});
+
+
+test("retired dispatch assets, controls, callbacks and API polling are absent", async () => {
+  for (const file of ["task-progress.js", "feedback.js", "parallel.js"]) {
+    assert.equal(existsSync(new URL(`../../web/${file}`, import.meta.url)), false);
+    assert.ok(!index.includes(`src="${file}"`));
+  }
+  for (const file of readdirSync(new URL("../../web/", import.meta.url)).filter(name => name.endsWith(".js"))) {
+    assert.doesNotMatch(web(file), /\/api\/(?:tasks|task-groups|rules|suggestions)(?:[\/"`?]|$)|data-(?:task-|quick-task|rule-|parallel-)|agentCalls|allowMcp/, file);
+  }
+  const app = shell({ hash: "#tasks" });
+  await app.refresh(); await app.run("refresh()");
+  assert.equal(app.run("page"), "agents");
+  assert.equal(app.location.hash, "#agents");
+  for (const name of ["renderTasks", "submitConsoleTask", "taskForm", "ruleForm", "loadParallel", "taskProgressCard", "taskFeedbackControls"]) {
+    assert.equal(app.run(`typeof ${name}`), "undefined", name);
+  }
+  assert.ok(app.requests.some(request => request.path === "/api/agents"));
+  assert.ok(app.requests.every(request => request.method === "GET" && !/\/(?:tasks|task-groups|rules|suggestions)(?:\/|$)/.test(request.path)));
+  assert.equal(app.run("typeof poolSuggestionsCard"), "function");
+  assert.equal(app.run("typeof gatewaySessionsCard"), "function");
+});
+
+test("navigation retains browser visits, ignores same-page clicks and restores Back/Forward without adding entries", async () => {
+  const app = shell({ hash: "#agents" }); await app.refresh();
+  await app.click('[data-page="providers"]'); await app.click('[data-page="settings"]');
+  assert.deepEqual(app.visits(), ["#agents", "#providers", "#settings"]);
+  const reads = app.requests.length;
+  await app.click('[data-page="settings"]');
+  assert.deepEqual(app.visits(), ["#agents", "#providers", "#settings"]);
+  assert.equal(app.requests.length, reads);
+  await app.traverse(-1); assert.equal(app.run("page"), "providers"); assert.match(app.html(), /Fixture source/);
+  await app.traverse(-1); assert.equal(app.run("page"), "agents"); assert.match(app.html(), /data-agent-launch="pi"/);
+  await app.traverse(1); assert.equal(app.run("page"), "providers");
+  await app.traverse(1); assert.equal(app.run("page"), "settings"); assert.match(app.html(), /订阅账号/);
+  assert.deepEqual(app.visits(), ["#agents", "#providers", "#settings"]);
+  assert.deepEqual(app.history, ["#providers", "#settings"], "traversal must not push or replace supported visits");
+  await app.traverse(-1); await app.click('[data-page="sessions"]');
+  assert.deepEqual(app.visits(), ["#agents", "#providers", "#sessions"], "a new visit discards the old forward branch");
+});
+
+test("error-toast navigation uses the same guarded history and removed routes normalize in place", async () => {
+  const app = shell({ hash: "#agents" }); await app.refresh();
+  await app.toastAction("settings"); await app.toastAction("settings"); await app.toastAction("current");
+  assert.deepEqual(app.visits(), ["#agents", "#settings"]);
+  await app.toastAction("tasks"); assert.equal(app.run("page"), "agents");
+  assert.deepEqual(app.visits(), ["#agents", "#settings", "#agents"]);
+  await app.hash("#tasks"); assert.equal(app.run("page"), "agents"); assert.equal(app.location.hash, "#agents");
+  assert.deepEqual(app.visits(), ["#agents", "#settings", "#agents", "#agents"], "normalization replaces the stale bookmark, not another visit");
+  await app.traverse(-1); await app.traverse(-1); assert.equal(app.run("page"), "settings");
+  await app.traverse(1); assert.equal(app.run("page"), "agents");
+  assert.ok(app.requests.every(request => request.method === "GET"));
+});
+
+test("narrow provider rows reserve identity width before wrapping badges and actions", async () => {
+  const app = shell({ hash: "#providers" }); await app.refresh();
+  assert.match(app.html(), /class="row clickable [^"]*" data-toggle="fixture"/);
+  const mobile = css.slice(css.indexOf("@media (max-width: 600px)"), css.indexOf("@media (prefers-reduced-motion: reduce) { *"));
+  assert.match(mobile, /\.row\[data-toggle\] > \.grow\s*\{[^}]*flex:\s*1 1 calc\(100% - 48px\)/);
+  assert.match(mobile, /\.row\[data-toggle\] \.title\s*\{[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(mobile, /\.row\[data-toggle\] \.sub\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(mobile, /\.detail\[data-provider\] \.hint\s*\{[^}]*overflow-wrap:\s*anywhere/);
+});
+
+
+test("Back/Forward closes desktop launch confirmation so the destination can keep refreshing", async () => {
+  const app = shell({ hash: "#agents" }); await app.refresh();
+  await app.click('[data-page="settings"]'); await app.traverse(-1);
+  app.run("claudeDesktopConfirm=true"); assert.equal(app.run("Boolean(busy())"), true);
+  await app.traverse(1);
+  assert.equal(app.run("page"), "settings"); assert.equal(app.run("claudeDesktopConfirm"), false);
+  assert.equal(app.run("Boolean(busy())"), false);
 });

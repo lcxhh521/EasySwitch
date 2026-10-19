@@ -1,18 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
-import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import type { LaunchInput, LaunchSpec } from "./agent-launch.ts";
 import { allModels } from "./launchers-extra.ts";
 
 // Protocol/configuration facts only; independently implemented from the official package docs.
 // https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-pi-ai
-// https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/mcp/mcp-client
 export const DSH_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-const PLUGIN = "@deepseek-ai/dsh-mcp-client";
 const q = JSON.stringify;
-export class DshMcpUnavailableError extends Error {}
-export const DSH_MCP_UNAVAILABLE_NOTICE = "未找到已安装的 dsh MCP 插件，本次任务继续执行但不能调用其他 agent；未安装插件或修改原配置。";
 
 /** Only declare levels supported by this model; an agent-wide list is not a capability claim. */
 function modelEfforts(i: LaunchInput, model: string): Record<string, string> | false | undefined {
@@ -55,55 +48,11 @@ export function dshPatch(i: LaunchInput): string {
     ...(title ? ["- id: session-title-llm", "  config:", "    targetWords: 5", "    targetCjkCharacters: 10",
       "    maxInputBytes: 4096", "    maxOutputTokens: 64", "    timeoutMs: 60000", "    provider: easyswitch", `    model: ${q(title)}`] : []),
     ...(compaction ? ["- id: compaction-basic", "  config:", "    summarizationProvider: easyswitch", `    summarizationModel: ${q(compaction)}`] : []),
-    ...(i.mcp ? ["- insert:", "    - id: mcp-easyswitch", `      name: ${q(PLUGIN)}`, "      config:",
-      "        serverName: easyswitch", "        transport: streamable-http", `        url: ${q(i.mcp.url)}`,
-      "        headers:", ...Object.entries(i.mcp.headers).map(([k, v]) => `          ${q(k)}: ${q(v)}`)] : []),
     "",
   ].join("\n");
 }
 
 export function dshLaunch(i: LaunchInput): LaunchSpec {
   return { command: i.bin, args: ["headless", "--patch", join(i.sessionDir, "patch.yml"), i.task ?? ""],
-    env: { DSH_HOME: join(i.sessionDir, "dsh-home") }, files: { "patch.yml": dshPatch(i) },
-    ...(i.mcp ? { dshMcpPlugin: { bin: i.bin, fallbackPatch: dshPatch({ ...i, mcp: undefined }) } } : {}) };
-}
-
-/** Read package metadata only. Never runs dsh, installs a plugin, or writes its existing profile. */
-export function findDshMcpPlugin(bin?: string): string | undefined {
-  const given = process.env.EASYSWITCH_DSH_MCP_PLUGIN;
-  // An explicit invalid override must not silently fall back to a different installation.
-  if (given !== undefined) return isAbsolute(given) && isDshMcpPlugin(given) ? realpathSync(given) : undefined;
-  const anchors = bin ? [resolve(bin)] : [];
-  if (bin) try { anchors.unshift(realpathSync(bin)); } catch { /* An absent executable cannot supply a package. */ }
-  const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
-  const candidates = [join(home, "profiles", "node_modules", PLUGIN)];
-  for (const anchor of anchors) {
-    try { candidates.unshift(dirname(createRequire(anchor).resolve(`${PLUGIN}/package.json`))); } catch { /* Try visible layouts. */ }
-    for (let at = dirname(anchor); at !== dirname(at); at = dirname(at)) candidates.push(join(at, "node_modules", PLUGIN));
-  }
-  return candidates.find(isDshMcpPlugin);
-}
-
-function isDshMcpPlugin(path: string): boolean {
-  try { return JSON.parse(readFileSync(join(path, "package.json"), "utf8")).name === PLUGIN; } catch { return false; }
-}
-
-export function prepareDshMcpPlugin(bin: string, sessionDir: string, packageDir?: string): void {
-  const source = packageDir ?? findDshMcpPlugin(bin);
-  if (!source && packageDir === undefined && process.env.EASYSWITCH_DSH_MCP_PLUGIN === undefined) {
-    throw new DshMcpUnavailableError(DSH_MCP_UNAVAILABLE_NOTICE);
-  }
-  if (!source || !isAbsolute(source) || !isDshMcpPlugin(source)) {
-    throw new Error("找不到已安装的 dsh MCP 插件；请先关闭此会话的 agent 互调，或准备官方 @deepseek-ai/dsh-mcp-client。EasySwitch 不会运行 plugin add 或修改 ~/.dsh");
-  }
-  const root = realpathSync(sessionDir);
-  const parent = join(root, "dsh-home", "profiles", "node_modules", "@deepseek-ai");
-  // Fail before mkdir/write if an existing ancestor is a link into the user's own profile.
-  let current = root;
-  for (const name of ["dsh-home", "profiles", "node_modules", "@deepseek-ai"]) {
-    current = join(current, name);
-    if (existsSync(current) && realpathSync(current) !== current) throw new Error("拒绝通过符号链接写入 dsh 的私有目录");
-    if (!existsSync(current)) mkdirSync(current);
-  }
-  symlinkSync(realpathSync(source), join(parent, "dsh-mcp-client"), "dir");
+    env: { DSH_HOME: join(i.sessionDir, "dsh-home") }, files: { "patch.yml": dshPatch(i) } };
 }

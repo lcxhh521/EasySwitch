@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DEFAULT_LAUNCH_TTL, DEFAULT_MANUAL_TTL, GatewayIssuanceLimitError, GatewaySessionStoreError, GatewayTokenAuthority } from "../src/gateway-auth.ts";
-import { LAUNCHERS, runHeadless } from "../src/agent-launch.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "es-auth-persistence-"));
@@ -129,17 +128,6 @@ test("in-place edits of an already-read journal are not hidden by the incrementa
   const old = readFileSync(stateFile, "utf8"); writeFileSync(stateFile, "!" + old.slice(1));
   assert.equal(authority.authenticate(headers(issued.token)), undefined);
   assert.throws(() => authority.issue("claude"), GatewaySessionStoreError);
-});
-
-test("headless private files are removed even when durable revocation fails", async () => {
-  const authority = new GatewayTokenAuthority(); let dir = "";
-  LAUNCHERS["fixture-auth-storage"] = { verified: false, headless: i => { dir = i.sessionDir; return { command: "/never-run", args: [], env: {} }; } };
-  try {
-    await assert.rejects(runHeadless("fixture-auth-storage", { bin: "/never-run", port: 1, model: "p/m" }, {
-      signal: AbortSignal.abort(), gatewayAuth: { issue: (agent, options) => authority.issue(agent, options), revoke: () => { throw new GatewaySessionStoreError(); } },
-    }), GatewaySessionStoreError);
-    assert.ok(dir); assert.ok(!existsSync(dir));
-  } finally { delete LAUNCHERS["fixture-auth-storage"]; }
 });
 
 test("storage write failure never returns an unpersisted token or falls back to memory issuance", t => {

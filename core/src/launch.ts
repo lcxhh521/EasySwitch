@@ -31,23 +31,12 @@ export async function findCodex(): Promise<string | undefined> {
  * The Codex argv for one augmented session. Everything rides on `-c`
  * overrides for this process only; ~/.codex/config.toml is never written.
  */
-export interface McpAttach { url: string; headers: Record<string, string> }
-
-/** TOML for a streamable-HTTP MCP server entry, as one `-c` value. */
-function codexMcpValue(mcp: McpAttach): string {
-  const headers = Object.entries(mcp.headers).map(([k, v]) => `${JSON.stringify(k)}=${JSON.stringify(v)}`).join(",");
-  // Approval for this one server only: a headless Codex would otherwise refuse every MCP call ("approval policy is never").
-  return `{url=${JSON.stringify(mcp.url)},http_headers={${headers}},default_tools_approval_mode="approve"}`;
-}
-
-export function codexArgs(port: number, exposedModel: string, catalogPath?: string, mcp?: McpAttach): string[] {
+export function codexArgs(port: number, exposedModel: string, catalogPath?: string): string[] {
   return [
     "-c", 'model_provider="easyswitch"',
     "-c", `${SESSION_MARKER}={name="EasySwitch",base_url="http://127.0.0.1:${port}/v1",wire_api="responses",env_key="EASYSWITCH_GATEWAY_TOKEN"}`,
     // Codex's own /model menu then lists every EasySwitch model (a JSON string is a valid TOML string).
     ...(catalogPath ? ["-c", `model_catalog_json=${JSON.stringify(catalogPath)}`] : []),
-    // The other agents, reachable as MCP tools — for this launch only.
-    ...(mcp ? ["-c", `mcp_servers.easyswitch=${codexMcpValue(mcp)}`] : []),
     "-m", exposedModel,
   ];
 }
@@ -131,24 +120,23 @@ export function claudeCapabilities(models: ReadonlyArray<{ providerId: string; m
  * so an `env` block a provider switcher left there cannot redirect this session,
  * and nothing is written to disk.
  */
-export function claudeArgs(env: Record<string, string>, mcp?: McpAttach): string[] {
+export function claudeArgs(env: Record<string, string>): string[] {
   return [
     "--settings", JSON.stringify({ env }),
-    ...(mcp ? ["--mcp-config", JSON.stringify({ mcpServers: { easyswitch: { type: "http", url: mcp.url, headers: mcp.headers } } })] : []),
   ];
 }
 
-export function claudeCommandLine(claudePath: string, env: Record<string, string>, mcp?: McpAttach): string {
+export function claudeCommandLine(claudePath: string, env: Record<string, string>): string {
   const assignments = Object.entries(env).map(([k, v]) => `${k}=${shellQuote(v)}`);
-  return ["env", ...assignments, shellQuote(claudePath), ...claudeArgs(env, mcp).map(shellQuote)].join(" ");
+  return ["env", ...assignments, shellQuote(claudePath), ...claudeArgs(env).map(shellQuote)].join(" ");
 }
 
 function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
-export function codexCommandLine(codexPath: string, port: number, exposedModel: string, catalogPath?: string, mcp?: McpAttach): string {
-  return [codexPath, ...codexArgs(port, exposedModel, catalogPath, mcp)].map(shellQuote).join(" ");
+export function codexCommandLine(codexPath: string, port: number, exposedModel: string, catalogPath?: string): string {
+  return [codexPath, ...codexArgs(port, exposedModel, catalogPath)].map(shellQuote).join(" ");
 }
 
 function appleScriptString(text: string): string {

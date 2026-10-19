@@ -147,13 +147,14 @@ test("service-account Vertex form is distinct from manual Gemini modes and suppr
 });
 
 
-test("complete page rendering keeps remote quick-task UI, off/none controls and distinct budget forms", () => {
+test("complete page rendering keeps client launch, off/none controls and distinct budget forms", () => {
   const app = ui();
   app.run(`state.providers=[{id:'p',name:'Fixture',icon:'letter:F',baseUrl:'http://127.0.0.1:1/v1',models:['m'],usedBy:[],hasKey:true,budget:{monthlyUsd:5,stop:true},budgetStatus:{spent:1,limit:5,ratio:0.2,level:'ok',stop:true},supportedProtocols:['chat']}];
     state.bindings={pi:{providerId:'p',model:'m'}}; state.modelEfforts={'p/m':['none','high']}; state.prefs={pi:{effort:'off'}};
     agentList=[{id:'pi',name:'Pi',icon:'letter:P',note:'Fixture',vendor:'Fixture',support:'planned',installed:true,where:'/fixture/pi',can:{interactive:true,headless:true,efforts:['off','high'],tiers:[]}}];
     page='agents';renderActual();`);
-  assert.match(app.html(), /data-quick-task/);
+  assert.match(app.html(), /data-agent-launch="pi"/);
+  assert.doesNotMatch(app.html(), /data-quick-task/);
   assert.match(app.html(), /value="off" selected>关闭思考/);
   assert.match(app.html(), /value="high" >开启思考/);
   assert.match(app.html(), /网关会话令牌/);

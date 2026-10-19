@@ -75,7 +75,6 @@ const protectedRoutes = [
   { path: "/v1beta/models/p%2Fm:countTokens", method: "POST", body: { contents: [] } },
   { path: "/v1/models", method: "GET", body: undefined },
   { path: "/v1beta/models", method: "GET", body: undefined },
-  { path: "/mcp", method: "POST", body: { jsonrpc: "2.0", id: 1, method: "ping" } },
 ];
 
 test("raw gateway HTTP rejects missing, prefix-forged and revoked tokens on every protected protocol", async t => {
@@ -105,21 +104,6 @@ test("issued credentials authenticate the four protocol wire forms and are never
   assert.ok(f.seen.every(req => req.headers.authorization === "Bearer fake-provider-key"));
   assert.equal((await raw(f.base, "/v1/models", "GET", headers[0])).status, 200);
   assert.equal((await raw(f.base, `/v1beta/models?key=${issued.token}`)).status, 200);
-});
-
-test("MCP requires its granted scope and ignores attempts to reset the server-issued nesting depth", async t => {
-  const f = await fixture(t);
-  const ordinary = f.auth.issue("claude");
-  const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
-  assert.equal((await raw(f.base, "/mcp", "POST", { authorization: `Bearer ${ordinary.token}` }, ping)).status, 401);
-  const nested = f.auth.issue("claude", { allowMcp: true, depth: 2 });
-  const headers = { authorization: `Bearer ${nested.token}`, "x-easyswitch-depth": "0" };
-  assert.equal((await raw(f.base, "/mcp", "POST", headers, ping)).status, 200);
-  const response = await raw(f.base, "/mcp", "POST", headers, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "run_agent", arguments: { agent: "claude", task: "must never start", depth: 0 } } });
-  assert.equal(response.status, 200);
-  assert.equal(response.body.result.isError, true);
-  assert.match(response.body.result.content[0].text, /nest at most 2/);
-  assert.equal(f.calls(), 0);
 });
 
 test("native Claude preserves vendor credentials only for explicitly allowed sessions", async t => {
@@ -217,7 +201,7 @@ test("manual guides mint scoped revocable tokens only on an explicit console POS
 
 test("token issuance and terminal-open failures clean only their own launch directory and token", async t => {
   const f = await fixture(t, true);
-  f.store.setSettings({ claudeNative: false, agentCalls: false });
+  f.store.setSettings({ claudeNative: false });
   const unrelated = f.auth.issue("qwen-code");
   const issue = t.mock.method(f.auth, "issue", () => { throw new Error("mock capacity reached"); });
   const headers = { "x-easyswitch": "1" };

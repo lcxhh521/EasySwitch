@@ -16,9 +16,16 @@ const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样�
 const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_agent_v1": "子 agent 工具" };
 
 let state = null;
-const PAGE_META = {agents:["Agent","为每个工具选择合适的模型"],providers:["模型","管理来源、订阅与模型池"],tasks:["任务","派活、查看进度和管理规则"],usage:["用量","查看已记录用量与估算费用"],sessions:["会话记录","查看连接与实际模型线路"],doctor:["自检","检查运行状态，找到下一步"],settings:["设置","外观与本机订阅账号"]};
+const PAGE_META = {agents:["Agent","为每个工具选择合适的模型"],providers:["模型","管理来源、订阅与模型池"],usage:["用量","查看已记录用量与估算费用"],sessions:["会话记录","查看连接与实际模型线路"],doctor:["自检","检查运行状态，找到下一步"],settings:["设置","外观与本机订阅账号"]};
 function pageOf(value) { return value === "accounts" ? "settings" : Object.hasOwn(PAGE_META,value) ? value : "agents"; }
-let page = PANEL ? "agents" : pageOf(location.hash.slice(1));
+// Bookmarks for removed or renamed pages always resolve to a supported route.
+function pageFromHash() {
+  const requested = location.hash.slice(1);
+  const next = pageOf(requested);
+  if (requested && requested !== next) history.replaceState(null, "", `#${next}`);
+  return next;
+}
+let page = PANEL ? "agents" : pageFromHash();
 let usageRange = "7d";
 let chartMetric = "tokens"; // "tokens" | "cost"
 let usage = null;
@@ -38,14 +45,6 @@ let claudeDesktopError = "";
 const openDetails = new Set();
 const keepOpen = id => (openDetails.has(id) ? "open" : "");
 
-const taskCancelPending = new Set();
-let taskList = null; // /api/tasks
-const taskOpenIds = new Set(); // task ids whose output is expanded
-let taskNote = "";
-let quickTaskDraft = "";
-let quickTaskNote = "";
-let taskDraftVersion = 0; // User edits must keep their live input and focus.
-let taskSubmitPending = false; // One bounded submission wait, including rerenders.
 let pageNavigationVersion = 0; // A response must not override newer user navigation.
 let agentList = null; // every agent we know of, from /api/agents
 let agentCoverage = null; // { coverage, features } from the same call: what is done for which agent
@@ -182,7 +181,7 @@ function toast(text, problem) {
   el.textContent = text;
   if (problem) {
     const action = document.createElement("button"); action.className="btn secondary";action.textContent=problem.action.label;
-    action.addEventListener("click", async()=>{if(problem.action.target!=="current"){pageNavigationVersion++;page=problem.action.target;history.replaceState(null,"",`#${page}`);await refresh(true);}el.remove();});el.append(action);
+    action.addEventListener("click", async()=>{if(problem.action.target!=="current")await navigatePage(problem.action.target);el.remove();});el.append(action);
     const detail=document.createElement("details"),summary=document.createElement("summary"),code=document.createElement("pre");summary.textContent="详情";code.textContent=JSON.stringify(problem.details,null,2);detail.append(summary,code);el.append(detail);
     const close=document.createElement("button");close.textContent="关闭";close.addEventListener("click",()=>el.remove());el.append(close);
   }
@@ -506,218 +505,9 @@ function levelLabel(level, levels) {
   return `${EFFORT_LABEL[level] ?? level}（${esc(level)}）`;
 }
 const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
-const taskForm = { agent: "", effort: "", task: "", model: "", cwd: "" };
-let ruleForm = null; // { name, words, minChars, maxChars, cwdPrefix, agent, model, effort, error } while the rule form is open
-let ruleTest = { task: "", result: null };
-const AUTO = "auto";
-const TASK_STATUS = { running: ["运行中", "ok"], done: ["完成", "ok"], failed: ["失败", "warn"], stopped: ["已取消", ""], timeout: ["超时", "warn"] };
-
-function renderTasks() {
-  const agents = (agentList ?? []).filter(a => a.installed && a.can?.headless && (!a.where?.endsWith(".app") || ["codex", "claude"].includes(a.id)));
-  const models = selectableModelNames();
-  const allTasks = taskList?.tasks ?? [];
-  const list = typeof taskProgressCard === "function" ? allTasks.filter(t=>t.status!=="running"&&!t.cleanupPending&&!t.cleanupFailed) : allTasks;
-  const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
-  const keep = (k, d = "") => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
-  const rules = state.rules ?? [];
-  // "自动" is the default once the user has written rules; otherwise the first agent that can work.
-  const wanted = taskForm.agent || keep("es.taskAgent") || (rules.length ? AUTO : "");
-  const auto = wanted === AUTO && agents.length > 0;
-  const chosen = auto ? null : (agents.find(a => a.id === wanted) ?? agents[0]);
-  const levels = chosen?.can?.efforts ?? [];
-  const effort = levels.includes(taskForm.effort) ? taskForm.effort : "";
-  const form = agents.length ? `
-    <form class="form card" data-task-form aria-busy="${taskSubmitPending}" style="padding:16px 18px">
-      <textarea name="task" rows="3" required style="font-size:15px" placeholder="想让谁做什么？比如：读一下 README，告诉我这个项目是做什么的">${esc(taskForm.task)}</textarea>
-      <div class="controls" style="margin-top:10px;flex-wrap:wrap">
-        <button type="button" class="btn ${auto ? "" : "secondary"}" data-task-agent="${AUTO}" title="按下面的「派活规则」自动决定交给谁、用哪个模型、想多深">自动</button>
-        ${agents.map(a => `<button type="button" class="btn ${chosen && a.id === chosen.id ? "" : "secondary"}" data-task-agent="${esc(a.id)}">${esc(a.name)}</button>`).join("")}
-        <span class="grow"></span>
-        <button class="btn" type="submit" ${taskSubmitPending ? "disabled" : ""}>${taskSubmitPending ? "正在派发…" : "派出去"}</button>
-      </div>
-      ${auto ? `<p class="hint" style="margin:8px 0 0">${rules.length ? `按下面 ${rules.length} 条派活规则决定交给谁；没有规则接的任务交给第一个能接活的 agent。` : "还没有派活规则，会交给第一个能接活的 agent；在下面写几条规则就能按任务类型分工。"}</p>` : ""}
-      ${!auto && levels.length ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><span class="hint">想得多深</span>
-        ${["", ...levels].map(l => `<button type="button" class="btn ${l === effort ? "" : "secondary"}" data-task-effort="${esc(l)}" title="${l ? `${esc(chosen?.name ?? "")} 的「${esc(l)}」档` : "不指定，用它自己的默认"}">${EFFORT_LABEL[l] ?? l}</button>`).join("")}</div>` : ""}
-      <details data-keep="task-more" ${keepOpen("task-more")} style="margin-top:10px"><summary class="hint" style="cursor:pointer">更多选项（模型、工作目录）</summary>
-        <div class="field"><label>用哪个模型</label><select name="model"><option value="">${auto ? "按规则（没写就用它自己的）" : state.bindings?.[chosen.id] ? "它自己的模型" : "自动选一个"}</option>${savedModelOption(taskForm.model, models)}${models.map(m => `<option value="${esc(m)}" ${m === taskForm.model ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
-        <div class="field"><label>在哪个文件夹里干活（绝对路径；不填是一个空的临时文件夹）</label><input type="text" name="cwd" value="${esc(taskForm.cwd)}" placeholder="/Users/你/项目"></div>
-      </details>
-      ${taskNote ? `<p class="hint" style="color:var(--bad)">${esc(taskNote)}</p>` : ""}
-    </form>` : `<div class="card empty">${agentList ? "还没有可以接活的 agent：到 Agent 页确认已安装" : "正在检测…"}</div>`;
-  const row = t => {
-    const [label, tone] = TASK_STATUS[t.status] ?? [t.status, ""];
-    const open = taskOpenIds.has(t.id);
-    return `
-    <div class="row" style="cursor:pointer" data-task-toggle="${esc(t.id)}">
-      <div class="grow"><div class="title">${esc(t.task.length > 80 ? t.task.slice(0, 80) + "…" : t.task)}</div>
-        <div class="sub">${t.from === "console" ? "你" : esc(nameOf(t.from))} → ${esc(nameOf(t.agent))} · ${esc(t.model)} · ${new Date(t.at).toLocaleTimeString()}${t.ms ? ` · ${(t.ms / 1000).toFixed(1)} 秒` : ""}</div>
-        ${t.fallbackChanges?.length ? `<div class="hint">曾换用备用：${esc(t.fallbackChanges.at(-1).fromModel)} → ${esc(t.fallbackChanges.at(-1).toModel)}</div>` : ""}${t.why ? `<div class="sub" title="${esc(t.why)}">${esc(t.why)}</div>` : ""}${t.usage ? `<div class="hint">${t.usage.unknownCost ? "费用未知或尚未完整归集" : `任务及子任务估算费用：${esc(money(t.usage.costUsd ?? 0))}`}</div>` : ""}</div>
-      <span class="chip ${tone}">${label}</span>
-      ${t.status === "running" ? `<button class="btn secondary" data-task-stop="${esc(t.id)}">停止</button>` : ""}
-    </div>
-    ${typeof taskFeedbackControls === "function" ? taskFeedbackControls(t) : ""}
-    ${open ? `<div style="padding:0 18px 14px">${t.status === "running" ? `<p class="hint">正在做，做完会出现在这里。</p>` : `<pre class="mono" style="white-space:pre-wrap;max-height:360px;overflow:auto;background:var(--pill);padding:10px;border-radius:9px">${esc(t.output || "(没有输出)")}</pre>`}</div>` : ""}`;
-  };
-  return `
-    <div class="section-head"><h2>交给 Agent 一个任务</h2><span class="aside">它在后台做，你和其他 agent 都能看到进度</span></div>
-    ${typeof taskAccountingNotice === "function" ? taskAccountingNotice() : ""}
-    ${form}
-    ${typeof parallelCard === "function" ? parallelCard() : ""}
-    ${typeof taskProgressCard === "function" ? taskProgressCard(taskList) : ""}
-    <div class="section-head"><h2>任务记录</h2><span class="aside">${list.length ? `${list.length} 条${taskList.running ? `，${taskList.running} 条在运行` : ""}` : ""} ${list.some(t => t.status !== "running") ? `<button class="btn secondary" data-task-clear>清空已完成</button>` : ""}</span></div>
-    <div class="card">${list.map(row).join("") || `<div class="empty">还没有任务。你在这里派的、以及 agent 之间互相派的，都会记在这里。</div>`}</div>
-    <p class="hint">普通后台任务使用各程序自己的权限设置，不能把它当作已验证的只读沙箱；受限并行功能的开放范围另见上方说明。</p>
-    ${typeof ruleSuggestionsCard === "function" ? ruleSuggestionsCard() : ""}
-    ${rulesCard(agents, models)}`;
-}
-
-/** Dispatch rules: which agent, model and level a task goes to, tried in order. */
-function rulesCard(agents, models) {
-  const rules = state.rules ?? [];
-  const nameOf = id => (agentList ?? []).find(a => a.id === id)?.name ?? id;
-  const row = (r, i) => `
-    <div class="row">
-      <div class="grow"><div class="title">${esc(r.name)} ${r.enabled ? "" : `<span class="chip">已停用</span>`}</div>
-        <div class="sub">${esc(r.summary)} → ${esc(nameOf(r.then.agent))}${r.then.model ? ` · ${esc(r.then.model)}` : ""}${r.then.effort ? ` · ${esc(EFFORT_LABEL[r.then.effort] ?? r.then.effort)}档` : ""}</div></div>
-      <button class="btn secondary" data-rule-edit="${esc(r.id)}">编辑</button>
-      <button class="btn secondary" data-rule-move="up" data-rule="${esc(r.id)}" ${i === 0 ? "disabled" : ""} title="提前：前面的规则先匹配">↑</button>
-      <button class="btn secondary" data-rule-move="down" data-rule="${esc(r.id)}" ${i === rules.length - 1 ? "disabled" : ""} title="靠后">↓</button>
-      <button class="btn secondary" data-rule-toggle="${esc(r.id)}">${r.enabled ? "停用" : "启用"}</button>
-      <button class="btn secondary" data-rule-del="${esc(r.id)}">删除</button>
-    </div>`;
-  const f = ruleForm;
-  const form = f ? `
-    <form class="form" data-rule-form>
-      <div class="field"><label>规则名</label><input type="text" name="name" required value="${esc(f.name)}" placeholder="比如：写测试交给 Claude Code"></div>
-      <div class="field"><label>任务里提到这些词之一（用逗号隔开，不填就不限）</label><input type="text" name="words" value="${esc(f.words)}" placeholder="测试, pytest, 单测"></div>
-      <div class="controls">
-        <label class="hint">任务至少</label><input type="text" name="minChars" size="4" value="${esc(f.minChars)}" placeholder="字数"> <span class="hint">字，至多</span><input type="text" name="maxChars" size="4" value="${esc(f.maxChars)}" placeholder="字数"> <span class="hint">字</span>
-      </div>
-      <div class="field"><label>工作文件夹以此开头（绝对路径，不填就不限）</label><input type="text" name="cwdPrefix" value="${esc(f.cwdPrefix)}" placeholder="/Users/你/项目"></div>
-      <div class="controls">
-        <span class="hint">就交给</span>
-        <select name="agent">${agents.map(a => `<option value="${esc(a.id)}" ${a.id === f.agent ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
-        <span class="hint">用</span>
-        <select name="model"><option value="">它自己的模型</option>${savedModelOption(f.model, models)}${models.map(m => `<option value="${esc(m)}" ${m === f.model ? "selected" : ""}>${esc(m)}${m.startsWith("pool/") ? "（模型池）" : ""}</option>`).join("")}</select>
-        <span class="hint">想得</span>
-        <select name="effort"><option value="">默认</option>${["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(l => `<option value="${l}" ${f.effort === l ? "selected" : ""}>${EFFORT_LABEL[l]}（${l}）</option>`).join("")}</select>
-      </div>
-      <div class="controls"><button class="btn" type="submit">保存规则</button><button class="btn secondary" type="button" data-rule-cancel>取消</button></div>
-      ${f.error ? `<p class="hint" style="color:var(--bad)">${esc(f.error)}</p>` : ""}
-    </form>` : "";
-  return `
-    <div class="section-head"><h2>派活规则</h2><span class="aside">从上往下找，第一条符合的决定交给谁；「自动」任务和 agent 之间的 auto 调用都用它</span></div>
-    <div class="card">
-      ${rules.map(row).join("") || `<div class="empty">还没有规则。比如：提到「测试」的交给 Claude Code 想深一点，短任务交给便宜的模型。</div>`}
-      ${form}
-      ${f || !agents.length ? "" : `<button class="add-row" data-rule-new>＋ 新建规则</button>`}
-    </div>
-    <div class="card" style="margin-top:12px"><div class="row" style="gap:10px;flex-wrap:wrap">
-      <input type="text" data-rule-test-input style="flex:1;min-width:220px" placeholder="试一下：写一个任务，看会交给谁" value="${esc(ruleTest.task)}">
-      <button class="btn secondary" data-rule-test>看看会交给谁</button>
-    </div>${ruleTest.result ? `<div style="padding:0 18px 14px"><p class="hint">${ruleTest.result.error ? esc(ruleTest.result.error) : `${esc(ruleTest.result.why)}${ruleTest.result.model ? ` · 模型 ${esc(ruleTest.result.model)}` : ""}${ruleTest.result.effort ? ` · ${esc(ruleTest.result.effort)} 档` : ""}`}</p></div>` : ""}</div>`;
-}
-
 let profileNaming = false;
 
 /** Profiles: every agent's settings saved under a name, to come back to in one click. */
-/** The first thing on the Agent page: hand something to an agent in one line. "Auto" follows the rules written on the Tasks page. */
-function quickTask() {
-  return `<form class="card" data-quick-task aria-busy="${taskSubmitPending}" style="display:flex;gap:8px;align-items:center;padding:10px 14px">
-    <input type="text" name="task" value="${esc(quickTaskDraft)}" placeholder="交给 agent 做点什么，比如：给这个项目的登录函数补上单元测试" required style="flex:1;min-width:0">
-    <button class="btn" type="submit" ${taskSubmitPending ? "disabled" : ""}>${taskSubmitPending ? "正在派发…" : "派出去（自动选）"}</button>
-  </form>
-  ${quickTaskNote ? `<p class="hint" role="status" style="color:var(--bad)">${esc(quickTaskNote)}</p>` : ""}
-  <div class="hint" style="margin:4px 6px 12px">按「任务」页里写的规则分给合适的 agent；没有规则就交给第一个能接活的。结果在「任务」页看。</div>`;
-}
-
-/** Lock both submission entry points without replacing focused inputs. */
-function updateTaskSubmitControls() {
-  for (const form of document.querySelectorAll("form[data-task-form], form[data-quick-task]")) {
-    form.setAttribute("aria-busy", String(taskSubmitPending));
-    const button = form.querySelector('button[type="submit"]');
-    if (!button) continue;
-    button.disabled = taskSubmitPending;
-    button.textContent = taskSubmitPending ? "正在派发…" : form.matches("[data-quick-task]") ? "派出去（自动选）" : "派出去";
-  }
-}
-
-/** A local wait deadline does not cancel server work or authorize a POST retry. */
-function taskSubmissionDeadline(request, timeoutMs) {
-  let timer;
-  const expired = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(Object.assign(new Error("Task submission wait expired"), { code: "request_timeout" })), timeoutMs);
-  });
-  return Promise.race([request, expired]).finally(() => clearTimeout(timer));
-}
-
-/** Only an explicit user submission sends a POST; an uncertain result is never retried. */
-async function submitConsoleTask(form, body, quick = false) {
-  if (taskSubmitPending || !String(body.task ?? "").trim()) return;
-  if (quick) quickTaskDraft = String(new FormData(form).get("task") ?? "");
-  else syncTaskForm(form);
-  const draft = quick ? quickTaskDraft : JSON.stringify(taskForm);
-  const navigation = pageNavigationVersion;
-  const draftVersion = taskDraftVersion;
-  let preserveEditing = false;
-  taskSubmitPending = true;
-  if (quick) quickTaskNote = ""; else taskNote = "";
-  updateTaskSubmitControls();
-  let createdId = "";
-  try {
-    try {
-      const result = await taskSubmissionDeadline(call("POST", "/api/tasks", body), 30_000);
-      const id = result?.task?.id;
-      if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("Task submission response was not confirmed");
-      createdId = id;
-      taskOpenIds.add(id);
-      const unchanged = quick ? quickTaskDraft === draft : JSON.stringify(taskForm) === draft;
-      preserveEditing = taskDraftVersion !== draftVersion || !unchanged;
-      if (unchanged && !preserveEditing) {
-        if (quick) quickTaskDraft = ""; else taskForm.task = "";
-        // Also clear the current field before waiting for the read-back refresh.
-        const current = document.querySelector(quick ? "form[data-quick-task]" : "form[data-task-form]");
-        if (current) current.elements.task.value = "";
-      }
-      toast("已派出去，结果在「任务」页");
-    } catch (error) {
-      const message = `未能确认提交结果：${userErrorMessage(error)}。请先查看任务记录，确认没有创建后再重试。`;
-      if (quick) quickTaskNote = message; else taskNote = message;
-      preserveEditing = taskDraftVersion !== draftVersion || (quick ? quickTaskDraft !== draft : JSON.stringify(taskForm) !== draft);
-      if (navigation !== pageNavigationVersion || preserveEditing) toast(message);
-    }
-    if (navigation !== pageNavigationVersion) return;
-    if (createdId && quick && !preserveEditing) {
-      page = "tasks";
-      if (!PANEL) history.replaceState(null, "", "#tasks");
-      closePopover();
-    }
-    if (!preserveEditing) render();
-    try {
-      // Read only the task list here. A late general refresh could otherwise
-      // replace a newer page after the submission's wait deadline has expired.
-      const latest = await taskSubmissionDeadline(call("GET", "/api/tasks"), 10_000);
-      if (!Array.isArray(latest?.tasks)) throw new Error("Task list response was not confirmed");
-      if (navigation !== pageNavigationVersion) return;
-      taskList = latest;
-      preserveEditing ||= taskDraftVersion !== draftVersion;
-      if (preserveEditing) return;
-      render();
-      if (createdId && page === "tasks") {
-        // Running tasks live in the progress tree; completed tasks use the output row.
-        const target = [...document.querySelectorAll("[data-task-progress-id], [data-task-toggle]")]
-          .find(node => (node.dataset.taskProgressId ?? node.dataset.taskToggle) === createdId);
-        if (target) { target.setAttribute("tabindex", "-1"); target.focus({ preventScroll: true }); target.scrollIntoView({ block: "nearest" }); }
-      }
-    } catch {
-      if (createdId && navigation === pageNavigationVersion) toast("任务已创建，但暂时没读到最新进度；请稍后刷新任务记录。");
-    }
-  } finally {
-    taskSubmitPending = false;
-    updateTaskSubmitControls();
-  }
-}
-
 function profileBar() {
   const list = state.profiles ?? [];
   return `
@@ -772,7 +562,6 @@ function renderAgents() {
     ...others.missing.map(genericAgentRow),
   ];
   return `
-    ${quickTask()}
     ${profileBar()}
     <div class="section-head"><h2>已安装</h2><span class="aside">${inst.length ? `${agentList ? agentList.filter(a => a.installed).length : inst.length} 个` : ""}；每个 agent 平时都走原生，增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
     <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
@@ -1614,7 +1403,7 @@ function render() {
       main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
       return;
     }
-    const views = { agents: renderAgents, tasks: renderTasks, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
+    const views = { agents: renderAgents, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
     main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
     if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
     if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
@@ -1625,22 +1414,8 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return taskSubmitPending || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof suggestionSaving !== "undefined" && (suggestionSaving || feedbackSaving.size)) || (typeof parallelBusy !== "undefined" && parallelBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || ruleForm || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
-/** Typing survives a re-render: copy what is in the task form into taskForm first. */
-function syncTaskForm(f = document.querySelector("form[data-task-form]")) {
-  if (!f) return;
-  taskForm.task = f.elements.task?.value ?? "";
-  taskForm.model = f.elements.model?.value ?? "";
-  taskForm.cwd = f.elements.cwd?.value ?? "";
-}
-for (const name of ["input", "change"]) document.addEventListener(name, e => {
-  const form = e.target.closest?.("form[data-task-form]");
-  if (form) { syncTaskForm(form); taskDraftVersion++; }
-  const quick = e.target.closest?.("form[data-quick-task]");
-  if (quick) { quickTaskDraft = String(new FormData(quick).get("task") ?? ""); taskDraftVersion++; }
-});
-for(const name of ["input","change"])document.addEventListener(name,e=>{const form=e.target.closest?.("form[data-rule-form]");if(!form||!ruleForm||ruleForm.saving)return;const f=new FormData(form);for(const key of ["name","words","minChars","maxChars","cwdPrefix","agent","model","effort"])ruleForm[key]=String(key==="model" ? form.elements?.model?.value ?? f.get(key) ?? ruleForm.model ?? "" : f.get(key)??"");});
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
   if(fallback){fallback.disabled=true;try{await call("PUT",`/api/bindings/${encodeURIComponent(fallback.dataset.fallbackSelect)}/fallback`,{model:fallback.value});toast(fallback.value?"已保存备用模型":"已取消备用模型");}catch(error){showError(error);}finally{fallback.disabled=false;await refresh(true);}return;}
@@ -1688,12 +1463,6 @@ async function refresh(force = false) {
     chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
     claudeDesktopInfo = await call("GET", "/api/claude-desktop").catch(() => null);
   }
-  if (page === "tasks") {
-    taskList = await call("GET", "/api/tasks").catch(() => taskList);
-    if(typeof loadParallel === "function"&&!parallelBusy)await loadParallel();
-    if (!agentList) agentList = await loadAgents();
-    if(typeof loadSuggestions === "function"&&!suggestionSaving)await loadSuggestions();
-  }
   if (page === "agents" && !PANEL && !agentList) {
     agentList = await loadAgents();
     if (agentList) force = true;
@@ -1710,6 +1479,24 @@ async function refresh(force = false) {
   if (force || !busy()) render();
   else renderHeader();
   return !!nextState;
+}
+
+// Explicit navigation adds one visit; hashchange handles Back/Forward without adding another.
+async function navigatePage(value) {
+  const next = pageOf(value);
+  if (next === page) return;
+  claudeDesktopConfirm = false;
+  if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
+  pageNavigationVersion++;
+  cancelUsageLoad();
+  page = next;
+  if (!PANEL && location.hash !== `#${page}`) {
+    const writeHistory = history.pushState ?? history.replaceState;
+    writeHistory.call(history, null, "", `#${page}`);
+  }
+  closePopover();
+  if (page === "usage") render();
+  await refresh(true);
 }
 
 // ---------------------------------------------------------------- events
@@ -1730,16 +1517,8 @@ document.addEventListener("click", async e => {
 
   const nav = t.closest("#nav button, [data-go]");
   if (nav) {
-    claudeDesktopConfirm = false;
-    if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
-    if(nav.disabled||nav.getAttribute?.("aria-disabled")==="true")return;
-    pageNavigationVersion++;
-    cancelUsageLoad();
-    page = pageOf(nav.dataset.page ?? nav.dataset.go);
-    if (!PANEL) history.replaceState(null, "", `#${page}`);
-    closePopover();
-    if (page === "usage") render();
-    await refresh(true);
+    if (nav.disabled || nav.getAttribute?.("aria-disabled") === "true") return;
+    await navigatePage(nav.dataset.page ?? nav.dataset.go);
     return;
   }
   if (t.closest("#refresh")) {
@@ -1861,51 +1640,6 @@ document.addEventListener("click", async e => {
     try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { showError(error); }
     return;
   }
-  const pickAgent = t.closest("[data-task-agent]");
-  if (pickAgent) { syncTaskForm(); taskDraftVersion++; taskForm.agent = pickAgent.dataset.taskAgent; taskForm.effort = ""; try { localStorage.setItem("es.taskAgent", taskForm.agent); } catch {} render(); return; }
-  const pickEffort = t.closest("[data-task-effort]");
-  if (pickEffort) { syncTaskForm(); taskDraftVersion++; taskForm.effort = pickEffort.dataset.taskEffort; render(); return; }
-  if (t.closest("[data-rule-new]")) {
-    const first = (agentList ?? []).find(a => a.installed && a.can?.headless);
-    ruleForm = { name: "", words: "", minChars: "", maxChars: "", cwdPrefix: "", agent: first?.id ?? "", model: "", effort: "" };
-    render();
-    return;
-  }
-  const editRule=t.closest("[data-rule-edit]");
-  if(editRule){const r=(state.rules??[]).find(r=>r.id===editRule.dataset.ruleEdit);if(r){ruleForm={id:r.id,enabled:r.enabled,originalWhen:r.when,name:r.name,words:(r.when.anyWords??[]).join("、"),minChars:r.when.minChars??"",maxChars:r.when.maxChars??"",cwdPrefix:r.when.cwdPrefix??"",agent:r.then.agent,model:r.then.model??"",effort:r.then.effort??""};render();}return;}
-  if (t.closest("[data-rule-cancel]")) { if(ruleForm?.saving)return;ruleForm = null; render(); return; }
-  const ruleMove = t.closest("[data-rule-move]");
-  if (ruleMove) { await call("POST", `/api/rules/${ruleMove.dataset.rule}/move`, { direction: ruleMove.dataset.ruleMove }).catch(error => showError(error)); await refresh(true); return; }
-  const ruleToggle = t.closest("[data-rule-toggle]");
-  if (ruleToggle) {
-    const r = (state.rules ?? []).find(x => x.id === ruleToggle.dataset.ruleToggle);
-    if (r) await call("PUT", `/api/rules/${r.id}`, { name: r.name, enabled: !r.enabled, when: r.when, then: r.then }).catch(error => showError(error));
-    await refresh(true);
-    return;
-  }
-  const ruleDel = t.closest("[data-rule-del]");
-  if (ruleDel) { await call("DELETE", `/api/rules/${ruleDel.dataset.ruleDel}`).catch(error => showError(error)); await refresh(true); return; }
-  if (t.closest("[data-rule-test]")) {
-    const task = document.querySelector("[data-rule-test-input]")?.value ?? "";
-    ruleTest.task = task;
-    try { ruleTest.result = await call("POST", "/api/rules/test", { task }); } catch (error) { ruleTest.result = { error: userErrorMessage(error) }; }
-    render();
-    return;
-  }
-  const taskToggle = t.closest("[data-task-toggle]");
-  if (taskToggle) { const id = taskToggle.dataset.taskToggle; if (taskOpenIds.has(id)) taskOpenIds.delete(id); else taskOpenIds.add(id); render(); return; }
-  const taskStop = t.closest("[data-task-stop]");
-  if (taskStop) {
-    const id=taskStop.dataset.taskStop;
-    if(taskStop.disabled||taskCancelPending.has(id))return;taskStop.disabled=true;taskCancelPending.add(id);
-    const targets=new Set([id]);for(let changed=true;changed;){changed=false;for(const row of taskList?.tasks??[])if(row.parentTaskId&&targets.has(row.parentTaskId)&&!targets.has(row.id)){targets.add(row.id);changed=true;}}
-    for(const row of taskList?.tasks??[])if(targets.has(row.id)){row.status="stopped";row.cleanupPending=true;}
-    const mark=nodes=>{for(const row of nodes??[]){if(targets.has(row.id)){row.status="stopped";row.cleanupPending=true;}mark(row.children);}};mark(taskList?.tree);render();
-    try{const result=await call("POST",`/api/tasks/${encodeURIComponent(id)}/stop`,{});if(result.cleanup?.failed||result.cleanup?.pending)toast("已请求取消，但清理尚未确认，请检查任务状态");else toast("任务及已登记子任务已取消并完成清理");}
-    catch(error){showError(error);}finally{taskCancelPending.delete(id);await refresh(true);}return;
-  }
-  if (t.closest("[data-task-clear]")) { await call("DELETE", "/api/tasks").catch(() => {}); await refresh(true); return; }
-
   if (t.closest("[data-plan-signin]") || t.closest("[data-plan-signin-again]")) {
     const againBtn = t.closest("[data-plan-signin-again]");
     // A Codex-identity account just signs in again the same way; one made with OpenAI's own route signs in again with its own client.
@@ -2232,12 +1966,6 @@ document.addEventListener("submit", async e => {
     return;
   }
   if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
-  if (e.target.matches?.("[data-quick-task]")) {
-    e.preventDefault();
-    const text = String(new FormData(e.target).get("task") ?? "").trim();
-    await submitConsoleTask(e.target, { agent: AUTO, task: text }, true);
-    return;
-  }
   if (e.target.dataset?.providerBudgetForm) {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -2292,32 +2020,6 @@ document.addEventListener("submit", async e => {
     await refresh(true);
     return;
   }
-  const ruleFormEl = e.target.closest("form[data-rule-form]");
-  if (ruleFormEl) {
-    e.preventDefault();
-    if(ruleForm?.saving)return;
-    const selectedModel = ruleFormEl.elements?.model?.value ?? String(new FormData(ruleFormEl).get("model") ?? ruleForm?.model ?? "");
-    if (selectedModel && !selectableModelNames().includes(selectedModel)) {
-      if (ruleForm) { ruleForm.model = selectedModel; ruleForm.error = `请重新选择模型：${modelSelectionReason(selectedModel)}`; }
-      render(); return;
-    }
-    const previous={...ruleForm};if(ruleForm)ruleForm.saving=true;
-    const f = new FormData(ruleFormEl);
-    const body = {
-      name: f.get("name"), enabled: previous.enabled ?? true,
-      when: { ...previous.originalWhen, anyWords: f.get("words"), minChars: f.get("minChars"), maxChars: f.get("maxChars"), cwdPrefix: f.get("cwdPrefix") },
-      then: { agent: f.get("agent"), model: selectedModel, effort: f.get("effort") },
-    };
-    try {
-      await call(previous.id ? "PUT" : "POST", previous.id ? `/api/rules/${encodeURIComponent(previous.id)}` : "/api/rules", body);
-      ruleForm = null;
-      toast("规则已保存");
-    } catch (error) {
-      ruleForm = { ...previous, saving:false, name: String(f.get("name")), words: String(f.get("words")), minChars: String(f.get("minChars")), maxChars: String(f.get("maxChars")), cwdPrefix: String(f.get("cwdPrefix")), agent: String(f.get("agent")), model: String(f.get("model")), effort: String(f.get("effort")), error: userErrorMessage(error) };
-    }
-    await refresh(true);
-    return;
-  }
   const poolFormEl = e.target.closest("form[data-pool-form]");
   if (poolFormEl) {
     e.preventDefault();
@@ -2331,22 +2033,6 @@ document.addEventListener("submit", async e => {
       poolForm = { ...poolForm, name: body.name, strategy: body.strategy, members: body.members, error: userErrorMessage(error) };
     }
     await refresh(true);
-    return;
-  }
-  const runForm = e.target.closest("form[data-task-form]");
-  if (runForm) {
-    e.preventDefault();
-    if (taskSubmitPending) return;
-    const f = new FormData(runForm);
-    const selectedModel = runForm.elements?.model?.value ?? String(f.get("model") ?? taskForm.model ?? "");
-    if (selectedModel && !selectableModelNames().includes(selectedModel)) {
-      taskForm.model = selectedModel;
-      taskNote = `没有派出去，请重新选择模型：${modelSelectionReason(selectedModel)}`;
-      render(); return;
-    }
-    const agent = taskForm.agent || (() => { try { return localStorage.getItem("es.taskAgent"); } catch { return null; } })() || ((state.rules ?? []).length ? AUTO : runForm.querySelector('[data-task-agent]:not([data-task-agent="auto"])')?.dataset.taskAgent);
-    const body = { agent, task: f.get("task"), ...(taskForm.effort ? { effort: taskForm.effort } : {}), ...(selectedModel ? { model: selectedModel } : {}), ...(f.get("cwd") ? { cwd: f.get("cwd") } : {}) };
-    await submitConsoleTask(runForm, body);
     return;
   }
   const priceForm = e.target.closest("form[data-price-form]");
@@ -2388,7 +2074,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageOf(location.hash.slice(1));if(next===page)return;pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();if(page==="usage")render();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();if(page==="usage")render();void refresh(true);});
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

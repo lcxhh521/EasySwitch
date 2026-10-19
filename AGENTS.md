@@ -12,6 +12,12 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 4. **令牌不外泄。** Key 存 macOS 钥匙串（`core/src/secrets.ts`）；订阅 OAuth 令牌只发给它所属的厂商（见 `core/src/siwc.ts`）；日志和 state.json 里永远没有令牌。
 5. **按出站来源选择适配器**（用户已确认）：agent 决定入站协议，来源及模型能力决定出站协议。同协议优先直通，跨协议才转换；Chat 只是一个协议，不能作为统一中间格式。适配器接收原始入站请求，拥有厂商鉴权、协议和流解析。
 
+## 2026-10-18 产品变更：派活已取消（B115）
+
+用户决定取消 EasySwitch 的派活功能，而不是隐藏入口或转为内部调度。任务提交、任务树、规则/评价/建议、并行与交叉审查、EasySwitch MCP互调/自动挂载和后台任务执行器均已移除，不再进入开发或验收计划。旧任务、评价、记账及已存规则数据保留，不删除、不迁移、不自动执行。
+
+仍有效的范围：账号与来源管理、模型选择/池/备用/额度、交互式客户端启动和退回原生、四协议网关、原生客户端自己的工具及子 agent 模型配置、会话/用量、总览与菜单栏。B101 总览只规划会话/来源/费用/额度；B104 只保留菜单栏。B2 只保留交互启动验证；B3、B49 取消。Grok/Cursor 的官方任务控制器/ACP 调度替代路线不再实施，原模型来源与协议适配问题仍按原合同核查。真实客户端/账号/Mac 的授权与验收边界不变。当前需求以 BACKLOG.md 为准。
+
 ## 技术约定
 
 - **产品图标已定稿（用户 2026-10-07 定为正式图标，BACKLOG B92）**：Codex 式 8 瓣玻璃云朵（薄荷→青→蓝）+ 白色发光 `>`，下划线是开关。不要重新设计、换造型或换配色；要新尺寸或新格式只改 `scripts/icon-svg.mjs` 的输出并跑 `scripts/build-icons.sh`。UI 改版（B91）也必须沿用它。
@@ -27,7 +33,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 
 | 文件 | 职责 |
 |---|---|
-| `server.ts` | 唯一的服务端：控制台 API + 网关路由 + 任务/池/方案/订阅接口。大文件，改动先 grep |
+| `server.ts` | 唯一的服务端：控制台 API + 网关路由 + 池/方案/订阅接口。大文件，改动先 grep |
 | `gateway.ts` | `/v1/responses`（Codex）；`resolveModel`、模型列表、`applyThinking` |
 | `gateway-chat.ts` | `/v1/chat/completions`（通用 agent）；`agentOf`/`agentFromAuth` 从会话令牌识别调用方 |
 | `gateway-messages.ts` | `/v1/messages`（Claude Code）；原生 Claude 请求经 `claude-native.ts` 原样转发 |
@@ -48,11 +54,8 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 | `kimi.ts` | Kimi 会员：设备码登录、令牌续期（刷新令牌在钥匙串）、模型列表；用的是 Kimi 的 OpenAI 兼容编码端点，走普通 Chat 通道；新来源默认关 |
 | `plan-usage.ts` | Kimi、MiniMax 编程套餐的额度：向厂商的用量接口问，key 只发给厂商自己的域名 |
 | `quota.ts` | 订阅额度：读响应头和「用完了」的 429，池子据此跳过用完的订阅，控制台显示还剩多少 |
-| `agent-launch.ts` | 各 agent 的启动方式（interactive/headless）、`runHeadless`、任务执行 |
-| `launch.ts` | Codex/Claude Code 的参数与环境（含 MCP 附着、`claudeEnv` keepLogin） |
-| `mcp.ts` | EasySwitch 自己的 MCP 服务（list_agents/run_agent/list_models），agent 互调 |
-| `tasks.ts` | 任务簿：控制台和 agent 互调的任务都记在 `tasks.jsonl` |
-| `dispatch.ts` | 派活规则：任务交给 `auto` 时按用户写的规则（关键词/正则/字数/文件夹/来源）选 agent、模型、档位；纯函数，规则存在 `store.ts` |
+| `agent-launch.ts` | 各 agent 的交互式启动方式与私有配置 |
+| `launch.ts` | Codex/Claude Code 的参数与环境（含 `claudeEnv` keepLogin） |
 | `catalog.ts` | `es-claude-` 模型 id 编码、Codex 模型目录生成 |
 | `keypool.ts` | Key 池轮换（401/403 歇 10 分钟，429 歇 1 分钟） |
 | `accounts.ts` | 订阅账号隔离目录（CODEX_HOME/CLAUDE_CONFIG_DIR） |
@@ -69,8 +72,6 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 - 每个 agent 独立设置：主模型、想得多深（档位）、后台小任务/子 agent 模型（`prefs`，不依赖主模型绑定）。
 - 模型池：同一模型多来源合成一个名字，挂了自动切（`order`/`rotate`）。
 - 方案：一键保存/恢复所有 agent 的设置。
-- 任务页：给 agent 派后台任务；agent 之间经 MCP 互相派活（深度限 2、并发限 3）。
-- 派活规则：任务页选「自动」（或 `run_agent` 传 `auto`）时，按规则决定交给谁、用哪个模型、想多深；任务记录里写明哪条规则决定的。
 - `es` 命令（`bin/es.ts`）：终端里 `es claude`、`es codex` 直接以 EasySwitch 启动；`es shell-init` 出可选的 shell 函数。
 
 ## 进行中 / 计划
@@ -102,7 +103,7 @@ EasySwitch：把从各处找来的模型来源（中转站、官方 API、订阅
 
 ### 借鉴代码
 
-- **走出差异化（用户强调）**：借鉴是为了少走弯路，不是做成另一个 Magpie 或 opencodex。新功能、新界面、新命名先想“我们的用户为什么需要它长这样”；我们的差异点（不改配置的私有启动、原生并排、agent 调度、订阅借用、逐 agent 能力矩阵）见 `HANDOVER.md` 第 1.5 节，评审任务见 `BACKLOG.md` B41。
+- **走出差异化（用户强调）**：借鉴是为了少走弯路，不是做成另一个 Magpie 或 opencodex。新功能、新界面、新命名先想“我们的用户为什么需要它长这样”；我们的差异点（不改配置的私有启动、原生并排、订阅借用、逐 agent 能力矩阵）见 `HANDOVER.md` 的当前产品边界，评审任务见 `BACKLOG.md` B41。
 
 - 可以直接复制别人的代码再适配迭代（用户已确认），也可以在文档、注释、提交信息里写明参照了谁，不用避讳。
 - **复制或改编必须在文件头声明**：来源项目、许可证、来源提交、版权行；许可证原文放 `third_party/<项目>/LICENSE`。这样公开前用搜索就能把它们全部找出来。

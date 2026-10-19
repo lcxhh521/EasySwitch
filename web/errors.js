@@ -18,7 +18,7 @@
     ["keychain_unavailable", "暂时无法读取或保存密钥", "系统密钥存储未准备好，可能需要解锁、确认访问权限或修复配套程序", "检查密钥存储", "doctor"],
     ["storage_unavailable", "本地记录暂时无法保存或读取", "记录文件可能不完整、不可写，或磁盘空间不足；先检查再重试，避免覆盖原记录", "检查本地存储", "doctor"],
     ["session_invalid", "这个窗口的连接凭据已失效", "当前窗口没有有效的本地访问权限，可能已过期或被撤销", "重新准备连接", "agents"],
-    ["request_busy", "当前正在处理的任务太多", "同时运行的任务或连接达到本地上限，需要先等待或停止不再使用的会话", "查看正在运行的会话", "sessions"],
+    ["request_busy", "当前正在处理的请求太多", "同时运行的请求或连接达到本地上限，需要先等待或停止不再使用的会话", "查看正在运行的会话", "sessions"],
   ];
   const entries = rows.map(([code, title, reason, label, target]) => Object.freeze({ code, title, reason, action: Object.freeze({ label, target }) }));
   const dictionary = new Map(entries.map(entry => [entry.code, entry]));
@@ -37,10 +37,9 @@
     agent_not_integrated: "capability_unavailable", unsupported_platform: "capability_unavailable", protocol_unsupported: "capability_unavailable",
     helper_missing: "keychain_unavailable", helper_not_executable: "keychain_unavailable", helper_signature_invalid: "keychain_unavailable", helper_timeout: "keychain_unavailable",
     no_default_keychain: "keychain_unavailable", keychain_error: "keychain_unavailable", keychain_access_required: "keychain_unavailable",
-    task_accounting_unavailable: "storage_unavailable", feedback_unavailable: "storage_unavailable", readonly_unavailable: "capability_unavailable", fixture_only: "capability_unavailable", task_capacity: "request_busy", invalid_depth: "permission_denied",
     gateway_session_storage_unavailable: "storage_unavailable", ENOSPC: "storage_unavailable", EROFS: "storage_unavailable", EIO: "storage_unavailable",
     invalid_gateway_session: "session_invalid", gateway_auth_required: "session_invalid", session_expired: "session_invalid", session_revoked: "session_invalid",
-    gateway_session_issuance_limited: "request_busy", cli_concurrency_limit: "request_busy", task_concurrency_limit: "request_busy",
+    gateway_session_issuance_limited: "request_busy", cli_concurrency_limit: "request_busy",
   }));
   // Legacy wording is used only to select a constant entry, never echoed or interpolated.
   // Match specific local conditions before generic upstream/status conditions.

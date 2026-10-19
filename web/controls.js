@@ -5,7 +5,7 @@ let budgetSaving = false;
 function gatewaySessionsCard() {
   const sessions = state?.gatewaySessions ?? [];
   return `<div class="section-head"><h2>网关会话令牌</h2><span class="aside">这里只列元数据，不重新显示令牌</span></div><div class="card">
-    ${sessions.map(s => `<div class="row"><div class="grow"><div class="title">${esc(s.agentId)}</div><div class="sub">到期 ${esc(new Date(s.expiresAt).toLocaleString())} · ${s.allowMcp ? "允许 MCP" : "仅模型调用"}${s.allowNativeClaude ? " · 允许原生 Claude" : ""}${s.fallbackChanges?.length ? ` · 曾换用备用 ${esc(s.fallbackChanges.at(-1).fromModel)} → ${esc(s.fallbackChanges.at(-1).toModel)}` : ""}</div></div><button class="btn danger" data-session-revoke="${esc(s.id)}">撤销</button></div>`).join("") || `<p class="empty">没有未过期的会话</p>`}
+    ${sessions.map(s => `<div class="row"><div class="grow"><div class="title">${esc(s.agentId)}</div><div class="sub">到期 ${esc(new Date(s.expiresAt).toLocaleString())} · 模型调用${s.allowNativeClaude ? " · 允许原生 Claude" : ""}${s.fallbackChanges?.length ? ` · 曾换用备用 ${esc(s.fallbackChanges.at(-1).fromModel)} → ${esc(s.fallbackChanges.at(-1).toModel)}` : ""}</div></div><button class="btn danger" data-session-revoke="${esc(s.id)}">撤销</button></div>`).join("") || `<p class="empty">没有未过期的会话</p>`}
     <p class="hint" style="padding:0 16px 12px">撤销立即阻止后续请求。关闭旧式交互窗口未必自动撤销，请手动撤销或等待到期；不会为停止一个窗口而撤销别的会话。</p></div>`;
 }
 function budgetSettingsCard() {
