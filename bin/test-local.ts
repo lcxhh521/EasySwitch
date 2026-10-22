@@ -10,6 +10,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const home = mkdtempSync(join(tmpdir(), "es-local-tests-home-"));
 const files = [
   "accounts-auto",
+  "automatic-dispatch", "automatic-approval", "automatic-policy", "automatic-pools-ui", "automatic-api", "automatic-console-races",
   "pool-transparency",
   "pool-signals",
   "onboarding-draft-storage", "onboarding-draft",

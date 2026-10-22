@@ -105,10 +105,30 @@ export interface Profile {
 export interface Pool {
   id: string;
   name: string;
-  strategy: "order" | "rotate";
+  strategy: "order" | "rotate" | "automatic";
   /** `<provider>/<model>`, in the order they are tried under "order". */
   members: string[];
+  /** Explicit finite source/credential grant. Seals are internal, never part of a public pool response. */
+  automaticApproval?: AutomaticApproval;
   createdAt: string;
+}
+
+/** A content-bound authorization snapshot, not proof that different keys share an account. */
+export interface AutomaticApproval {
+  version: 1;
+  /** Random domain separation; contains neither a credential nor an authentication capability. */
+  salt: string;
+  members: Array<{
+    /** Exact `<provider>/<model>` in the user-confirmed order. */
+    member: string;
+    /** Absent only for the legacy single credential stored under the provider ID. */
+    keyId?: string;
+    credentialLabel: string;
+    /** Private nonsecret configuration/generation digest; distinguishes config drift from credential replacement. */
+    configurationSeal: string;
+    /** Private one-way seal over current configuration, revision and credential contents. */
+    seal: string;
+  }>;
 }
 
 /** USD per million tokens. */

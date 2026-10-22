@@ -138,3 +138,36 @@ test("fallback rendering never clears a saved value and an explicit blank select
   await app.dispatch("change", app.target("[data-fallback-select]", { value: "", dataset: { fallbackSelect: "claude" }, disabled: false }));
   assert.equal(app.run("JSON.stringify(requests[0])"), '{"method":"PUT","path":"/api/bindings/claude/fallback","body":{"model":""}}');
 });
+
+for (const [target, path] of [["claude", "/api/bindings/claude"], ["claude@small", "/api/bindings/claude/tiers/small"]]) {
+  test(`existing automatic pool discloses the plain-text trial in ${target} picker before explicit selection`, async () => {
+    const app = ui(); app.run("state.pools.push({id:'auto',name:'Automatic trial',strategy:'automatic',members:['on/m']})");
+    const picker = app.open(target); await app.search(picker, "Automatic trial");
+    const html = picker.parts[".list"]!.innerHTML;
+    assert.match(html, /<span class="meta">仅纯文字试用；工具请求拒绝（已确认名单）<\/span>/);
+    assert.equal(app.run("requests.length"), 0);
+    await app.click(picker, 0);
+    assert.equal(app.run("JSON.stringify(requests)"), JSON.stringify([{ method: "PUT", path, body: { providerId: "pool", model: "auto" } }]));
+    assert.doesNotMatch(app.run("JSON.stringify(requests)"), /launch|probe|automatic\/confirm/);
+  });
+}
+
+test("Claude Desktop automatic-pool option discloses plain-text limitation without changing launch safety", async () => {
+  const app = ui(); app.run("state.pools.push({id:'auto',name:'Automatic trial',strategy:'automatic',members:['on/m']});claudeDesktopInfo={installed:true,launchBlocked:true,sessions:[]}");
+  const html = app.run("claudeDesktopCard()");
+  assert.match(html, /<option value="pool\/auto"[^>]*>模型池 · Automatic trial · 仅纯文字试用；工具请求拒绝（已确认名单）<\/option>/);
+  assert.match(html.match(/<button[^>]*data-claude-desktop-ask[^>]*>/)?.[0] ?? "", /disabled/);
+  assert.equal(app.run("requests.length"), 0);
+  await app.dispatch("change", app.target("[data-claude-desktop-model]", { value: "pool/auto" }));
+  assert.equal(app.run("claudeDesktopModel"), "pool/auto"); assert.equal(app.run("claudeDesktopConfirm"), false); assert.equal(app.run("requests.length"), 0);
+  app.run("claudeDesktopConfirm=true"); await app.dispatch("click", app.target("[data-claude-desktop-start]")); assert.equal(app.run("requests.length"), 0);
+});
+
+test("saved profile warning is visible only when both profiles and an automatic pool exist", () => {
+  const app = ui(); app.run("state.profiles=[{id:'f-fixture',name:'Saved',agents:1}]");
+  assert.doesNotMatch(app.run("profileBar()"), /方案可能恢复纯文字自动模式/);
+  app.run("state.pools.push({id:'auto',name:'Automatic trial',strategy:'automatic',members:['on/m']})");
+  assert.match(app.run("profileBar()"), /方案可能恢复纯文字自动模式，工具请求会被拒绝；切换后请核对主模型和小模型/);
+  assert.equal(app.run("requests.length"), 0);
+  app.run("state.profiles=[]"); assert.doesNotMatch(app.run("profileBar()"), /方案可能恢复纯文字自动模式/);
+});

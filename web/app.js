@@ -12,7 +12,7 @@ const HARNESS = {
   codex: { name: "ChatGPT", icon: "openai", protocol: "Responses" },
   claude: { name: "Claude Code", icon: "claudecode-color", protocol: "Anthropic Messages" },
 };
-const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样转发", "chat-translate": "协议转换", pool: "按池里的顺序" };
+const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样转发", "chat-translate": "协议转换", pool: "按池里的顺序", "pool-automatic": "仅纯文字试用；工具请求拒绝（已确认名单）" };
 const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_agent_v1": "子 agent 工具" };
 
 let state = null;
@@ -352,6 +352,7 @@ function agentRow(harness) {
       </div>
       <div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button>${savedModelNotice(binding && `${binding.providerId}/${binding.model}`)}</div>
       ${agentControls(harness)}
+      ${typeof automaticPoolEntry === "function" ? automaticPoolEntry(harness) : ""}
       <div class="acts"><button class="btn launch" data-launch="${harness}" title="在 EasySwitch 上启动一个增强会话（只在那个终端窗口里生效）" ${(binding || (harness === "claude" && state.claudeLogin)) && binary ? "" : "disabled"}>启动</button></div>
     </div>${agentEditor(harness)}`;
 }
@@ -391,7 +392,8 @@ function claudeDesktopCard() {
   const names = selectableModelNames();
   const models = names.map(id => {
     const slash = id.indexOf("/"), source = id.slice(0, slash), model = id.slice(slash + 1);
-    return { id, name: source === "pool" ? `模型池 · ${state.pools?.find(p => p.id === model)?.name ?? model}` : `${providerById(source)?.name ?? source} · ${model}` };
+    const pool = source === "pool" ? state.pools?.find(p => p.id === model) : null;
+    return { id, name: source === "pool" ? `模型池 · ${pool?.name ?? model}${pool?.strategy === "automatic" ? ` · ${ROUTE["pool-automatic"]}` : ""}` : `${providerById(source)?.name ?? source} · ${model}` };
   });
   if (!claudeDesktopModel) {
     const b = state?.bindings?.["claude-desktop"];
@@ -479,6 +481,7 @@ function genericAgentRow(a) {
     </div>
     ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>${savedModelNotice(binding && `${binding.providerId}/${binding.model}`)}</div>` : ""}
     ${can ? agentControls(a.id) : ""}
+    ${can && typeof automaticPoolEntry === "function" ? automaticPoolEntry(a.id) : ""}
     <div class="acts">
       ${a.guide ? `<button class="btn" data-guide="${esc(a.id)}">配置向导</button>` : ""}
       ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
@@ -512,7 +515,7 @@ function profileBar() {
   const list = state.profiles ?? [];
   return `
     <div class="card"><div class="row" style="gap:10px;flex-wrap:wrap">
-      <div class="grow"><div class="title">方案</div><div class="sub">${list.length ? "把所有 agent 现在的设置存成一个名字，之后一键切回" : "还没有方案：设好各个 agent 的主模型、档位和小模型后，存成一个方案"}</div></div>
+      <div class="grow"><div class="title">方案</div><div class="sub">${list.length ? "把所有 agent 现在的设置存成一个名字，之后一键切回" : "还没有方案：设好各个 agent 的主模型、档位和小模型后，存成一个方案"}</div>${list.length && state.pools?.some(pool => pool.strategy === "automatic") ? `<p class="hint">方案可能恢复纯文字自动模式，工具请求会被拒绝；切换后请核对主模型和小模型。</p>` : ""}</div>
       ${list.length ? `<select data-profile-pick>${list.map(p => `<option value="${esc(p.id)}">${esc(p.name)}（${p.agents} 个 agent）</option>`).join("")}</select>
         <button class="btn" data-profile-apply>切换到它</button><button class="btn secondary" data-profile-del>删除</button>` : ""}
       ${profileNaming
@@ -656,6 +659,7 @@ function onboarding() {
 }
 
 function openPicker(anchor, target) {
+  if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   closePopover();
   const [harness, tier] = target.split("@");
   const main = state.bindings?.[harness];
@@ -695,7 +699,7 @@ function openPicker(anchor, target) {
     if (!only) for (const pool of state.pools ?? []) {
       if (!allowed.has(`pool/${pool.id}`)) continue;
       if (q && !pool.name.toLowerCase().includes(q) && !"模型池 pool".includes(q)) continue;
-      out.push({ provider: POOL_PROVIDER, model: pool.id, route: "pool" });
+      out.push({ provider: POOL_PROVIDER, model: pool.id, route: pool.strategy === "automatic" ? "pool-automatic" : "pool" });
     }
     return out;
   };
@@ -1006,6 +1010,7 @@ let poolConfirmDel = null;
 
 /** Existing observations only. Unknowns never become a green availability verdict. */
 function poolSignalsDetails(pool, nameOf) {
+  if (pool.strategy === "automatic") return `<p class="hint">只使用当前已确认身份的被动失败记录，全部等待时暂停；旧额度和失败标记不参与自动选择。未知不代表可用或额度充足。</p>`;
   const signals = Array.isArray(pool.signals?.members) ? pool.signals.members : [];
   if (!signals.length) return `<div class="hint">尚无择源信号；推理可用性未验证。</div>`;
   const moment = value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 8.64e15 ? new Date(value).toLocaleString() : "时间未知";
@@ -1053,9 +1058,9 @@ function poolsCard() {
   const row = p => `
     <div class="row">
       <span class="ic lg" style="display:grid;place-items:center;background:var(--pill);border-radius:10px;width:34px;height:34px">▦</span>
-      <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "rotate" ? "轮流优先尝试" : "按顺序尝试"}</span></div>
+      <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "automatic" ? "已确认名单内自动选择" : p.strategy === "rotate" ? "轮流优先尝试" : "按顺序尝试"}</span></div>
         <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div>${poolSignalsDetails(p, nameOf)}</div>
-      <button class="btn secondary" data-pool-edit="${esc(p.id)}">编辑</button>
+      ${p.strategy === "automatic" ? `<button class="btn secondary" data-automatic-manage="${esc(p.id)}">重新确认来源</button>` : `<button class="btn secondary" data-pool-edit="${esc(p.id)}">编辑</button>`}
       <button class="btn secondary" data-pool-del="${esc(p.id)}">${poolConfirmDel === p.id ? "再点一次删除" : "删除"}</button>
     </div>`;
   const options = state.providers.map(p => `
@@ -1463,6 +1468,7 @@ function render() {
     }
     const views = { agents: renderAgents, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
     main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
+    if (typeof automaticPoolCard === "function" && page === "agents") main.innerHTML = automaticPoolCard() + main.innerHTML;
     if (typeof firstRunResumeCard === "function") main.innerHTML = firstRunResumeCard() + main.innerHTML;
     if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
     if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
@@ -1473,7 +1479,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
@@ -1545,6 +1551,7 @@ async function navigatePage(value) {
   const next = pageOf(value);
   if (next === page) return;
   claudeDesktopConfirm = false;
+  if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
   pageNavigationVersion++;
   cancelUsageLoad();
@@ -1829,6 +1836,7 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-profile-new]")) { profileNaming = true; render(); return; }
   if (t.closest("[data-profile-cancel]")) { profileNaming = false; render(); return; }
   if (t.closest("[data-profile-apply]")) {
+    if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
     const id = document.querySelector("[data-profile-pick]")?.value;
     try { const r = await call("POST", `/api/profiles/${id}/apply`); toast(`已切换到「${r.name}」：下次启动的会话就用这套设置`); } catch (error) { showError(error); }
     await refresh(true);
@@ -1843,7 +1851,7 @@ document.addEventListener("click", async e => {
   if (t.closest("[data-pool-new]")) { poolForm = { name: "", strategy: "order", members: [] }; render(); return; }
   if (t.closest("[data-pool-cancel]")) { poolForm = null; render(); return; }
   const poolEdit = t.closest("[data-pool-edit]");
-  if (poolEdit) { const p = (state.pools ?? []).find(x => x.id === poolEdit.dataset.poolEdit); if (p) { poolForm = { id: p.id, name: p.name, strategy: p.strategy, members: [...p.members] }; render(); } return; }
+  if (poolEdit) { const p = (state.pools ?? []).find(x => x.id === poolEdit.dataset.poolEdit); if (p) { if (p.strategy === "automatic") { toast("请在 Agent 页重新选择直接来源，再确认自动来源名单；不能在旧编辑器修改。"); return; } poolForm = { id: p.id, name: p.name, strategy: p.strategy, members: [...p.members] }; render(); } return; }
   const poolDel = t.closest("[data-pool-del]");
   if (poolDel) {
     const id = poolDel.dataset.poolDel;
@@ -2084,6 +2092,7 @@ document.addEventListener("submit", async e => {
   const poolFormEl = e.target.closest("form[data-pool-form]");
   if (poolFormEl) {
     e.preventDefault();
+    if (poolForm?.strategy === "automatic" || state.pools?.find(p => p.id === poolForm?.id)?.strategy === "automatic") { poolForm = null; toast("自动来源名单需要在 Agent 页重新确认，未修改原模型池。"); render(); return; }
     const f = new FormData(poolFormEl);
     const body = { name: f.get("name"), strategy: f.get("strategy"), members: f.getAll("members") };
     try {
@@ -2135,7 +2144,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();if(page==="usage")render();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();if(page==="usage")render();void refresh(true);});
 window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

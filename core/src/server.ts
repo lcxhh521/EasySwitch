@@ -1,3 +1,7 @@
+import { AutomaticPoolConsole, publicAutomaticPool } from "./automatic-console.ts";
+import { revisionedSecrets } from "./automatic-approval.ts";
+import { AutomaticFailureLedger } from "./automatic-policy.ts";
+import { ProtocolError } from "./protocol.ts";
 import { SourceHealthMonitor, modelsHealthFingerprint } from "./source-health.ts";
 import { resolveAgentFallback } from "./agent-fallback.ts";
 import { buildPoolSuggestions } from "./pool-suggestions.ts";
@@ -226,7 +230,10 @@ function repeatedGatewayCredential(req: IncomingMessage): boolean {
 }
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
-  const { store, secrets, port } = deps;
+  const { store, port } = deps;
+  const secrets = revisionedSecrets(store, deps.secrets);
+  const automaticConsole = new AutomaticPoolConsole(store, secrets);
+  const automaticFailures = new AutomaticFailureLedger();
   const ledger = deps.ledger ?? new Ledger(store.dir);
   const auth = deps.gatewayAuth ?? gatewayTokens;
   const budget = new BudgetController(store.dir, { readSummary: (start, end, now) => ledger.budgetSummary(start, end, now) });
@@ -256,7 +263,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     syncHealth();
     return { ...basePublicProvider(p, hasKey, usedBy), sourceHealth: health.snapshot(p.id), ...(status ? { budgetStatus: status } : {}) };
   };
-  const publicPool = (p: Pool) => ({ ...p, live: liveMembers(store, p), memberStates: poolMemberStates(store, p),
+  const publicPool = (p: Pool) => ({ ...publicAutomaticPool(p), live: liveMembers(store, p), memberStates: poolMemberStates(store, p),
     signals: poolSignalSnapshot(store, p, { now: deps.sourceHealth?.now?.(), healthOf: provider => health.snapshotFor(provider) }) });
   const providerHasKey = async (p: Provider): Promise<boolean> => { try { return Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id)); } catch { return false; } };
   const doctorHelp = new Map<string, { checkedAt: string; verdicts: Verdict[] }>();
@@ -739,6 +746,14 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (method === "DELETE" && !profileMatch[2]) { store.removeProfile(profileMatch[1] ?? ""); json(res, 200, { ok: true }); return; }
     }
 
+    // Automatic selection has its own explicit review/confirm path; legacy pool writes cannot enable it.
+    if (["/api/pools/automatic/preview", "/api/pools/automatic/confirm"].includes(path) && method === "POST") {
+      const preview = path.endsWith("/preview"), fields = preview ? ["modelId", "harness"] : ["confirmationId"];
+      if (Object.keys(body).some(key => !fields.includes(key))) { json(res, 400, { error: "确认操作包含不支持的字段" }); return; }
+      try { json(res, 200, preview ? await automaticConsole.preview(body.modelId, body.harness) : await automaticConsole.confirm(body.confirmationId)); }
+      catch (error) { json(res, error instanceof ProtocolError ? error.status : 500, { error: error instanceof ProtocolError ? error.message : "设置没有保存，请检查本机存储后重试。", code: "automatic_confirmation_failed" }); }
+      return;
+    }
     // --- model pools ---------------------------------------------------------
     if (path === "/api/pools/suggestions" && method === "GET") {
       if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "请从本地控制台查看建议", code: "access_denied" }); return; }
@@ -758,6 +773,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
     const poolBody = (): { name: string; strategy: "order" | "rotate"; members: string[] } | string => {
+      if (body.strategy !== undefined && !["order", "rotate"].includes(String(body.strategy))) return "自动选择必须先核对来源与固定凭据名单";
       const name = String(body.name ?? "").trim();
       const strategy = body.strategy === "rotate" ? "rotate" : "order";
       const have = new Set(store.catalog().filter(m => m.providerId !== "pool").map(m => `${m.providerId}/${m.model}`));
@@ -780,6 +796,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (!current) { json(res, 404, { error: "没有这个模型池" }); return; }
       if (method === "DELETE") { store.removePool(current.id); json(res, 200, { ok: true }); return; }
       if (method === "PUT") {
+        if (current.strategy === "automatic") { json(res, 409, { error: "自动选择的名单不能直接编辑；请先选择固定模型并重新确认。" }); return; }
         const made = poolBody();
         if (typeof made === "string") { json(res, 400, { error: made }); return; }
         const pool = { ...current, ...made };
@@ -1776,9 +1793,19 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         await handleChatgpt(req, res, path, url.search, { store, secrets, log: requestLog(), session, fallback: fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         return;
       }
+      const automaticRuntime = (raw: string) => ({
+        secrets, protocol, raw, failures: automaticFailures,
+        compatibilityIssue: req.headers["anthropic-beta"] ? "自动模式暂不支持额外的厂商协议特性，请选择固定来源。" : undefined,
+        assertAllowed: () => {
+          const current = auth.authenticate(req.headers, url, "inference");
+          if (!current || current.id !== session?.id) throw new ProtocolError("本次会话已过期或撤销，请重新启动增强会话。", 401);
+          if (res.destroyed || req.aborted) throw new ProtocolError("请求已取消。", 499);
+          try { budget.assertAllowed(); } catch (error) { if (error instanceof BudgetExceededError) throw new ProtocolError(error.message, 429); throw error; }
+        },
+      });
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }
       if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
@@ -1794,12 +1821,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
           return handleGemini(req, r, m, raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
-        });
+        }, automaticRuntime(raw));
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -1813,7 +1840,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {

@@ -1,4 +1,5 @@
 import { cliTextSourceIssue } from "./cli-text-source.ts";
+import { assertAutomaticProvider } from "./automatic-dispatch.ts";
 import { existingSubscriptionKind } from "./subscription-compat.ts";
 import { vertexKind, VertexConfigError } from "./vertex-config.ts";
 import type { Provider, ProviderKey } from "./types.ts";
@@ -148,7 +149,16 @@ export async function markResult(store: Store, provider: Provider, keyId: string
 export async function withKey(
   store: Store, secrets: SecretStore, provider: Provider,
   run: (apiKey?: string) => Promise<Response | Error>,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<{ response: Response | Error; keyId?: string; hadRetry?: boolean }> {
+  const automatic = assertAutomaticProvider(provider);
+  if (automatic) {
+    signal.throwIfAborted();
+    const apiKey = await automatic.readKey(signal);
+    signal.throwIfAborted();
+    // The approved credential is the only credential. No ordinary cursor, rest mutation or auth retry.
+    return { response: await run(apiKey), keyId: automatic.keyId };
+  }
   const first = await pickKey(secrets, provider);
   const response = await run(first.apiKey);
   if (response instanceof Error || !isKeyFailure(response.status)) return { response, keyId: first.keyId };

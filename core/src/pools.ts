@@ -1,3 +1,10 @@
+import { automaticLocalStamp } from "./automatic-local-stamp.ts";
+import type { SecretStore } from "./secrets.ts";
+import { validateApproval, readApprovedKey } from "./automatic-approval.ts";
+import { AutomaticFailureLedger, automaticTextRequestIssue } from "./automatic-policy.ts";
+import { withAutomaticAttempt, type AutomaticDispatchBudget } from "./automatic-dispatch.ts";
+import { ProtocolError } from "./protocol.ts";
+import type { ApiProtocol } from "./types.ts";
 import type { ServerResponse } from "node:http";
 import { Writable } from "node:stream";
 import { fromClaudeModelId } from "./catalog.ts";
@@ -117,18 +124,20 @@ class Gate extends Writable {
   private discard = false;
   private readonly real: ServerResponse;
   private readonly canRetry: boolean;
+  private readonly retryAllowed: (status: number) => boolean;
 
-  constructor(real: ServerResponse, canRetry: boolean) {
+  constructor(real: ServerResponse, canRetry: boolean, retryAllowed: (status: number) => boolean = retriable) {
     super();
     this.real = real;
     this.canRetry = canRetry;
+    this.retryAllowed = retryAllowed;
     real.on("close", () => this.emit("close"));
   }
 
   writeHead(status: number, headers?: Record<string, string>): this {
     this.statusCode = status;
     this.headersSent = true;
-    if (this.canRetry && retriable(status)) this.discard = true;
+    if (this.canRetry && this.retryAllowed(status)) this.discard = true;
     else this.real.writeHead(status, headers);
     this.retry = this.discard;
     return this;
@@ -165,7 +174,10 @@ export interface PoolContext {
 export async function runWithPool(
   store: Store, exposed: string | undefined, res: ServerResponse,
   attempt: (res: ServerResponse, member: string | undefined, ctx?: PoolContext) => Promise<void>,
+  automatic?: AutomaticPoolRuntime,
 ): Promise<void> {
+  const pool = exposed ? poolOf(store, exposed) : undefined;
+  if (pool?.strategy === "automatic") { await runAutomaticPool(store, pool, res, attempt, automatic); return; }
   const members = exposed ? poolMembers(store, exposed) : undefined;
   if (!members?.length) { await attempt(res, undefined); return; }
   let retryFrom: PoolRetryEvidence | undefined;
@@ -198,5 +210,87 @@ export function withModel(rawBody: string, model: string): string {
     return JSON.stringify({ ...(JSON.parse(rawBody) as Record<string, unknown>), model });
   } catch {
     return rawBody;
+  }
+}
+
+/** Only explicit automatic requests use this runtime; ordinary order/rotate stay unchanged. */
+export interface AutomaticPoolRuntime {
+  secrets: SecretStore;
+  protocol: ApiProtocol;
+  raw: string;
+  failures: AutomaticFailureLedger;
+  compatibilityIssue?: string;
+  /** Must reauthenticate the original session and check the current global budget. */
+  assertAllowed(): void;
+}
+function automaticError(res: ServerResponse, protocol: ApiProtocol, status: number, message: string): void {
+  if (res.destroyed || res.writableEnded) return;
+  if (res.headersSent) { res.destroy(); return; }
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(protocol === "gemini" ? { error: { code: status, message, status: "FAILED_PRECONDITION" } }
+    : { ...(protocol === "messages" ? { type: "error" } : {}), error: { type: "automatic_selection_error", code: "automatic_selection_paused", message } }));
+}
+async function runAutomaticPool(store: Store, pool: Pool, res: ServerResponse,
+  attempt: (res: ServerResponse, member: string | undefined, ctx?: PoolContext) => Promise<void>, runtime?: AutomaticPoolRuntime): Promise<void> {
+  const protocol = runtime?.protocol ?? "chat";
+  try {
+    if (!runtime) throw new ProtocolError("自动选择缺少逐次权限检查，已停止请求。", 409);
+    runtime.assertAllowed();
+    const issue = runtime.compatibilityIssue ?? automaticTextRequestIssue(protocol, runtime.raw);
+    if (issue) throw new ProtocolError(issue, 400);
+    const localStamp = automaticLocalStamp(store, pool.members, pool.id);
+    const approval = await validateApproval(store, runtime.secrets, pool);
+    if (!approval.ok) throw new ProtocolError(approval.reason, 409);
+    runtime.assertAllowed();
+    const selected = pool.automaticApproval!.members;
+    const identities = new Map(selected.map(m => [m.member, `${pool.id}:${pool.automaticApproval!.salt}:${m.seal}`]));
+    const configured = new Set(liveMembers(store, pool));
+    const eligible = pool.members.filter(m => configured.has(m));
+    if (!eligible.length) throw new ProtocolError("已确认的来源当前都被配置或预算阻断，请检查后重新请求。", 429);
+    const members = eligible.filter(m => runtime.failures.waitUntil(identities.get(m)!, protocol) === undefined);
+    if (!members.length) throw new ProtocolError("已确认的来源都在失败等待中，已暂停且未发送请求；请等待标记到期后主动重试，或检查来源设置。到期不代表真实额度已恢复。", 503);
+    const shared: AutomaticDispatchBudget = { used: 0, limit: 2 };
+    let retryFrom: PoolRetryEvidence | undefined;
+    for (let i = 0; i < members.length && shared.used < 2; i += 1) {
+      if (res.destroyed || res.writableEnded) return;
+      const member = members[i]!, providerId = member.slice(0, member.indexOf("/"));
+      const pinned = selected.find(m => m.member === member)!;
+      let observed: { status: number; at: number } | undefined;
+      let requestKey: string | undefined;
+      const assertDispatch = () => {
+        runtime.assertAllowed();
+        if (automaticLocalStamp(store, pool.members, pool.id) !== localStamp) throw new ProtocolError("已确认来源或凭据代次已变化，请重新核对名单。", 409);
+        if (!liveMembers(store, pool).includes(member)) throw new ProtocolError("这个已确认来源当前被配置或预算阻断，已停止请求。", 429);
+      };
+      const check = async (signal: AbortSignal) => {
+        signal.throwIfAborted(); assertDispatch();
+        // Re-read the selected credential last, including on nested adapter repairs.
+        // Never silently refresh prepared authentication to a newly stored value.
+        let current;
+        try { current = await readApprovedKey(store, runtime.secrets, pool, member, signal); }
+        catch { throw new ProtocolError("自动选择的固定凭据已改变或无法核实，请重新确认。", 409); }
+        if (!requestKey || current.apiKey !== requestKey) throw new ProtocolError("本次请求的固定凭据已变化，已停止请求。", 409);
+        signal.throwIfAborted(); assertDispatch();
+      };
+      const gate = new Gate(res, i < members.length - 1, status => shared.used < 2 && observed?.status === status && retriable(status));
+      const settled = new Promise<void>(resolve => { gate.once("finish", resolve); gate.once("close", resolve); });
+      await withAutomaticAttempt({ providerId, ...(pinned.keyId === undefined ? {} : { keyId: pinned.keyId }),
+        readKey: async signal => {
+          runtime.assertAllowed();
+          try { requestKey = (await readApprovedKey(store, runtime.secrets, pool, member, signal)).apiKey; return requestKey; }
+          catch { throw new ProtocolError("自动选择的固定凭据已改变或无法核实，请重新确认。", 409); }
+        }, beforeDispatch: check, assertDispatch, observe: status => { observed = { status, at: Date.now() }; },
+      }, shared, () => attempt(gate as unknown as ServerResponse, member, { pool: `pool/${pool.id}`, attempt: i + 1, attempts: Math.min(members.length, 2), ...(retryFrom ? { retryFrom: { ...retryFrom } } : {}) }));
+      await settled;
+      // Only a real HTTP observation tied to the still-current full snapshot can influence future requests.
+      // Local budget/auth/input failures and late results from replaced credentials never become health facts.
+      const fact = observed as { status: number; at: number } | undefined;
+      if (fact && (await validateApproval(store, runtime.secrets, pool)).ok) runtime.failures.record(identities.get(member)!, protocol, fact.status, fact.at);
+      if (res.destroyed || res.writableEnded || !gate.retry) return;
+      retryFrom = { member, attempt: i + 1, status: fact!.status };
+    }
+  } catch (error) {
+    automaticError(res, protocol, error instanceof ProtocolError ? error.status : 409,
+      error instanceof ProtocolError ? error.message : "自动选择无法安全继续，请核对已确认来源后重新请求。");
   }
 }

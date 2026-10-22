@@ -1,4 +1,6 @@
+import { poolOf } from "./pools.ts";
 import { safeUpstreamReason } from "./upstream-error.ts";
+import { currentAutomaticAttempt } from "./automatic-dispatch.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -69,10 +71,13 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
   harness = deps.session?.agentId ?? harness;
   const fallback = deps.fallback?.(input.model);
   if (fallback?.change && fallback.model) input = { ...input, model: fallback.model };
+  // A direct gateway/fallback path must not flatten an automatic pool to its first source.
+  if (poolOf(deps.store, input.model)?.strategy === "automatic") { gatewayError(res, input.protocol, 409, "自动模型必须通过已确认名单的受控选择入口，不会退回第一个来源。", "automatic_route_required"); return; }
   const resolved = resolveModel(deps.store, input.model);
   if (!resolved) { gatewayError(res, input.protocol, 404, noModelMessage(deps.store, input.model), "model_not_found"); return; }
   const { provider, model } = resolved;
-  let prepared: PreparedOutbound | undefined; let keyId: string | undefined; let usage: Usage | undefined; let usageComplete = false;
+  const automatic = currentAutomaticAttempt();
+  let prepared: PreparedOutbound | undefined; let keyId = automatic?.providerId === provider.id ? automatic.keyId : undefined; let usage: Usage | undefined; let usageComplete = false;
   const finish = (status: number, note?: string) => deps.log({
     at: new Date().toISOString(), model: input.model, providerId: provider.id, harness,
     ...(fallback?.change ? { fallback: fallback.change } : {}), ...(deps.session ? { sessionId: deps.session.id } : {}),
@@ -98,10 +103,11 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     }
     const sent = provider.mimoFree || provider.kiro
       ? { response: await prepared.send(undefined, abort.signal), keyId: undefined }
-      : await withKey(deps.store, deps.secrets, provider, key => prepared!.send(key, abort.signal));
+      : await withKey(deps.store, deps.secrets, provider, key => prepared!.send(key, abort.signal), abort.signal);
     keyId = sent.keyId;
     const unobservedRetry = ("hadRetry" in sent && sent.hadRetry === true) || prepared.dropped.includes("max_tokens:upstream_limit");
     const upstream = sent.response;
+    if (automatic && upstream instanceof ProtocolError) throw upstream;
     if (upstream instanceof Error) throw new ProtocolError("上游连接失败，请检查来源地址和网络。", 502);
     if (prepared.passthrough) {
       // Native errors are native responses too. Preserve their status, body bytes and retry

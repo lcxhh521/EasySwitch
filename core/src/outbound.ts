@@ -1,4 +1,5 @@
 import { boundedUpstreamErrorText } from "./upstream-error.ts";
+import { assertAutomaticProvider, dispatchInference } from "./automatic-dispatch.ts";
 import { subscriptionCacheKey } from "./subscription-input.ts";
 import { prepareCodeBuddyTextBridge } from "./codebuddy-text-bridge.ts";
 import { cliTextSourceIssue } from "./cli-text-source.ts";
@@ -59,6 +60,20 @@ export interface PreparedOutbound {
 }
 
 export function prepareOutbound(provider: Provider, input: InboundRequest, runtime?: { qoderExecutor?: QoderExecutor; codeBuddyExecutor?: QoderExecutor }): PreparedOutbound {
+  assertAutomaticProvider(provider);
+  const prepared = prepareSourceOutbound(provider, input, runtime);
+  return {
+    ...prepared,
+    async send(key, signal) {
+      // Also reject a dedicated adapter prepared before entry into the request context.
+      try { assertAutomaticProvider(provider); }
+      catch (error) { return error as Error; }
+      return prepared.send(key, signal);
+    },
+  };
+}
+
+function prepareSourceOutbound(provider: Provider, input: InboundRequest, runtime?: { qoderExecutor?: QoderExecutor; codeBuddyExecutor?: QoderExecutor }): PreparedOutbound {
   if (provider.cliTextBridge !== undefined) {
     const issue = cliTextSourceIssue(provider); if (issue) throw new ProtocolError(issue, 400);
     if (provider.cliTextBridge.kind === "droid") throw new ProtocolError(DROID_TEXT_BRIDGE_BLOCKER, 501);
@@ -156,7 +171,8 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
           headers = target === "messages" ? { ...anthropicHeaders(key, provider), ...(!legacyMessagesRelay ? request.headers : Object.fromEntries(Object.entries(request.headers ?? {}).filter(([name]) => name.toLowerCase() !== "anthropic-beta"))) } : upstreamHeaders(provider, key);
         }
         const init: RequestInit = { method: "POST", redirect: "error", signal, headers: { "content-type": "application/json", accept: plan || request.stream ? "text/event-stream" : "application/json", ...headers } };
-        const response = await fetch(url, { ...init, body: JSON.stringify(payload) });
+        const serialized = JSON.stringify(payload);
+        const response = await dispatchInference(provider, signal, () => fetch(url, { ...init, body: serialized }));
         if (provider.plan) {
           recordQuotaHeaders(provider.id, response.headers);
           if (response.status === 429 && isUsageLimit(429, await boundedUpstreamErrorText(response.clone()))) recordLimitReached(provider.id);
@@ -172,7 +188,8 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
             await response.body?.cancel();
             const retry = { ...(payload as Json) }; delete retry.max_tokens;
             dropped.push("max_tokens:upstream_limit");
-            return await fetch(url, { ...init, body: JSON.stringify(retry) });
+            const repaired = JSON.stringify(retry);
+            return await dispatchInference(provider, signal, () => fetch(url, { ...init, body: repaired }));
           }
         }
         return response;

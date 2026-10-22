@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./paths.ts";
@@ -6,11 +6,16 @@ import type { SiwcAccount, SiwcStorage } from "./siwc.ts";
 import { catalogModels, type CatalogModel } from "./catalog.ts";
 import type { Profile } from "./types.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
+import { automaticProviderConfiguration } from "./automatic-approval.ts";
 
 interface StateFile {
   version: 1;
   providers: Provider[];
   bindings: HarnessBinding[];
+  /** Per-harness write generations prevent a newer selection from reviving an older confirmation. */
+  bindingRevisions?: Record<string, string>;
+  /** Applying a profile replaces all bindings, including the choice to leave a harness unbound. */
+  bindingProfileRevision?: string;
   accounts?: Account[];
   accountSettings?: AccountSettings;
   display?: DisplaySettings;
@@ -19,6 +24,10 @@ interface StateFile {
   siwc?: SiwcAccount[];
   siwcHostId?: string;
   pools?: Pool[];
+  /** Opaque mutation generations, never credential contents or reversible credential fingerprints. */
+  credentialRevisions?: Record<string, string>;
+  /** Configuration changes cannot restore a previously granted identity by changing values back. */
+  providerConfigurationRevisions?: Record<string, string>;
   /** Hashes of normalized model names the user explicitly declined for pool suggestions. */
   poolSuggestionDismissals?: string[];
   profiles?: Profile[];
@@ -94,13 +103,61 @@ export class Store {
 
   upsertProvider(provider: Provider): void {
     const before = this.state.providers;
+    const revisions = this.state.providerConfigurationRevisions;
+    const current = before.find(p => p.id === provider.id);
+    if (!current || automaticProviderConfiguration(current) !== automaticProviderConfiguration(provider)) {
+      this.state.providerConfigurationRevisions = { ...(revisions ?? {}), [provider.id]: randomUUID() };
+    }
     this.state.providers = before.some(p=>p.id===provider.id) ? before.map(p=>p.id===provider.id?structuredClone(provider):p) : [...before,structuredClone(provider)];
-    try { this.save(); } catch(error) { this.state.providers=before; throw error; }
+    try { this.save(); } catch(error) { this.state.providers=before; this.state.providerConfigurationRevisions=revisions; throw error; }
   }
 
   removeProvider(id: string): void {
+    const before = this.state.providers, bindings = this.state.bindings, revisions = this.state.providerConfigurationRevisions, bindingRevisions = this.state.bindingRevisions;
     this.state.providers = this.state.providers.filter(p => p.id !== id);
     this.state.bindings = this.state.bindings.filter(b => b.providerId !== id);
+    this.advanceBindingRevisions(bindings.filter(b => b.providerId === id).map(b => b.harness));
+    this.state.providerConfigurationRevisions = { ...(revisions ?? {}), [id]: randomUUID() };
+    try { this.save(); } catch(error) { this.state.providers=before; this.state.bindings=bindings; this.state.providerConfigurationRevisions=revisions; this.state.bindingRevisions=bindingRevisions; throw error; }
+  }
+
+  private revision(map: Record<string, string> | undefined, id: string): string {
+    if (!map || !Object.hasOwn(map, id)) return "";
+    const value = map[id];
+    if (typeof value !== "string" || !/^[a-f0-9-]{36}$/.test(value)) throw new Error("来源授权记录无法安全读取，请重新确认自动选择");
+    return value;
+  }
+
+  credentialRevision(account: string): string { return this.revision(this.state.credentialRevisions, account); }
+  providerConfigurationRevision(providerId: string): string { return this.revision(this.state.providerConfigurationRevisions, providerId); }
+
+  /** Read-only opaque generation for a harness, also changed by an all-bindings profile replacement. */
+  bindingRevision(harness: string): string {
+    const local = this.revision(this.state.bindingRevisions, harness);
+    const profile = this.state.bindingProfileRevision === undefined ? "" : this.revision({ profile: this.state.bindingProfileRevision }, "profile");
+    return local || profile ? createHash("sha256").update(JSON.stringify([local, profile])).digest("hex") : "";
+  }
+
+  /** The caller saves this together with its binding changes and rolls the old map back on failure. */
+  private advanceBindingRevisions(harnesses: readonly string[]): void {
+    if (!harnesses.length) return;
+    const next = { ...(this.state.bindingRevisions ?? {}) };
+    for (const harness of new Set(harnesses)) Object.defineProperty(next, harness, { value: randomUUID(), enumerable: true, writable: true, configurable: true });
+    this.state.bindingRevisions = next;
+  }
+
+  /** Persist before any backend mutation, including same-value set and failed mutation attempts. */
+  touchCredentialRevision(account: string): void {
+    const before = this.state.credentialRevisions;
+    this.state.credentialRevisions = { ...(before ?? {}), [account]: randomUUID() };
+    try { this.save(); } catch(error) { this.state.credentialRevisions=before; throw error; }
+  }
+
+  /** A replacement was already observed outside our writes. A failed save must not revive that grant in memory. */
+  invalidateCredentialRevision(account: string): void {
+    this.state.credentialRevisions = { ...(this.state.credentialRevisions ?? {}), [account]: randomUUID() };
+    // Intentionally no rollback: the external mutation happened before this save, unlike touch-before-write.
+    // A newly reviewed grant can only be installed through a successful save that persists this generation too.
     this.save();
   }
 
@@ -114,14 +171,17 @@ export class Store {
   }
 
   clearBinding(harness: HarnessBinding["harness"]): void {
-    this.state.bindings = this.state.bindings.filter(b => b.harness !== harness);
-    this.save();
+    const bindings = this.state.bindings, revisions = this.state.bindingRevisions;
+    this.state.bindings = bindings.filter(b => b.harness !== harness);
+    this.advanceBindingRevisions([harness]);
+    try { this.save(); } catch(error) { this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
   }
 
   setBinding(binding: HarnessBinding): void {
-    this.state.bindings = this.state.bindings.filter(b => b.harness !== binding.harness);
-    this.state.bindings.push(binding);
-    this.save();
+    const bindings = this.state.bindings, revisions = this.state.bindingRevisions;
+    this.state.bindings = [...bindings.filter(b => b.harness !== binding.harness), structuredClone(binding)];
+    this.advanceBindingRevisions([binding.harness]);
+    try { this.save(); } catch(error) { this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
   }
 
   accounts(harness?: Account["harness"]): Account[] {
@@ -171,9 +231,11 @@ export class Store {
     if (!profile) return undefined;
     // A binding whose provider or pool has since gone is left out, so applying never points an agent at nothing.
     const exists = (b: HarnessBinding) => b.providerId === "pool" ? (this.state.pools ?? []).some(p => p.id === b.model) : this.state.providers.some(p => p.id === b.providerId);
+    const bindings = this.state.bindings, prefs = this.state.prefs, revision = this.state.bindingProfileRevision;
     this.state.bindings = structuredClone(profile.bindings).filter(exists);
     this.state.prefs = structuredClone(profile.prefs);
-    this.save();
+    this.state.bindingProfileRevision = randomUUID();
+    try { this.save(); } catch(error) { this.state.bindings=bindings; this.state.prefs=prefs; this.state.bindingProfileRevision=revision; throw error; }
     return structuredClone(profile);
   }
 
@@ -200,6 +262,19 @@ export class Store {
     try { this.save(); } catch (error) { this.state.pools = old; throw error; }
   }
 
+  /** Creates a new confirmed pool and its binding in one replacement. Never modifies an old pool. */
+  installAutomaticPoolAndBind(pool: Pool, harness: string): void {
+    if (pool.strategy !== "automatic" || !pool.id || !harness || pool.automaticApproval?.version !== 1
+      || pool.members.length < 2 || pool.members.length > 32
+      || JSON.stringify(pool.members) !== JSON.stringify(pool.automaticApproval.members.map(m => m.member))
+      || (this.state.pools ?? []).some(p => p.id === pool.id)) throw new Error("自动选择确认无效，请重新检查来源名单");
+    const pools = this.state.pools, bindings = this.state.bindings, revisions = this.state.bindingRevisions;
+    this.state.pools = [...(pools ?? []), structuredClone(pool)];
+    this.state.bindings = [...bindings.filter(b => b.harness !== harness), { harness, providerId: "pool", model: pool.id }];
+    this.advanceBindingRevisions([harness]);
+    try { this.save(); } catch(error) { this.state.pools=pools; this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
+  }
+
   dismissedPoolSuggestions(): string[] {
     const list = this.state.poolSuggestionDismissals ?? [];
     if (!Array.isArray(list) || list.length > 4096 || list.some(id => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id))) throw new Error("模型池建议记录无法安全读取，请检查本机存储");
@@ -217,9 +292,11 @@ export class Store {
   }
 
   removePool(id: string): void {
+    const pools = this.state.pools, bindings = this.state.bindings, revisions = this.state.bindingRevisions;
     this.state.pools = (this.state.pools ?? []).filter(p => p.id !== id);
     this.state.bindings = this.state.bindings.filter(b => !(b.providerId === "pool" && b.model === id));
-    this.save();
+    this.advanceBindingRevisions(bindings.filter(b => b.providerId === "pool" && b.model === id).map(b => b.harness));
+    try { this.save(); } catch(error) { this.state.pools=pools; this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
   }
 
   /** Every model an agent can be given: each provider's, then the pools. */
