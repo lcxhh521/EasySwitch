@@ -107,10 +107,11 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     accountSettings: { autoPick: false },
   };
   const fixtureAgent = { id: "pi", name: "Fixture agent", icon: "letter:P", vendor: "Fixture", note: "VM fixture", support: "planned", installed: true, where: "/fixture/pi", can: { interactive: true, headless: true, efforts: ["off", "high"], tiers: [] } };
+  const fixtureAgents: any[] = [fixtureAgent];
   const responses: Record<string, unknown> = {
     "/api/overview": { version:"fixture", snapshotAt:new Date().toISOString(), display:{currency:"USD"}, activity:{observedSince:new Date().toISOString(),activeRequests:0,sessions:[]},sources:[],month:{estimatedCostUsd:0,unknownCostCalls:0,calls:0,startsAt:new Date().toISOString(),resetsAt:new Date().toISOString(),timezone:"UTC"},budget:{settings:{enabled:false}} },
     "/api/state": fixtureState,
-    "/api/agents": { agents: [fixtureAgent] },
+    "/api/agents": { agents: fixtureAgents },
     "/api/chatgpt": null, "/api/claude-desktop": null,
     "/api/plan": { accounts: [{ id: "plan-fixture", label: "Plan fixture", kind: "codex", planUsage: true, needsSignIn: false, on: false }] },
     "/api/doctor": { notice: "Read-only fixture report", findings: [] },
@@ -159,7 +160,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     await new Promise(resolve => setImmediate(resolve));
   };
   const node = (selector: string) => { const found = document.querySelector(selector); assert.ok(found, `Rendered control must exist: ${selector}`); return found; };
-  return { run, requests, writes, storage, root, body, page, document, history, location, fixtureState,
+  return { run, requests, writes, storage, root, body, page, document, history, location, fixtureState, fixtureAgents,
     node, html: () => page.innerHTML,
     refresh: () => run("refresh(true)"),
     click: (selector: string) => dispatch(documentHandlers, "click", node(selector)),
@@ -589,4 +590,53 @@ test("overview keeps old snapshot visibly stale after failure and discards a can
   assert.equal(app.run("overviewSignal.aborted"),true);
   app.run('delayedOverview({version:"late"})');await pending;
   assert.equal(app.run("page"),"settings");assert.notEqual(app.run("overviewSnapshot.version"),"late");
+});
+
+
+test("client cards retain ID selection across refresh and filtering never launches or loses bindings", async () => {
+  const app = shell();
+  app.fixtureAgents.push({...app.fixtureAgents[0], id:"aider", name:"Aider"}, {...app.fixtureAgents[0], id:"gemini-cli", name:"Gemini CLI", installed:false});
+  await app.refresh();
+  await app.click('[data-agent-select="aider"]');
+  assert.equal(app.run("selectedAgent"), "aider");
+  app.fixtureAgents.reverse(); await app.refresh();
+  assert.equal(app.run("selectedAgent"), "aider");
+  assert.match(app.html(), /aria-label="Aider 设置"/);
+  app.run('chatgptConfirm="enhance";claudeDesktopConfirm=true;state.bindings.aider={providerId:"missing",model:"saved-model"}');
+  await app.click('[data-agent-segment="available"]');
+  assert.equal(app.run("selectedAgent"), "gemini-cli");
+  assert.equal(app.run("chatgptConfirm"), null);
+  assert.equal(app.run("claudeDesktopConfirm"), false);
+  assert.equal(app.run("state.bindings.aider.model"), "saved-model");
+  assert.equal(app.requests.filter(r=>r.method!=="GET").length,0);
+  app.fixtureAgents.forEach(a=>a.installed=false); await app.refresh();
+  await app.click('[data-agent-segment="installed"]');
+  assert.equal(app.run("agentSegment"), "installed");
+  assert.match(app.html(), /还没有检测到客户端/);
+});
+
+test("client detail keeps unavailable effort and model values until explicit selection", async () => {
+  const app = shell(); await app.refresh();
+  app.run('state.bindings.pi={providerId:"missing",model:"saved-model"};state.prefs.pi={effort:"ultra",tiers:{small:"missing/tiny"}};state.modelEfforts={"missing/saved-model":["high","low"]};agentList[0].can.tiers=[{id:"small",label:"小模型",hint:"test"}];render()');
+  assert.match(app.html(), /来源已不存在/);
+  assert.match(app.html(), /已保存 ultra，当前模型与客户端不支持/);
+  assert.match(app.html(), /data-pick="pi@small"/);
+  assert.match(app.html(), /data-effort-choice="pi" data-value="high"/);
+  assert.doesNotMatch(app.html(), /data-effort-choice="pi" data-value="low"/);
+  assert.equal(app.run('state.prefs.pi.effort'), "ultra");
+  app.run('globalThis.effortWrites=[];call=async(method,path,body)=>{effortWrites.push({method,path,body});return {}};refresh=async()=>{}');
+  await app.click('[data-value="high"]');
+  assert.equal(app.run('JSON.stringify(effortWrites)'), '[{"method":"PUT","path":"/api/bindings/pi/effort","body":{"effort":"high"}}]');
+});
+
+test("client command copy is inert and profiles open only from the toolbar", async () => {
+  const app = shell(); await app.refresh();
+  assert.doesNotMatch(app.html(), /data-profile-new/);
+  app.run('globalThis.copied=[];globalThis.navigator={clipboard:{writeText:async text=>copied.push(text)}}');
+  await app.click('[data-copy="es pi"]');
+  assert.equal(app.run('JSON.stringify(copied)'), '["es pi"]');
+  assert.equal(app.requests.filter(r=>r.method!=="GET").length,0);
+  await app.click('[data-profiles-toggle]');
+  assert.match(app.html(), /data-profile-new/);
+  assert.match(app.html(), /不会结束已有增强会话/);
 });

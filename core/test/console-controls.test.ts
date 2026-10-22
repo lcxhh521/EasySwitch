@@ -155,8 +155,8 @@ test("complete page rendering keeps client launch, off/none controls and distinc
     page='agents';renderActual();`);
   assert.match(app.html(), /data-agent-launch="pi"/);
   assert.doesNotMatch(app.html(), /data-quick-task/);
-  assert.match(app.html(), /value="off" selected>关闭思考/);
-  assert.match(app.html(), /value="high" >开启思考/);
+  assert.match(app.html(), /data-value="off" aria-pressed="true">关闭思考/);
+  assert.match(app.html(), /data-value="high" aria-pressed="false">开启思考/);
   assert.match(app.html(), /网关会话令牌/);
   app.run(`planInfo={accounts:[],subscriptionSupport:${JSON.stringify(subscriptionSupport())}};openProvider='p';page='providers';renderActual();`);
   assert.match(app.html(), /订阅与官方 agent 接入核对（13 家）/);

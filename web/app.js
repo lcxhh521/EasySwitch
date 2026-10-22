@@ -293,7 +293,7 @@ let levelsEditor = null; // "providerId/model" whose levels are being edited
  * An agent's own controls, in the agent's row: thinking level and the other models it runs next to the main one
  * (sub-agent, small tasks), each with a small label above. They do not depend on the main model, which can stay native.
  */
-function agentControls(id) {
+function agentControls(id, detailed = false) {
   const binding = state.bindings?.[id];
   const can0 = (agentList ?? []).find(a => a.id === id)?.can;
   if (!can0) return "";
@@ -312,16 +312,20 @@ function agentControls(id) {
       : `<span class="label">跟随主模型</span>`;
     return `<div class="ctl" title="${esc(t.hint)}"><small>${esc(t.label)}</small><button class="popbtn" data-pick="${esc(id)}@${esc(t.id)}">${face}<span class="caret">▾</span></button>${savedModelNotice(name)}</div>`;
   };
-  const effort = levels.length
+  const savedEffort = prefs.effort ?? "";
+  const unavailableEffort = savedEffort && !levels.includes(savedEffort);
+  const effort = detailed && levels.length
+    ? `<div class="ctl effort-control"><small>想得多深</small><div class="seg effort-options" role="group" aria-label="想得多深">${["", ...levels].map(l => `<button data-effort-choice="${esc(id)}" data-value="${esc(l)}" aria-pressed="${savedEffort === l}">${levelLabel(l, levels)}</button>`).join("")}</div>${unavailableEffort ? `<small class="warn">已保存 ${esc(savedEffort)}，当前模型与客户端不支持；请明确重选。</small>` : ""}</div>`
+    : levels.length
     ? `<div class="ctl"><small>想得多深</small><select data-effort-select="${esc(id)}" title="只对这个 agent 生效">
-        ${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${levelLabel(l, levels)}</option>`).join("")}</select></div>`
+        ${unavailableEffort ? `<option value="${esc(savedEffort)}" selected disabled>已保存 ${esc(savedEffort)}（当前不可用）</option>` : ""}${["", ...levels].map(l => `<option value="${esc(l)}" ${(prefs.effort ?? "") === l ? "selected" : ""}>${levelLabel(l, levels)}</option>`).join("")}</select></div>`
     : modelKey
       // A model EasySwitch knows no levels for: the user can say which it has, so the control does not just disappear.
       ? `<div class="ctl"><small>想得多深</small><button class="btn secondary" data-levels-edit="${esc(modelKey)}" title="${esc(binding.model)} 没有已知的思考档位；告诉 EasySwitch 它有哪些">档位未知，设置</button></div>`
       : "";
   const backups = selectableModelNames().filter(name => !name.startsWith("pool/"));
   const backup = `<div class="ctl"><small>备用模型</small><select data-fallback-select="${esc(id)}"><option value="">不设置备用</option>${savedModelOption(prefs.fallbackModel, backups)}${backups.map(name=>{const slash=name.indexOf("/"),p=providerById(name.slice(0,slash));return `<option value="${esc(name)}" ${prefs.fallbackModel===name?"selected":""}>${esc(p?.name ?? name.slice(0,slash))} / ${esc(name.slice(slash+1))}</option>`;}).join("")}</select><small>仅来源明确不可用或额度耗尽时，在发送前换用；不重放请求</small></div>`;
-  return backup + effort + (modelKey && state.modelEffortNotes?.[modelKey] ? `<small class="hint">${esc(state.modelEffortNotes[modelKey])}</small>` : "") + (can0.tiers ?? []).map(tierCtl).join("");
+  return backup + effort + (!levels.length && unavailableEffort ? `<small class="hint">已保存推理档位 ${esc(savedEffort)}；当前没有可用档位，请先核对模型能力。</small>` : "") + (modelKey && state.modelEffortNotes?.[modelKey] ? `<small class="hint">${esc(state.modelEffortNotes[modelKey])}</small>` : "") + (can0.tiers ?? []).map(tierCtl).join("");
 }
 
 /** The levels editor for the bound model, shown under the row it was opened from. */
@@ -337,7 +341,7 @@ function agentEditor(id) {
     </div>`;
 }
 
-function agentRow(harness) {
+function agentRow(harness, detailed = false) {
   const meta = agentMeta(harness);
   const binding = state.bindings?.[harness];
   const provider = binding && providerById(binding.providerId);
@@ -349,7 +353,7 @@ function agentRow(harness) {
   const sub = !binary
     ? `没有找到 ${meta.name} 的命令`
     : harness === "claude" && state.claudeLogin ? "保留你的 Claude 登录，/model 里两类模型都在"
-    : binding ? "增强会话用右边的模型" : "选一个模型就能开增强会话";
+    : binding ? "新增强会话使用所选模型" : "选一个模型就能开增强会话";
   return `
     <div class="row agent" data-harness="${harness}">
       <div class="id">${icon(meta.icon, "lg")}
@@ -359,7 +363,7 @@ function agentRow(harness) {
         </div>
       </div>
       <div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${harness}" title="增强会话用哪个模型">${face}<span class="caret">▾</span></button>${savedModelNotice(binding && `${binding.providerId}/${binding.model}`)}</div>
-      ${agentControls(harness)}
+      ${agentControls(harness, detailed)}
       ${typeof automaticPoolEntry === "function" ? automaticPoolEntry(harness) : ""}
       <div class="acts"><button class="btn launch" data-launch="${harness}" title="在 EasySwitch 上启动一个增强会话（只在那个终端窗口里生效）" ${(binding || (harness === "claude" && state.claudeLogin)) && binary ? "" : "disabled"}>启动</button></div>
     </div>${agentEditor(harness)}`;
@@ -475,7 +479,7 @@ function guidePanel(a) {
   </div><button class="btn secondary" data-guide-close>收起</button></div>`;
 }
 
-function genericAgentRow(a) {
+function genericAgentRow(a, detailed = false) {
   const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
   const binding = state.bindings?.[a.id];
   const provider = binding && providerById(binding.providerId);
@@ -485,16 +489,16 @@ function genericAgentRow(a) {
   return `
   <div class="row agent">
     <div class="id">${icon(a.icon, "lg")}
-      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div>${capStrip(a)}</div>
+      <div class="grow"><div class="title">${esc(a.name)} <span class="hint">${esc(a.vendor)}</span> ${SUPPORT_CHIP[a.support]}</div><div class="sub" title="${esc(a.note)}">${esc(a.note)}${can && !can.verified ? " · <b>启动方式按官方文档写的，还没在真实程序上实测</b>" : ""}</div>${detailed ? "" : capStrip(a)}</div>
     </div>
     ${can ? `<div class="ctl"><small>主模型</small><button class="popbtn" data-pick="${esc(a.id)}">${face}<span class="caret">▾</span></button>${savedModelNotice(binding && `${binding.providerId}/${binding.model}`)}</div>` : ""}
-    ${can ? agentControls(a.id) : ""}
+    ${can ? agentControls(a.id, detailed) : ""}
     ${can && typeof automaticPoolEntry === "function" ? automaticPoolEntry(a.id) : ""}
     <div class="acts">
       ${a.guide ? `<button class="btn" data-guide="${esc(a.id)}">配置向导</button>` : ""}
       ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding && !(a.id === "opencode" && typeof automaticToolFlight !== "undefined" && (automaticToolFlight || automaticToolUncertain)) ? "" : "disabled"}>启动</button>` : ""}
       ${can?.interactive && typeof automaticToolEntry === "function" ? automaticToolEntry(a.id) : ""}
-      ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
+      ${!detailed ? a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>` : ""}
     </div>
   </div>${a.guide ? guidePanel(a) : ""}${can ? agentEditor(a.id) : ""}`;
 }
@@ -546,9 +550,56 @@ function panelSubscriptions() {
   return `<div class="section-head"><h2>订阅</h2></div><div class="card">${accounts.map(row).join("")}</div>`;
 }
 
+let selectedAgent = null;
+let agentSegment = null;
+let profilesOpen = false;
+let effortSaving = false;
+
+function clientCapabilities(a, compact = false) {
+  const features = (agentCoverage?.features ?? []).filter(f => a.caps?.[f.id] && a.caps[f.id].state !== "na");
+  return (compact ? features.slice(0, 3) : features).map(f => {
+    const capability = a.caps[f.id], status = CAP_STATE[capability.state];
+    return `<li><span>${esc(f.label)} · ${esc(status.label)}</span>${!compact && capability.note ? `<p>${esc(capability.note)}</p>` : ""}</li>`;
+  }).join("");
+}
+
+function clientCard(a) {
+  const binding = state.bindings?.[a.id];
+  const model = binding ? binding.model : Object.hasOwn(HARNESS, a.id) ? "使用原生模型" : "尚未设置外接模型";
+  const source = binding ? providerById(binding.providerId)?.name ?? binding.providerId : "";
+  return `<button class="client-card ${selectedAgent === a.id ? "selected" : ""}" data-agent-select="${esc(a.id)}" aria-pressed="${selectedAgent === a.id}" aria-controls="client-detail">
+    <span class="client-card-head">${icon(a.icon, "lg")}<span><strong>${esc(a.name)}</strong><small>${esc(a.vendor)}</small></span>${SUPPORT_CHIP[a.support] ?? ""}</span>
+    <span class="client-card-model">${esc(model)}</span>${source ? `<small>${esc(source)}</small>` : ""}
+    <ul class="client-capabilities">${clientCapabilities(a, true)}</ul>
+  </button>`;
+}
+
+function clientDetail(a) {
+  const builtin = Object.hasOwn(HARNESS, a.id) && (a.id === "codex" ? state.codexPath : state.claudePath);
+  const command = a.installed && a.can?.interactive && !a.where?.endsWith(".app") ? `es ${a.id}` : "";
+  const capabilities = clientCapabilities(a);
+  return `<section class="card client-detail" id="client-detail" aria-label="${esc(a.name)} 设置">
+    ${builtin ? agentRow(a.id, true) : genericAgentRow(a, true)}
+    ${a.id === "codex" ? chatgptCard() : ""}
+    <div class="client-detail-section"><h3>启动与原生使用</h3>
+      ${command ? `<div class="client-command"><code>${esc(command)}</code><button class="btn secondary" data-copy="${esc(command)}">复制启动命令</button></div><p class="hint">在终端运行命令才会启动；设置在新开的增强会话中生效。</p>` : ""}
+      ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开原生客户端</button><p class="hint">如需退回原生，请关闭原来的增强窗口，再打开原生客户端。此按钮不会结束已有增强会话。</p>` : `<p class="hint">安装客户端后刷新检测；已有配置向导仍可提前查看。</p>`}
+    </div>
+    ${capabilities ? `<div class="client-detail-section"><h3>能做什么</h3><ul class="client-capabilities full">${capabilities}</ul></div>` : ""}
+  </section>`;
+}
+
+function selectClient(id, segment = agentSegment) {
+  closePopover();
+  selectedAgent = id; agentSegment = segment;
+  chatgptConfirm = null; claudeDesktopConfirm = false;
+  levelsEditor = null; guideOpen = null; guideData = null; guideReveal = false;
+  render();
+}
+
 function renderAgents() {
   if (PANEL) {
-    const rows = Object.keys(HARNESS).map(agentRow).join("");
+    const rows = Object.keys(HARNESS).map(id => agentRow(id)).join("");
     return `
       <div class="card">${rows}</div>
       ${panelSubscriptions()}
@@ -560,28 +611,23 @@ function renderAgents() {
       </div>`;
   }
   if (typeof firstRunVisible === "function" && firstRunVisible()) return firstRunCard();
-  const others = otherAgents();
-  const codexHere = Boolean(state.codexPath);
-  const claudeHere = Boolean(state.claudePath);
-  const inst = [
-    ...(codexHere ? [agentRow("codex"), chatgptCard()] : []),
-    ...(claudeHere ? [agentRow("claude")] : []),
-    ...others.installed.map(genericAgentRow),
-  ];
-  const missing = [
-    ...(codexHere ? [] : agentList?.filter(a => a.id === "codex").map(genericAgentRow) ?? []),
-    ...(claudeHere ? [] : agentList?.filter(a => a.id === "claude").map(genericAgentRow) ?? []),
-    ...others.missing.map(genericAgentRow),
-  ];
-  return `
-    ${profileBar()}
-    <div class="section-head"><h2>已安装</h2><span class="aside">${inst.length ? `${agentList ? agentList.filter(a => a.installed).length : inst.length} 个` : ""}；每个 agent 平时都走原生，增强会话只在 EasySwitch 打开的终端窗口里生效</span></div>
-    <div class="card">${inst.join("") || `<div class="empty">${agentList ? "这台 Mac 上还没检测到 agent" : "正在检测…"}</div>`}</div>
-    <p class="hint">在每个 agent 那一行里选主模型、想得多深、后台小任务和子 agent 用的模型，再点「启动」。会话里输入 <code>/model</code> 可以随时换。选「原生」就是不用 EasySwitch；你平时直接打开的 ChatGPT 和 Claude Code 永远不受影响。「接入中」的 agent 正在逐个接入；「只能打开」的是闭源或绑定登录的，EasySwitch 只负责检测和打开，不会改动它们的任何配置。</p>
+  const all = agentList ?? [];
+  const installed = all.filter(a => a.installed && a.id !== "claude-desktop");
+  const available = all.filter(a => !a.installed && a.id !== "claude-desktop");
+  if (!agentSegment) agentSegment = installed.length ? "installed" : "available";
+  const list = agentSegment === "installed" ? installed : available;
+  if (!list.some(a => a.id === selectedAgent)) selectedAgent = list[0]?.id ?? null;
+  const chosen = list.find(a => a.id === selectedAgent);
+  return `<div class="client-toolbar">
+      <div class="seg" role="group" aria-label="客户端范围"><button data-agent-segment="installed" aria-pressed="${agentSegment === "installed"}">已安装 ${installed.length}</button><button data-agent-segment="available" aria-pressed="${agentSegment === "available"}">可以接入 ${available.length}</button></div>
+      <button class="btn secondary" data-profiles-toggle aria-expanded="${profilesOpen}">方案${state.profiles?.length ? ` · ${state.profiles.length}` : ""}</button>
+    </div>
+    ${profilesOpen ? profileBar() : ""}
+    <div class="client-layout"><div class="client-grid" aria-label="选择客户端">
+      ${list.map(clientCard).join("") || `<div class="card empty">${agentList ? agentSegment === "installed" ? "还没有检测到客户端，切换到「可以接入」查看。" : "已检测到列表中的全部客户端。" : "正在检测客户端…"}</div>`}
+    </div>${chosen ? clientDetail(chosen) : ""}</div>
     ${state.providers.length ? "" : onboarding()}
-    ${experimentalAgentsCard()}
-    ${coverageCard()}
-    ${missing.length ? `<div class="section-head"><h2>未安装</h2><span class="aside">${missing.length} 个</span></div><div class="card">${missing.join("")}</div>` : ""}`;
+    ${experimentalAgentsCard()}`;
 }
 
 let autoConfirm = false; // the inline terms notice for auto pick is open
@@ -1523,7 +1569,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
@@ -1639,6 +1685,7 @@ document.addEventListener("click", async e => {
   }
   if (t.closest("#refresh")) {
     const navigation = pageNavigationVersion;
+    if (page === "agents" && !PANEL) agentList = await loadAgents() ?? agentList;
     const refreshed = await refresh(true);
     if (navigation === pageNavigationVersion && page !== "usage") {
       const subject = page === "doctor" ? "自检状态" : "核心状态";
@@ -1647,6 +1694,21 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.closest("#guard-chip")) { if (popover) closePopover(); else if (state) openGuard($("#guard-chip")); return; }
+
+  const client = t.closest("[data-agent-select]");
+  if (client) { selectClient(client.dataset.agentSelect); return; }
+  const segment = t.closest("[data-agent-segment]");
+  if (segment) { selectClient(null, segment.dataset.agentSegment); return; }
+  if (t.closest("[data-profiles-toggle]")) { profilesOpen = !profilesOpen; profileNaming = false; render(); return; }
+  const effort = t.closest("[data-effort-choice]");
+  if (effort) {
+    if (effortSaving) return;
+    effortSaving = true; effort.disabled = true;
+    try { await call("PUT", `/api/bindings/${encodeURIComponent(effort.dataset.effortChoice)}/effort`, { effort: effort.dataset.value }); toast("推理档位已保存，下次启动生效"); }
+    catch (error) { showError(error); }
+    finally { effortSaving = false; await refresh(true); }
+    return;
+  }
 
   const pick = t.closest("[data-pick]");
   if (pick) { if (popover) closePopover(); else openPicker(pick, pick.dataset.pick); return; }
