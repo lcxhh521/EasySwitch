@@ -12,10 +12,14 @@ export interface AutomaticAttempt {
   assertDispatch?(): void;
   /** Only a returned HTTP response is an observation, never a local guard or transport error. */
   observe(status: number): void;
+  /** P1 is a native ordinary Chat wire contract, never a conversion or quirk-replay path. */
+  requireNativeChat?: true;
+  /** Inline output provenance gate; native usage observation is not tool identity proof. */
+  guardResponse?(response: Response): Response;
 }
 
 /** Shared by every member and nested adapter retry of one logical request. */
-export interface AutomaticDispatchBudget { used: number; limit: 2 }
+export interface AutomaticDispatchBudget { used: number; limit: 1 | 2 }
 
 const context = new AsyncLocalStorage<{ attempt: AutomaticAttempt; budget: AutomaticDispatchBudget }>();
 
@@ -50,8 +54,8 @@ export async function dispatchInference(provider: Provider, signal: AbortSignal,
   attempt.assertDispatch?.();
   signal.throwIfAborted();
   const budget = state.budget;
-  if (budget.limit !== 2 || !Number.isSafeInteger(budget.used) || budget.used < 0 || budget.used >= budget.limit) {
-    throw new ProtocolError("本次自动选择最多尝试两次，已停止重试。请检查来源后重新发起请求。", 409);
+  if (budget.limit !== (attempt.requireNativeChat ? 1 : 2) || !Number.isSafeInteger(budget.used) || budget.used < 0 || budget.used >= budget.limit) {
+    throw new ProtocolError(budget.limit === 1 ? "工具会话每个请求只发送一次，已停止重试。请新开会话。" : "本次自动选择最多尝试两次，已停止重试。请检查来源后重新发起请求。", 409);
   }
   // No await between the final check, increment and call: concurrent completions cannot overrun it.
   budget.used += 1;

@@ -3,7 +3,7 @@ import { automaticLocalStamp } from "./automatic-local-stamp.ts";
 import { randomUUID } from "node:crypto";
 import { AGENTS } from "./agents.ts";
 import { buildPoolSuggestions } from "./pool-suggestions.ts";
-import { mintAutomaticApproval, validateAutomaticSnapshot, validateApproval, publicAutomaticApproval } from "./automatic-approval.ts";
+import { mintAutomaticApproval, validateAutomaticSnapshot, validateApproval, publicAutomaticApproval, automaticToolApprovalId } from "./automatic-approval.ts";
 import { ProtocolError } from "./protocol.ts";
 import type { Store } from "./store.ts";
 import type { SecretStore } from "./secrets.ts";
@@ -14,7 +14,7 @@ const changed = () => new ProtocolError("来源、固定凭据或程序选择已
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 export function publicAutomaticPool(pool: Pool) {
   const { automaticApproval, ...plain } = pool;
-  return { ...plain, ...(automaticApproval ? { automaticApproval: publicAutomaticApproval(automaticApproval) } : {}) };
+  return { ...plain, ...(automaticApproval ? { automaticApproval: publicAutomaticApproval(automaticApproval), automaticToolsApprovalId: automaticToolApprovalId(pool) } : {}) };
 }
 interface Pending {
   expiresAt: number;

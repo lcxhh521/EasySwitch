@@ -1,5 +1,7 @@
 import { AutomaticPoolConsole, publicAutomaticPool } from "./automatic-console.ts";
-import { revisionedSecrets } from "./automatic-approval.ts";
+import { revisionedSecrets, validateApproval, automaticToolApprovalId } from "./automatic-approval.ts";
+import { automaticLocalStamp } from "./automatic-local-stamp.ts";
+import { AutomaticToolSessions } from "./automatic-tool-sessions.ts";
 import { AutomaticFailureLedger } from "./automatic-policy.ts";
 import { ProtocolError } from "./protocol.ts";
 import { SourceHealthMonitor, modelsHealthFingerprint } from "./source-health.ts";
@@ -15,7 +17,7 @@ import { cliTextSourceIssue } from "./cli-text-source.ts";
 import { qoderTextBridgeIssue, type QoderExecutor } from "./qoder-text-bridge.ts";
 import { DROID_TEXT_BRIDGE_BLOCKER } from "./droid-text-bridge.ts";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -234,6 +236,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const secrets = revisionedSecrets(store, deps.secrets);
   const automaticConsole = new AutomaticPoolConsole(store, secrets);
   const automaticFailures = new AutomaticFailureLedger();
+  const automaticToolSessions = new AutomaticToolSessions();
   const ledger = deps.ledger ?? new Ledger(store.dir);
   const auth = deps.gatewayAuth ?? gatewayTokens;
   const budget = new BudgetController(store.dir, { readSummary: (start, end, now) => ledger.budgetSummary(start, end, now) });
@@ -312,13 +315,22 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** The agent's saved extra models that still exist, by tier id. */
-  function tiersFor(id: string): Record<string, string> {
+  function tiersFor(id: string, prefs = store.prefs(id)): Record<string, string> {
     const known = new Set((LAUNCHERS[id]?.tiers ?? []).map(t => t.id));
-    return Object.fromEntries(Object.entries(store.prefs(id).tiers ?? {}).filter(([tier, name]) => known.has(tier) && resolveModel(store, name)));
+    return Object.fromEntries(Object.entries(prefs.tiers ?? {}).filter(([tier, name]) => known.has(tier) && resolveModel(store, name)));
+  }
+
+  /** Public compare-and-swap digest only: never a capability or an account identity. */
+  function automaticToolLaunchReviewId(id: string): string {
+    return createHash("sha256").update(JSON.stringify([store.binding(id), store.bindingRevision(id), store.prefs(id)])).digest("hex");
   }
 
   /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
-  async function interactiveSpec(id: string, opts: { model?: string; effort?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; cleanup: () => Promise<void> } | { error: string; status: number; code: string }> {
+  async function interactiveSpec(id: string, opts: { model?: string; effort?: string; automaticTools?: boolean; automaticToolsApprovalId?: string; automaticToolsLaunchReviewId?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; cleanup: () => Promise<void> } | { error: string; status: number; code: string }> {
+    if (opts.automaticTools && id !== "opencode") return { status: 400, code: "tool_session_unsupported", error: "工具会话试用目前只提供 OpenCode 的普通函数工具入口。" };
+    if (opts.automaticTools && opts.automaticToolsLaunchReviewId !== automaticToolLaunchReviewId(id)) return { status: 409, code: "tool_session_review_changed", error: "程序模型或小模型设置已经变化，请重新核对后新开工具会话。" };
+    const reviewedPrefs = opts.automaticTools ? store.prefs(id) : undefined;
+    const bindingRevision = store.bindingRevision(id);
     const launcher = LAUNCHERS[id];
     const known = AGENTS.find(a => a.id === id);
     if (!known || !launcher?.interactive) return { status: 409, code: "agent_not_integrated", error: "这个 agent 还没有接入交互启动" };
@@ -333,19 +345,34 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const off = model ? store.provider(model.slice(0, Math.max(0, model.indexOf("/")))) : undefined;
       return { status: 409, code: off?.off ? "provider_disabled" : "model_not_found", error: off?.off ? `「${off.name}」这个订阅现在是关着的：先在「模型来源」里把它打开` : "还没有可用的模型：先在「模型来源」里添加一个" };
     }
-    const wanted = opts.effort ?? store.prefs(id).effort;
+    const wanted = opts.effort ?? (reviewedPrefs ?? store.prefs(id)).effort;
     const effort = wanted && (await levelsFor(id, model || undefined)).includes(wanted) ? wanted : undefined;
-    const tiers = tiersFor(id);
+    let automaticTools: GatewaySession["automaticTools"];
+    if (opts.automaticTools) {
+      const pool = poolOf(store, model);
+      if (!opts.model || !b || b.providerId !== "pool" || `pool/${b.model}` !== opts.model || pool?.strategy !== "automatic" || !opts.automaticToolsApprovalId || opts.automaticToolsApprovalId !== automaticToolApprovalId(pool)) return { status: 409, code: "tool_session_review_changed", error: "请先核对已确认的自动来源，再显式新开工具会话；不会替换旧选择。" };
+      if (wanted) return { status: 400, code: "tool_session_effort_unsupported", error: "工具会话试用暂不支持思考档位，请先选择默认档位或固定来源。" };
+      const stamp = automaticLocalStamp(store, pool.members, pool.id);
+      const approved = await validateApproval(store, secrets, pool);
+      if (!approved.ok || stamp !== automaticLocalStamp(store, pool.members, pool.id) || bindingRevision !== store.bindingRevision(id) || automaticToolLaunchReviewId(id) !== opts.automaticToolsLaunchReviewId || automaticToolApprovalId(store.pool(pool.id)!) !== opts.automaticToolsApprovalId) return { status: 409, code: "tool_session_review_changed", error: "来源、固定凭据或程序选择已经变化，请重新核对后新开工具会话。" };
+      automaticTools = { version: 1, poolId: pool.id, approvalId: opts.automaticToolsApprovalId };
+    }
+    const tiers = tiersFor(id, reviewedPrefs);
+    if (reviewedPrefs && (LAUNCHERS[id]?.tiers ?? []).some(tier => reviewedPrefs.tiers?.[tier.id] && !Object.hasOwn(tiers, tier.id))) {
+      return { status: 409, code: "tool_session_tier_unavailable", error: "已设置的小模型或子任务模型当前不可用，请恢复该来源或显式重新选择；不会偷偷改为主模型。" };
+    }
     const sessionDir = deps.interactiveRuntime?.newSessionDir() ?? newSessionDir();
     let token: string | undefined;
+    let toolSessionId: string | undefined;
     try {
-    const issued = auth.issue(id, { depth: 0, allowMcp: false, allowNativeClaude: keepLogin });
+    const issued = auth.issue(id, { depth: 0, allowMcp: false, allowNativeClaude: keepLogin, ...(automaticTools ? { automaticTools } : {}) });
     token = issued.token;
+    if (automaticTools) { toolSessionId = issued.id; automaticToolSessions.register(issued); }
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
     const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
     materialize(spec, sessionDir);
-    return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
-    } catch (error) { try { if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
+    return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
+    } catch (error) { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
   }
 
   // ---- ChatGPT plan ("Continue with ChatGPT"): accounts, sign-in in progress, the provider each account becomes
@@ -705,6 +732,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudePath: (await findClaude()) ?? null,
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
+        automaticToolLaunchReviews: { opencode: automaticToolLaunchReviewId("opencode") },
         selectableModels: store.catalog().map(m => `${m.providerId}/${m.model}`),
         pools: store.pools().map(publicPool),
         poolSuggestions: poolSuggestions(),
@@ -1214,8 +1242,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const agentAction = /^\/api\/agents\/([a-z0-9-]+)\/(launch|command)$/.exec(path);
     if (agentAction && method === "POST") {
       const id = agentAction[1] ?? "";
+      if ((Object.hasOwn(body, "automaticTools") && typeof body.automaticTools !== "boolean") || ["automaticToolsApprovalId", "automaticToolsLaunchReviewId"].some(key => Object.hasOwn(body, key) && typeof body[key] !== "string")) { json(res, 400, { error: "工具模式必须由明确的布尔开关和原确认标识指定。" }); return; }
       const q = new URL(req.url ?? "", "http://x").searchParams;
       const made = await interactiveSpec(id, {
+        ...(body.automaticTools === true ? { automaticTools: true, automaticToolsApprovalId: body.automaticToolsApprovalId as string | undefined, automaticToolsLaunchReviewId: body.automaticToolsLaunchReviewId as string | undefined } : {}),
         ...(typeof body.model === "string" && body.model ? { model: body.model } : q.get("model") ? { model: q.get("model")! } : {}),
         ...(typeof body.effort === "string" && body.effort ? { effort: body.effort } : q.get("effort") ? { effort: q.get("effort")! } : {}),
       });
@@ -1777,7 +1807,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const inference = req.method === "POST" && !path.endsWith("count_tokens") && gemini?.[3] !== "countTokens";
         if (inference || (isChatgptPath(path) && req.method !== "GET")) {
           try { budget.assertAllowed(); }
-          catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
+          catch (error) { if (error instanceof BudgetExceededError) { if (session.automaticTools) automaticToolSessions.pause(session.id); gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
       }
       if (isChatgptPath(path)) {
@@ -1794,7 +1824,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         return;
       }
       const automaticRuntime = (raw: string) => ({
-        secrets, protocol, raw, failures: automaticFailures,
+        secrets, protocol, raw, failures: automaticFailures, session, toolSessions: automaticToolSessions,
         compatibilityIssue: req.headers["anthropic-beta"] ? "自动模式暂不支持额外的厂商协议特性，请选择固定来源。" : undefined,
         assertAllowed: () => {
           const current = auth.authenticate(req.headers, url, "inference");

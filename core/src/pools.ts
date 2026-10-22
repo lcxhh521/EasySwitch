@@ -1,4 +1,6 @@
 import { automaticLocalStamp } from "./automatic-local-stamp.ts";
+import { runAutomaticToolPool, type AutomaticToolSessions } from "./automatic-tool-sessions.ts";
+import type { GatewaySession } from "./gateway-auth.ts";
 import type { SecretStore } from "./secrets.ts";
 import { validateApproval, readApprovedKey } from "./automatic-approval.ts";
 import { AutomaticFailureLedger, automaticTextRequestIssue } from "./automatic-policy.ts";
@@ -177,6 +179,14 @@ export async function runWithPool(
   automatic?: AutomaticPoolRuntime,
 ): Promise<void> {
   const pool = exposed ? poolOf(store, exposed) : undefined;
+  const marker = automatic?.session?.automaticTools;
+  if (marker && (exposed === `pool/${marker.poolId}` || pool?.strategy === "automatic")) {
+    if (exposed !== `pool/${marker.poolId}` || pool?.strategy !== "automatic" || !automatic?.toolSessions) {
+      automatic?.toolSessions?.pause(automatic.session!.id);
+      automaticError(res, automatic?.protocol ?? "chat", 409, "本次工具启动的自动模型或授权已经变化，不能换源或退回纯文字模式。请新开会话。"); return;
+    }
+    await runAutomaticToolPool(store, pool, res, attempt, { ...automatic, session: automatic.session!, registry: automatic.toolSessions }); return;
+  }
   if (pool?.strategy === "automatic") { await runAutomaticPool(store, pool, res, attempt, automatic); return; }
   const members = exposed ? poolMembers(store, exposed) : undefined;
   if (!members?.length) { await attempt(res, undefined); return; }
@@ -220,6 +230,8 @@ export interface AutomaticPoolRuntime {
   raw: string;
   failures: AutomaticFailureLedger;
   compatibilityIssue?: string;
+  session?: GatewaySession;
+  toolSessions?: AutomaticToolSessions;
   /** Must reauthenticate the original session and check the current global budget. */
   assertAllowed(): void;
 }

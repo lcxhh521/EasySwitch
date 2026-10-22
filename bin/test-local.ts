@@ -11,6 +11,8 @@ const home = mkdtempSync(join(tmpdir(), "es-local-tests-home-"));
 const files = [
   "accounts-auto",
   "automatic-dispatch", "automatic-approval", "automatic-policy", "automatic-pools-ui", "automatic-api", "automatic-console-races",
+  "automatic-tool-auth", "automatic-tool-policy", "automatic-tool-output", "automatic-tool-sessions",
+  "automatic-tool-api", "automatic-tool-ui", "automatic-tool-dispatch",
   "pool-transparency",
   "pool-signals",
   "onboarding-draft-storage", "onboarding-draft",

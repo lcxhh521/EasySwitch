@@ -106,9 +106,11 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
       : await withKey(deps.store, deps.secrets, provider, key => prepared!.send(key, abort.signal), abort.signal);
     keyId = sent.keyId;
     const unobservedRetry = ("hadRetry" in sent && sent.hadRetry === true) || prepared.dropped.includes("max_tokens:upstream_limit");
-    const upstream = sent.response;
+    let upstream = sent.response;
     if (automatic && upstream instanceof ProtocolError) throw upstream;
     if (upstream instanceof Error) throw new ProtocolError("上游连接失败，请检查来源地址和网络。", 502);
+    if (automatic?.requireNativeChat && (!prepared.passthrough || prepared.protocol !== "chat" || prepared.adapter !== "api-chat")) throw new ProtocolError("工具会话不能转换协议或更换专用适配器。", 409);
+    if (automatic?.guardResponse) upstream = automatic.guardResponse(upstream);
     if (prepared.passthrough) {
       // Native errors are native responses too. Preserve their status, body bytes and retry
       // metadata, including empty 204/304 responses. Key/pool retries still happen before output.
@@ -145,7 +147,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     usageComplete = false;
     usage = downstream?.usage ?? usage;
     const status = error instanceof ProtocolError ? error.status : 502;
-    const message = error instanceof ProtocolError ? error.message : "上游响应无法完成，请检查来源或重试。";
+    const message = error instanceof ProtocolError ? error.message : automatic?.requireNativeChat ? "本次工具会话无法确认请求结果，已暂停。请先检查已有工具执行结果，再新开会话；不会自动重放。" : "上游响应无法完成，请检查来源或重试。";
     if (res.destroyed || abort.signal.aborted) { finish(upstreamFailed ? 502 : 499, upstreamFailed ? "upstream stream interrupted" : "client disconnected"); return; }
     if (!res.headersSent) gatewayError(res, input.protocol, status, message);
     else if (prepared?.passthrough) res.destroy();

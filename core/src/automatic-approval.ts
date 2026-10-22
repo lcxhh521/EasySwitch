@@ -48,6 +48,12 @@ export function publicAutomaticApproval(approval: AutomaticApproval): PublicAuto
   return { version: 1, members: approval.members.map(({ member, keyId, credentialLabel }) => ({ member, ...(keyId !== undefined ? { keyId } : {}), credentialLabel })) };
 }
 
+/** Non-secret consent revision, not an identity claim or bearer capability. */
+export function automaticToolApprovalId(pool: Pool): string {
+  if (!pool.automaticApproval) throw new AutomaticApprovalError();
+  return createHash("sha256").update(JSON.stringify(pool.automaticApproval)).digest("hex");
+}
+
 function active(signal?: AbortSignal): void { if (signal?.aborted) throw new AutomaticApprovalError(true); }
 function fail(): never { throw new AutomaticApprovalError(); }
 

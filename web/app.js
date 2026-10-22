@@ -484,7 +484,8 @@ function genericAgentRow(a) {
     ${can && typeof automaticPoolEntry === "function" ? automaticPoolEntry(a.id) : ""}
     <div class="acts">
       ${a.guide ? `<button class="btn" data-guide="${esc(a.id)}">配置向导</button>` : ""}
-      ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding ? "" : "disabled"}>启动</button>` : ""}
+      ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding && !(a.id === "opencode" && typeof automaticToolFlight !== "undefined" && (automaticToolFlight || automaticToolUncertain)) ? "" : "disabled"}>启动</button>` : ""}
+      ${can?.interactive && typeof automaticToolEntry === "function" ? automaticToolEntry(a.id) : ""}
       ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>`}
     </div>
   </div>${a.guide ? guidePanel(a) : ""}${can ? agentEditor(a.id) : ""}`;
@@ -515,7 +516,7 @@ function profileBar() {
   const list = state.profiles ?? [];
   return `
     <div class="card"><div class="row" style="gap:10px;flex-wrap:wrap">
-      <div class="grow"><div class="title">方案</div><div class="sub">${list.length ? "把所有 agent 现在的设置存成一个名字，之后一键切回" : "还没有方案：设好各个 agent 的主模型、档位和小模型后，存成一个方案"}</div>${list.length && state.pools?.some(pool => pool.strategy === "automatic") ? `<p class="hint">方案可能恢复纯文字自动模式，工具请求会被拒绝；切换后请核对主模型和小模型。</p>` : ""}</div>
+      <div class="grow"><div class="title">方案</div><div class="sub">${list.length ? "把所有 agent 现在的设置存成一个名字，之后一键切回" : "还没有方案：设好各个 agent 的主模型、档位和小模型后，存成一个方案"}</div>${list.length && state.pools?.some(pool => pool.strategy === "automatic") ? `<p class="hint">方案可能恢复纯文字自动模式，工具请求会被拒绝；切换后请核对主模型和小模型。此限制指普通启动；OpenCode 工具试用仍需另行确认新开会话。</p>` : ""}</div>
       ${list.length ? `<select data-profile-pick>${list.map(p => `<option value="${esc(p.id)}">${esc(p.name)}（${p.agents} 个 agent）</option>`).join("")}</select>
         <button class="btn" data-profile-apply>切换到它</button><button class="btn secondary" data-profile-del>删除</button>` : ""}
       ${profileNaming
@@ -718,7 +719,7 @@ function openPicker(anchor, target) {
       lastGroup = o.provider.id;
       const on = binding && binding.providerId === o.provider.id && binding.model === o.model;
       return `${head}<button class="opt ${i === kb ? "kb" : ""}" data-i="${i}">${icon(o.provider.icon)}
-        <span class="name">${esc(o.model)}</span><span class="meta">${ROUTE[o.route]}</span><span class="tick">${on ? "✓" : ""}</span></button>`;
+        <span class="name">${esc(o.model)}</span><span class="meta">${harness === "opencode" && o.route === "pool-automatic" ? "普通启动仅纯文字；可另行确认新开普通函数工具试用" : ROUTE[o.route]}</span><span class="tick">${on ? "✓" : ""}</span></button>`;
     }).join("") || `<div class="empty">没有匹配的模型</div>`;
     el.querySelector(".opt.kb")?.scrollIntoView({ block: "nearest" });
     return opts;
@@ -1468,6 +1469,7 @@ function render() {
     }
     const views = { agents: renderAgents, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
     main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
+    if (typeof automaticToolCard === "function" && page === "agents") main.innerHTML = automaticToolCard() + main.innerHTML;
     if (typeof automaticPoolCard === "function" && page === "agents") main.innerHTML = automaticPoolCard() + main.innerHTML;
     if (typeof firstRunResumeCard === "function") main.innerHTML = firstRunResumeCard() + main.innerHTML;
     if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
@@ -1479,7 +1481,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
@@ -1520,6 +1522,7 @@ async function refresh(force = false) {
   }
   if (navigation !== pageNavigationVersion) return false;
   state = nextState;
+  if (typeof automaticToolSync === "function") automaticToolSync();
   if (state && !PANEL && !state.providers.length && !presets.length) presets = await call("GET", "/api/presets").catch(() => []);
   if (navigation !== pageNavigationVersion) return false;
   if (typeof firstRunSync === "function" && state) firstRunSync();
@@ -1705,6 +1708,8 @@ document.addEventListener("click", async e => {
 
   const agentLaunch = t.closest("[data-agent-launch]");
   if (agentLaunch) {
+    if (agentLaunch.disabled || (agentLaunch.dataset.agentLaunch === "opencode" && typeof automaticToolFlight !== "undefined" && (automaticToolFlight || automaticToolUncertain))) return;
+    if (typeof automaticToolInvalidate === "function") automaticToolInvalidate();
     try { const r = await call("POST", `/api/agents/${agentLaunch.dataset.agentLaunch}/launch`, {}); toast(`已在终端里启动（${r.model}）`); } catch (error) { showError(error); }
     return;
   }

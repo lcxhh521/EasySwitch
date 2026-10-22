@@ -74,6 +74,7 @@ export function prepareOutbound(provider: Provider, input: InboundRequest, runti
 }
 
 function prepareSourceOutbound(provider: Provider, input: InboundRequest, runtime?: { qoderExecutor?: QoderExecutor; codeBuddyExecutor?: QoderExecutor }): PreparedOutbound {
+  const strictTools = assertAutomaticProvider(provider)?.requireNativeChat === true;
   if (provider.cliTextBridge !== undefined) {
     const issue = cliTextSourceIssue(provider); if (issue) throw new ProtocolError(issue, 400);
     if (provider.cliTextBridge.kind === "droid") throw new ProtocolError(DROID_TEXT_BRIDGE_BLOCKER, 501);
@@ -103,10 +104,12 @@ function prepareSourceOutbound(provider: Provider, input: InboundRequest, runtim
   const protocols = sourceProtocols(provider, request.model);
   const target = protocols.includes(input.protocol) ? input.protocol : protocols[0];
   if (!target) throw new ProtocolError("这个来源没有可用的出站协议，请在来源设置里选择。", 400);
+  if (strictTools && (input.protocol !== "chat" || target !== "chat")) throw new ProtocolError("工具会话试用只支持普通 Chat 函数工具直通，请改用固定来源。", 400);
+  if (strictTools && input.effort) throw new ProtocolError("工具会话试用暂不支持思考档位，请先选择默认档位或固定来源。", 400);
   const conversation = target === input.protocol ? undefined : decodeRequest(request);
   let body = conversation ? encodeRequest(conversation, request, target) : structuredClone(input.body);
   const dropped = conversation?.dropped ?? [];
-  if (!conversation) restoreNativeState(body, request, dropped);
+  if (!conversation && !strictTools) restoreNativeState(body, request, dropped);
   // A Messages request meant for Anthropic carries Claude-only fields and the account's identifier in `metadata`; they go to Anthropic itself (and to a relay on this machine), not to a third party.
   const keepClaudeFields = (() => { try { const host = new URL(provider.anthropicBaseUrl ?? provider.baseUrl).hostname; return /(^|\.)anthropic\.com$/i.test(host) || ["127.0.0.1", "localhost", "[::1]", "::1"].includes(host); } catch { return false; } })();
   const legacyMessagesRelay = (() => { try { return /(^|\.)(?:bigmodel\.cn|z\.ai)$/.test(new URL(provider.anthropicBaseUrl ?? provider.baseUrl).hostname); } catch { return false; } })();
@@ -123,7 +126,7 @@ function prepareSourceOutbound(provider: Provider, input: InboundRequest, runtim
     }
   }
   if (target !== "gemini") { body.model = request.model; if (conversation) body.stream = request.stream; }
-  if (target === "chat") {
+  if (target === "chat" && !strictTools) {
     const quirks = quirksFor(provider.baseUrl, request.model);
     const style = provider.plan ? "effort" : provider.reasoningEffort === undefined ? quirks.reasoning : provider.reasoningEffort ? "effort" : "none";
     // Known provider quirks live at egress. An ordinary same-protocol call retains its fields.
@@ -134,7 +137,7 @@ function prepareSourceOutbound(provider: Provider, input: InboundRequest, runtim
     if (conversation) delete body.reasoning_effort;
     applyEffort(body as ChatRequest, effort, style, modelEfforts(provider, request.model));
     if (request.stream && provider.streamUsage && !body.stream_options) body.stream_options = { include_usage: true };
-  } else if (request.effort && !applyOfficialProtocolEffort(body, target, target === "messages" ? provider.anthropicBaseUrl ?? provider.baseUrl : provider.baseUrl, request.model, request.effort)) {
+  } else if (!strictTools && request.effort && !applyOfficialProtocolEffort(body, target, target === "messages" ? provider.anthropicBaseUrl ?? provider.baseUrl : provider.baseUrl, request.model, request.effort)) {
     if (target === "responses") body.reasoning = { ...body.reasoning, effort: request.effort };
     else if (target === "messages") body.output_config = { ...body.output_config, effort: request.effort };
     else body.generationConfig = { ...body.generationConfig, thinkingConfig: { ...body.generationConfig?.thinkingConfig, thinkingLevel: request.effort.toUpperCase() } };
