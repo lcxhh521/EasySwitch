@@ -12,6 +12,7 @@ const files = [
   "accounts-auto",
   "pool-transparency",
   "pool-signals",
+  "onboarding-draft-storage", "onboarding-draft",
   "anthropic", "translate", "responses-upstream", "quirks", "model-efforts", "thinking",
   "gateway-chat", "gateway-gemini", "source-adapters", "source-health", "source-health-ui", "agent-fallback", "source-health-api", "protocol-safety", "outbound-shape", "outbound-corrections", "upstream-error", "protocol-streaming", "custom-tool-input", "wire", "pool", "pool-suggestions", "pool-suggestions-api", "pool-suggestions-ui", "keypool",
   "plan-provider", "codex-plan", "copilot", "mimo-free", "subscription-support", "subscription-routes", "subscription-conversation",

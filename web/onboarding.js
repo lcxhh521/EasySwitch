@@ -1,12 +1,29 @@
-// First-run state stays in this page only. Keys never enter saved wizard state or copied commands.
+// Live state stays in this page. Same-tab drafts are unverified hints, never account identity or authority.
+// Keys never enter draft storage or copied commands.
 "use strict";
-const firstRun = { active: null, suspended: false, step: 1, presetId: "", providerId: "", model: "", agent: "", busy: false, message: "", tested: false, subscription: false, done: false, saved: false, errorAction: null, errorCode: "", launchUncertain: false };
+const firstRun = { active: null, suspended: false, step: 1, presetId: "", providerId: "", model: "", agent: "", busy: false, message: "", tested: false, subscription: false, done: false, saved: false, errorAction: null, errorCode: "", launchUncertain: false, draft: null };
 function firstRunVisible() {
   if (PANEL || !state) return false;
-  if (firstRun.active === null) firstRun.active = state.providers.length === 0;
+  if (firstRun.active === null) {
+    firstRun.draft = globalThis.EasySwitchFirstRunDraft?.read() ?? null;
+    firstRun.active = !!firstRun.draft || state.providers.length === 0;
+  }
   return firstRun.active && !firstRun.suspended;
 }
+function firstRunSaveDraft(phase) {
+  const storage = globalThis.EasySwitchFirstRunDraft;
+  if (!storage) return;
+  if (!firstRun.active || firstRun.done) { storage.clear(); return; }
+  const selection = firstRun.draft || firstRun;
+  // While replacing a removed source, retain the old hint and its original TTL
+  // rather than erase an unresolved launch or invent a new source identity.
+  if (firstRun.launchUncertain && !selection.providerId) return;
+  const saved = storage.write({ providerId: selection.providerId, model: selection.model, agent: selection.agent,
+    phase: firstRun.launchUncertain ? "launch-uncertain" : phase || firstRun.draft?.phase || (firstRun.step > 1 ? "select" : "source") });
+  if (saved && firstRun.draft) firstRun.draft = storage.read() || firstRun.draft;
+}
 function firstRunResumeCard() {
+  firstRunVisible();
   if (PANEL || !state || !firstRun.active || firstRun.done || (page === "agents" && !firstRun.suspended)) return "";
   return `<div class="card" style="padding:16px">已保留首次设置的选择。<button class="btn secondary" data-first-action="resume" ${firstRun.busy ? "disabled" : ""}>继续首次设置</button></div>`;
 }
@@ -20,7 +37,7 @@ function firstRunAgents() {
     .sort((a, b) => (uses.get(b.id) ?? 0) - (uses.get(a.id) ?? 0));
 }
 function firstRunSync() {
-  if (!firstRunVisible()) return;
+  if (!firstRunVisible() || firstRun.draft) return;
   if (firstRun.subscription && !firstRun.providerId) {
     const p = state.providers.find(p => !p.off && modelsOf(p).length);
     if (p) { firstRun.providerId = p.id; firstRun.model = p.defaultModel || modelsOf(p)[0]; firstRun.step = 2; firstRun.tested = false; firstRun.message = "订阅已就绪；登录不代表推理已经通过测试，实际使用会消耗你的套餐额度。"; }
@@ -60,8 +77,11 @@ function firstRunStillHere(navigation) {
   return firstRun.active && !firstRun.suspended && page === "agents" && pageNavigationVersion === navigation;
 }
 async function firstRunLaunch(selection) {
+  if (firstRun.draft) throw { code: "invalid_input" };
   const issue = firstRunSelectionIssue(selection);
   if (issue) throw { code: issue };
+  // Write before dispatch: an interrupted response is not proof the launch failed.
+  firstRunSaveDraft("launch-uncertain");
   try {
     await call("POST", `/api/agents/${encodeURIComponent(selection.agent)}/launch`, { model: `${selection.providerId}/${selection.model}` });
   } catch (error) {
@@ -70,10 +90,31 @@ async function firstRunLaunch(selection) {
     throw error;
   }
   firstRun.done = true; firstRun.launchUncertain = false; firstRun.message = "启动请求已完成，请在新打开的窗口继续。";
+  globalThis.EasySwitchFirstRunDraft?.clear();
+}
+function firstRunDraftCard() {
+  const draft = firstRun.draft;
+  const provider = state.providers.find(p => p.id === draft.providerId);
+  const agents = firstRunAgents();
+  const models = provider ? modelsOf(provider).filter(model => selectableModelNames().includes(`${provider.id}/${model}`)) : [];
+  const issue = firstRunSelectionIssue(draft);
+  const sourcePlaceholder = provider ? "" : `<option value="${esc(draft.providerId)}" selected disabled>${draft.providerId ? `${esc(draft.providerId)}（当前来源不存在）` : "请选择当前来源"}</option>`;
+  const modelPlaceholder = models.includes(draft.model) ? "" : `<option value="${esc(draft.model)}" selected disabled>${draft.model ? `${esc(draft.model)}（当前不可选择）` : "请选择当前模型"}</option>`;
+  const agentPlaceholder = agents.some(a => a.id === draft.agent) ? "" : `<option value="${esc(draft.agent)}" selected disabled>${draft.agent ? `${esc(draft.agent)}（当前未检测到）` : "请选择当前程序"}</option>`;
+  return `<section class="card" id="first-run" style="padding:20px"><div class="section-head"><h2>未验证的选择草稿</h2><button class="btn secondary" data-first-action="dismiss">丢弃草稿</button></div>
+    <p>这里只保留了这个标签页的选择提示，不能证明仍是之前的服务或账号。请重新核对下面的当前来源、模型和程序；没有恢复登录、已保存设置或检测成功状态。</p>
+    <div class="form"><div class="field"><label for="first-run-draft-provider">当前来源</label><select id="first-run-draft-provider" data-first-draft-choice="providerId">${sourcePlaceholder}${state.providers.map(p => `<option value="${esc(p.id)}" ${p.id === draft.providerId ? "selected" : ""}>${esc(p.name)}${p.off ? "（已关闭）" : p.budgetStatus?.blocked ? "（预算暂停）" : ""}</option>`).join("")}</select></div>
+    <div class="field"><label for="first-run-draft-model">当前模型</label><select id="first-run-draft-model" data-first-draft-choice="model">${modelPlaceholder}${models.map(model => `<option value="${esc(model)}" ${model === draft.model ? "selected" : ""}>${esc(model)}</option>`).join("")}</select></div>
+    <div class="field"><label for="first-run-draft-agent">当前已安装程序</label><select id="first-run-draft-agent" data-first-draft-choice="agent">${agentPlaceholder}${agents.map(a => `<option value="${esc(a.id)}" ${a.id === draft.agent ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></div></div>
+    ${issue ? `<p class="msg">${esc(firstRunErrorInfo({ code: issue }, "launch").reason)}</p>` : ""}
+    ${draft.phase === "launch-uncertain" ? `<p class="msg" role="status">上次启动结果尚未确认，也不能确认属于当前服务；请先检查已有窗口，避免重复启动。</p>` : ""}
+    <p class="hint">确认只回到选择步骤，不会自动检测、保存绑定或启动。草稿仅支持同一标签页刷新，30分钟后过期，不保证关闭标签页后恢复。</p>
+    <div class="controls"><button class="btn" data-first-action="confirm-draft" ${issue ? "disabled" : ""}>确认当前选择，继续设置</button><button class="btn secondary" data-first-action="draft-providers">检查或添加当前来源</button></div></section>`;
 }
 function firstRunCard() {
   firstRunSync();
   if (!firstRunVisible()) return "";
+  if (firstRun.draft) return firstRunDraftCard();
   const p = state.providers.find(p => p.id === firstRun.providerId);
   const choices = firstRunPresets();
   if (!choices.some(p => p.id === firstRun.presetId)) firstRun.presetId = choices[0]?.id ?? "";
@@ -114,12 +155,27 @@ function firstRunCard() {
   return `<section class="card" id="first-run" style="padding:20px"><div class="section-head"><h2>第一次使用，两步准备好</h2><button class="btn secondary" data-first-action="dismiss" ${disabled}>暂时跳过</button></div><ol class="steps"><li${firstRun.step === 1 ? ' aria-current="step"' : ""}>接入来源</li><li${firstRun.step > 1 ? ' aria-current="step"' : ""}>确认并启动</li></ol>${content}${firstRun.message ? `<p class="msg" role="status">${esc(firstRun.message)}</p>` : ""}${issueText}${uncertain}${recovery && !firstRun.done ? `<button class="btn secondary" data-first-action="recover" ${disabled}>${esc(recovery.label)}</button>` : ""}</section>`;
 }
 async function firstRunProbe() {
+  if (firstRun.draft) throw { code: "invalid_input" };
   const result = await call("POST", `/api/providers/${encodeURIComponent(firstRun.providerId)}/probe`, { model: firstRun.model });
   if (!result.probe?.checks?.some(c => ["chat", "responses", "messages"].includes(c.id) && c.status === "pass")) throw { code: "provider_unavailable" };
   firstRun.tested = true; firstRun.step = 2; firstRun.message = "来源检测通过，确认下面的程序和模型即可启动。";
 }
 document.addEventListener("change", event => {
   if (firstRun.busy) return;
+  if (firstRun.draft) {
+    if (!event.target.matches?.("[data-first-draft-choice]")) return;
+    if (!globalThis.EasySwitchFirstRunDraft?.validate(firstRun.draft)) {
+      firstRun.draft = null; firstRun.active = state.providers.length === 0;
+      globalThis.EasySwitchFirstRunDraft?.clear(); render(); return;
+    }
+    const field = event.target.dataset.firstDraftChoice;
+    if (!["providerId", "model", "agent"].includes(field)) return;
+    if (field === "providerId" && firstRun.draft.providerId !== event.target.value) firstRun.draft.model = "";
+    firstRun.draft[field] = event.target.value;
+    firstRunSaveDraft(); render();
+    document.querySelector(`[data-first-draft-choice="${field}"]`)?.focus?.({ preventScroll: true });
+    return;
+  }
   if (event.target.matches?.("[data-first-preset]")) firstRun.presetId = event.target.value;
   else if (event.target.matches?.("[data-first-choice]")) {
     const field = event.target.dataset.firstChoice;
@@ -128,6 +184,7 @@ document.addEventListener("change", event => {
     firstRun[field] = event.target.value; firstRun.saved = false;
   } else return;
   firstRun.message = ""; firstRun.errorAction = null; firstRun.errorCode = ""; render();
+  if (firstRun.providerId) firstRunSaveDraft();
   const choice = event.target.dataset?.firstChoice;
   if (["agent", "model"].includes(choice)) document.querySelector(`[data-first-choice="${choice}"]`)?.focus?.({ preventScroll: true });
 });
@@ -136,7 +193,7 @@ document.addEventListener("submit", async event => {
   const agent = event.target.matches?.("[data-first-agent]");
   if (!source && !agent) return;
   event.preventDefault(); event.stopImmediatePropagation();
-  if (firstRun.busy || firstRun.done || !firstRunVisible()) return;
+  if (firstRun.busy || firstRun.done || !firstRunVisible() || firstRun.draft) return;
   const fields = new FormData(event.target), navigation = pageNavigationVersion;
   if (source && firstRun.providerId) return;
   firstRun.busy = true; firstRun.message = ""; firstRun.errorAction = null; firstRun.errorCode = "";
@@ -150,6 +207,7 @@ document.addEventListener("submit", async event => {
       // The key stays in this stack frame and the existing credential API only.
       const input = { name: preset.name, baseUrl, apiKey: key, presetId: preset.id, ...(preset.anthropicBaseUrl ? { anthropicBaseUrl: preset.anthropicBaseUrl } : {}) };
       event.target.reset?.(); render();
+      firstRunSaveDraft("source");
       const created = await call("POST", "/api/providers", input);
       firstRun.providerId = created.id;
       firstRun.model = modelsOf(created).includes(preset.defaultModel) ? preset.defaultModel : modelsOf(created)[0] || preset.defaultModel || "";
@@ -160,14 +218,14 @@ document.addEventListener("submit", async event => {
       const selection = { providerId: firstRun.providerId, agent: String(fields.get("agent") ?? ""), model: String(fields.get("model") ?? "") };
       const issue = firstRunSelectionIssue(selection);
       if (issue) throw { code: issue };
-      Object.assign(firstRun, selection); render();
+      Object.assign(firstRun, selection); render(); firstRunSaveDraft();
       await call("PUT", `/api/bindings/${encodeURIComponent(selection.agent)}`, { providerId: selection.providerId, model: selection.model });
       firstRun.saved = true; firstRun.step = 3;
       if (event.submitter?.dataset.firstSubmit !== "save" && firstRunStillHere(navigation)) await firstRunLaunch(selection);
       else firstRun.message = "设置已保存，尚未启动。可以主动启动或复制命令。";
     }
   } catch (error) { firstRunSetError(error, source ? "source" : "launch"); }
-  finally { firstRun.busy = false; await refresh(true); }
+  finally { firstRun.busy = false; await refresh(true); firstRunSaveDraft(); }
 });
 async function firstRunNavigate(target) {
   if (target === "providers" && state.providers.some(p => p.id === firstRun.providerId)) openProvider = firstRun.providerId;
@@ -178,8 +236,20 @@ document.addEventListener("click", async event => {
   const button = event.target.closest?.("[data-first-action]"); if (!button) return;
   event.preventDefault(); event.stopImmediatePropagation(); if (firstRun.busy || button.disabled) return;
   const action = button.dataset.firstAction;
-  if (["dismiss", "finish"].includes(action)) { firstRun.active = false; render(); return; }
+  if (["dismiss", "finish"].includes(action)) { firstRun.active = false; firstRun.draft = null; globalThis.EasySwitchFirstRunDraft?.clear(); render(); return; }
   if (action === "resume") { firstRun.suspended = false; await navigatePage("agents"); render(); return; }
+  if (firstRun.draft) {
+    if (action === "draft-providers") { await firstRunNavigate("providers"); return; }
+    if (action !== "confirm-draft" || page !== "agents" || !firstRunVisible()) return;
+    const draft = globalThis.EasySwitchFirstRunDraft?.validate(firstRun.draft);
+    if (!draft) { firstRun.draft = null; firstRun.active = state.providers.length === 0; globalThis.EasySwitchFirstRunDraft?.clear(); render(); return; }
+    if (firstRunSelectionIssue(draft)) { render(); return; }
+    Object.assign(firstRun, { providerId: draft.providerId, model: draft.model, agent: draft.agent,
+      draft: null, step: 2, tested: false, saved: false, done: false, subscription: false,
+      errorAction: null, errorCode: "", launchUncertain: draft.phase === "launch-uncertain",
+      message: "已重新确认当前目录；尚未验证真实推理，保存或启动仍需你主动选择。" });
+    firstRunSaveDraft(); render(); return;
+  }
   if (action === "recover") {
     const issue = firstRun.step > 1 ? firstRunSelectionIssue() : "";
     const info = (issue ? firstRunErrorInfo({ code: issue }, "launch").action : null) || firstRun.errorAction;
@@ -194,7 +264,9 @@ document.addEventListener("click", async event => {
   }
   if (firstRun.done || !firstRunVisible()) return;
   if (action === "reset-source" && !state.providers.some(p => p.id === firstRun.providerId)) {
-    Object.assign(firstRun, { providerId: "", model: "", step: 1, tested: false, saved: false, subscription: false, message: "", errorAction: null, errorCode: "" }); render(); return;
+    Object.assign(firstRun, { providerId: "", model: "", step: 1, tested: false, saved: false, subscription: false, message: "", errorAction: null, errorCode: "" });
+    if (!firstRun.launchUncertain) globalThis.EasySwitchFirstRunDraft?.clear();
+    render(); return;
   }
   if (action === "back") { firstRun.step = 2; firstRun.message = ""; firstRun.errorAction = null; firstRun.errorCode = ""; openDetails.add("first-run-options"); render(); return; }
   if (action === "next") { firstRun.step = 2; render(); return; }
@@ -211,5 +283,5 @@ document.addEventListener("click", async event => {
   } catch (error) {
     if (action === "copy") firstRun.message = "没有复制成功：请检查当前选择；有效时也可选中上面的命令，手动复制到终端。";
     else firstRunSetError(error, action === "launch" ? "launch" : "source");
-  } finally { firstRun.busy = false; await refresh(true); }
+  } finally { firstRun.busy = false; await refresh(true); firstRunSaveDraft(); }
 });
