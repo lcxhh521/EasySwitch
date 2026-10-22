@@ -33,17 +33,20 @@ function usage(value: unknown): void {
 
 /**
  * No decoder/re-encoder or asynchronous tee: retain exact bytes. Forward checked
- * nonterminal frames, hold finish/usage/DONE until normal EOF, then synchronously
- * commit scope proofs before any successful terminal bytes become visible.
- * Earlier partial bytes can have been seen on failure; the caller must pause its
- * pinned scope and propagate source/destination cancellation with pipeline().
+ * text-only frames until the first tool_calls frame; hold that frame and every
+ * later byte (including comments/text/terminals) until normal EOF. A consumer can
+ * execute as soon as arguments parse, without waiting for finish/DONE. Commit
+ * scope proofs and complete synchronous validation before exposing any tool
+ * bytes. Text-only responses still hold finish/usage/DONE until normal EOF.
+ * Earlier text can have been seen on failure; the caller must pause its pinned
+ * scope and propagate source/destination cancellation with pipeline().
  */
 export function createAutomaticToolOutput(options: AutomaticToolOutputOptions): Transform {
   const declaredTools = new Set(options.toolNames);
   let storage = Buffer.alloc(1024); let used = 0; let scanned = 0; let lineStart = 0;
   let total = 0; let frames = 0;
   const tail: Buffer[] = []; const calls = new Map<number, PendingCall>();
-  let finished = false; let done = false; let completed = false; let reported = false;
+  let holdingTools = false; let finished = false; let done = false; let completed = false; let reported = false;
   let identity: string | undefined; let sawUsage = false;
   let proofs: AutomaticToolCall[] = [];
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -104,6 +107,7 @@ export function createAutomaticToolOutput(options: AutomaticToolOutputOptions): 
     check(!has(message, "content") || message.content === null || typeof message.content === "string");
     check(!has(message, "refusal") || message.refusal === null);
     if (has(message, "tool_calls")) {
+      holdingTools = true; // Sticky: finishing clears calls, but must never open the gate.
       check(Array.isArray(message.tool_calls) && message.tool_calls.length > 0 && message.tool_calls.length <= AUTOMATIC_TOOL_LIMITS.tools);
       message.tool_calls.forEach((call, index) => toolCall(call, isStream, index));
     }
@@ -148,7 +152,7 @@ export function createAutomaticToolOutput(options: AutomaticToolOutputOptions): 
           const length = index - lineStart;
           if (length === 0 || (length === 1 && storage[lineStart] === 13)) {
             const raw = Buffer.from(storage.subarray(start, index + 1)); frame(raw);
-            if (finished) tail.push(raw); else this.push(raw);
+            if (holdingTools || finished) tail.push(raw); else this.push(raw);
             start = index + 1;
           }
           lineStart = index + 1;

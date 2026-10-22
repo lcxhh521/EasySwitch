@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { test, type TestContext } from "node:test";
+import { Readable, Writable } from "node:stream";
+import { finished, pipeline } from "node:stream/promises";
+import { OUTPUT_LIMITS } from "../src/protocol.ts";
 
 // Synthetic in-memory raw upstream bytes only. No HTTP or real client claims.
 const path = "../src/automatic-tool-output.ts";
@@ -12,15 +13,142 @@ function chunk(delta: any, finish_reason: string | null = null): any {
 }
 function frame(value: unknown, newline = "\n"): Buffer { return Buffer.from(`data: ${typeof value === "string" ? value : JSON.stringify(value)}${newline}${newline}`); }
 function parts(): Buffer[] { return [frame(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "read_", arguments: '{"path":' } }] })), frame(chunk({ tool_calls: [{ index: 0, function: { name: "file", arguments: '"文件.txt"}' } }] })), frame(chunk({}, "tool_calls")), frame({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }), frame("[DONE]")]; }
+const completeTool = (index = 0) => frame(chunk({ tool_calls: [{ index, id: `call_${index}`, type: "function", function: { name: "read_file", arguments: `{"path":"fixture_${index}.txt"}` } }] }));
+// Deliberately eager, side-effect-free event counter: models a consumer that emits
+// a tool call as soon as arguments parse. This is NOT an actual SDK/client run or
+// tool execution, and it must never touch the filesystem or invoke a real tool.
+function eagerConsumer(order: string[]) {
+  const argumentsByIndex = new Map<number, string>(), emitted = new Set<number>();
+  return { emitted, accept(raw: Buffer) {
+    for (const record of raw.toString().split(/\r?\n\r?\n/)) {
+      const data = record.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+      let value: any; try { value = JSON.parse(data); } catch { continue; }
+      for (const call of value.choices?.[0]?.delta?.tool_calls ?? []) {
+        const args = (argumentsByIndex.get(call.index) ?? "") + (call.function?.arguments ?? ""); argumentsByIndex.set(call.index, args);
+        if (emitted.has(call.index)) continue;
+        try { JSON.parse(args); } catch { continue; }
+        emitted.add(call.index); order.push("simulated-tool-call");
+      }
+    }
+  } };
+}
+function openGate(t: TestContext) {
+  const wire: Buffer[] = [], order: string[] = [], consumer = eagerConsumer(order);
+  let commits = 0, completions = 0, errors = 0;
+  const transform = output.createAutomaticToolOutput({ stream: true, toolNames,
+    commitCalls: () => { order.push("commit"); commits++; }, onComplete: () => { order.push("complete"); completions++; }, onError: () => { errors++; },
+  });
+  transform.on("data", (raw: Buffer) => { wire.push(Buffer.from(raw)); consumer.accept(raw); });
+  const settled = finished(transform).then(() => undefined, error => error);
+  t.after(() => { if (!transform.destroyed) transform.destroy(); });
+  return { transform, wire, order, consumer, settled, get commits() { return commits; }, get completions() { return completions; }, get errors() { return errors; },
+    write: (raw: Buffer) => new Promise<void>((resolve, reject) => transform.write(raw, (error?: Error | null) => error ? reject(error) : resolve())),
+  };
+}
 async function run(input: Buffer[], stream = true, override: Record<string, unknown> = {}): Promise<any> {
   assert.equal(typeof output.createAutomaticToolOutput, "function", "the bounded raw-wire validator must exist");
   const calls: any[] = []; const wire: Buffer[] = []; const order: string[] = []; let complete = 0; let errors = 0;
+  const consumer = eagerConsumer(order);
   const transform = output.createAutomaticToolOutput({ stream, toolNames, commitCalls: (value: any) => { order.push("commit"); calls.push(...value); }, onComplete: () => { order.push("complete"); complete++; }, onError: () => { errors++; }, ...override });
-  transform.on("data", (value: Buffer) => { order.push(/"finish_reason"\s*:\s*"tool_calls"/.test(value.toString()) || value.toString().includes("[DONE]") ? "terminal" : "data"); wire.push(Buffer.from(value)); });
+  transform.on("data", (value: Buffer) => { order.push(/"finish_reason"\s*:\s*"tool_calls"/.test(value.toString()) || value.toString().includes("[DONE]") ? "terminal" : "data"); wire.push(Buffer.from(value)); consumer.accept(value); });
   let error: unknown;
   try { await pipeline(Readable.from(input), transform); } catch (failure) { error = failure; }
-  return { calls, wire: Buffer.concat(wire), order, complete, errors, error };
+  return { calls, wire: Buffer.concat(wire), order, complete, errors, error, simulatedCalls: consumer.emitted.size };
 }
+
+test("complete parseable tool arguments are invisible before finish, DONE and normal EOF", async t => {
+  const gate = openGate(t), tool = completeTool(), finish = frame(chunk({}, "tool_calls")), done = frame("[DONE]");
+  for (const raw of [tool, finish, done]) {
+    await gate.write(raw);
+    assert.equal(Buffer.concat(gate.wire).length, 0); assert.equal(gate.consumer.emitted.size, 0);
+    assert.equal(gate.commits, 0); assert.equal(gate.completions, 0);
+  }
+  gate.transform.end(); assert.equal(await gate.settled, undefined);
+  assert.deepEqual(Buffer.concat(gate.wire), Buffer.concat([tool, finish, done])); assert.equal(gate.consumer.emitted.size, 1);
+  assert.deepEqual(gate.order, ["commit", "complete", "simulated-tool-call"]);
+});
+
+test("pre-tool text streams immediately, then tools, comments and following text remain ordered behind EOF", async t => {
+  const gate = openGate(t);
+  const prefix = Buffer.concat([Buffer.from(": before\r\n\r\n"), frame(chunk({ role: "assistant", content: "before工具" }), "\r\n")]);
+  await gate.write(prefix); assert.deepEqual(Buffer.concat(gate.wire), prefix);
+  const held = [completeTool(), Buffer.from(": during\r\n\r\n"), frame(chunk({ content: "between" })), completeTool(1), frame(chunk({ content: "after工具" }), "\r\n"), frame(chunk({}, "tool_calls")), frame("[DONE]"), Buffer.from(": final comment\n\n")];
+  for (const raw of held) { await gate.write(raw); assert.deepEqual(Buffer.concat(gate.wire), prefix); }
+  gate.transform.end(); assert.equal(await gate.settled, undefined);
+  assert.deepEqual(Buffer.concat(gate.wire), Buffer.concat([prefix, ...held])); assert.equal(gate.consumer.emitted.size, 2);
+  assert.deepEqual(gate.order, ["commit", "complete", "simulated-tool-call", "simulated-tool-call"]);
+});
+
+test("split CRLF and UTF-8 tool frames remain entirely hidden even when arguments become parseable", async t => {
+  const gate = openGate(t), prefix = frame(chunk({ content: "prior" }), "\r\n"); await gate.write(prefix);
+  const held = Buffer.concat([...parts().map(raw => Buffer.from(raw.toString().replaceAll("\n", "\r\n"))), Buffer.from(": 尾\r\n\r\n")]);
+  for (const byte of held) { await gate.write(Buffer.from([byte])); assert.deepEqual(Buffer.concat(gate.wire), prefix); }
+  gate.transform.end(); assert.equal(await gate.settled, undefined);
+  assert.deepEqual(Buffer.concat(gate.wire), Buffer.concat([prefix, held])); assert.equal(gate.consumer.emitted.size, 1);
+});
+
+test("malformed or missing tails discard every held tool byte, retaining only pre-tool text", async () => {
+  const prefix = frame(chunk({ content: "already-visible" })), finish = frame(chunk({}, "tool_calls")), done = frame("[DONE]");
+  for (const tail of [[], [finish], [done], [finish, Buffer.from("data: [DONE]")], [finish, frame("{broken"), done], [finish, done, frame(chunk({ content: "too late" }))], [finish, done, Buffer.from([0xff, 10, 10])], [finish, done, Buffer.from(": hidden\rdata: {}\n\n")]]) {
+    const result = await run([prefix, completeTool(), ...tail]);
+    assert.ok(result.error); assert.equal(result.complete, 0); assert.equal(result.simulatedCalls, 0); assert.deepEqual(result.calls, []); assert.deepEqual(result.wire, prefix);
+  }
+});
+
+test("source reset and consumer cancellation before EOF expose no tool arguments", async t => {
+  for (const cancelled of [false, true]) {
+    const gate = openGate(t), prefix = frame(chunk({ content: "already-visible" }));
+    await gate.write(prefix); await gate.write(completeTool()); await gate.write(frame(chunk({}, "tool_calls"))); await gate.write(frame("[DONE]"));
+    gate.transform.destroy(cancelled ? undefined : new Error("synthetic upstream reset"));
+    assert.ok(await gate.settled); assert.deepEqual(Buffer.concat(gate.wire), prefix); assert.equal(gate.consumer.emitted.size, 0);
+    assert.equal(gate.commits, 0); assert.equal(gate.completions, 0); assert.equal(gate.errors, 1);
+  }
+});
+
+test("failed or asynchronous proof/completion callbacks release no tool bytes", async () => {
+  const prefix = frame(chunk({ content: "already-visible" }));
+  for (const override of [
+    { commitCalls: () => { throw new Error("synthetic commit failure"); } }, { commitCalls: () => Promise.resolve() },
+    { onComplete: () => { throw new Error("synthetic completion failure"); } }, { onComplete: () => Promise.resolve() },
+  ]) {
+    const result = await run([prefix, completeTool(), frame(chunk({}, "tool_calls")), frame("[DONE]")], true, override);
+    assert.ok(result.error); assert.deepEqual(result.wire, prefix); assert.equal(result.simulatedCalls, 0); assert.equal(result.complete, 0); assert.equal(result.errors, 1);
+  }
+});
+
+test("the unchanged total 32 MiB limit includes all held comments and discards tools on overflow", async () => {
+  const prefix = frame(chunk({ content: "already-visible" }));
+  const padding = Buffer.from(`:${" ".repeat(1024 * 1024)}\n\n`);
+  assert.equal(OUTPUT_LIMITS.responseBytes, 32 * 1024 * 1024);
+  const result = await run([prefix, completeTool(), ...Array.from({ length: 32 }, () => padding), frame(chunk({}, "tool_calls")), frame("[DONE]")]);
+  assert.ok(result.error); assert.equal(result.complete, 0); assert.deepEqual(result.calls, []); assert.equal(result.simulatedCalls, 0); assert.deepEqual(result.wire, prefix);
+});
+
+test("a valid tool response exactly at the existing 32 MiB limit is still accepted byte for byte", async () => {
+  const input = [completeTool()], ending = [frame(chunk({}, "tool_calls")), frame("[DONE]")];
+  let remaining = OUTPUT_LIMITS.responseBytes - Buffer.concat([...input, ...ending]).length;
+  while (remaining > 0) {
+    const length = Math.min(remaining, 1024 * 1024);
+    assert.ok(length >= 3); input.push(Buffer.from(`:${" ".repeat(length - 3)}\n\n`)); remaining -= length;
+  }
+  input.push(...ending);
+  const result = await run(input);
+  assert.equal(result.error, undefined); assert.equal(result.wire.length, OUTPUT_LIMITS.responseBytes);
+  assert.deepEqual(result.wire, Buffer.concat(input)); assert.equal(result.complete, 1); assert.equal(result.simulatedCalls, 1);
+});
+
+test("held tool output remains byte exact under a backpressured consumer", async () => {
+  const input = [frame(chunk({ content: "prior" })), completeTool(), ...Array.from({ length: 40 }, () => Buffer.from(`:${" ".repeat(4096)}\r\n\r\n`)), completeTool(1), frame(chunk({ content: "after" })), frame(chunk({}, "tool_calls")), frame("[DONE]")];
+  const wire: Buffer[] = [], order: string[] = [], consumer = eagerConsumer(order);
+  let committed = false, completed = false;
+  const transform = output.createAutomaticToolOutput({ stream: true, toolNames, commitCalls: () => { committed = true; }, onComplete: () => { completed = true; } });
+  const sink = new Writable({ highWaterMark: 1, write(raw: Buffer, _encoding, callback) {
+    if (raw.includes(Buffer.from("tool_calls"))) { assert.equal(committed, true); assert.equal(completed, true); }
+    wire.push(Buffer.from(raw)); consumer.accept(raw); setImmediate(callback);
+  } });
+  await pipeline(Readable.from(input), transform, sink);
+  assert.deepEqual(Buffer.concat(wire), Buffer.concat(input)); assert.equal(consumer.emitted.size, 2); assert.equal(sink.writableFinished, true);
+});
 
 test("fragmented tool output is byte exact and proofs commit synchronously before terminal visibility", async () => {
   const input = parts(); const result = await run(input);
@@ -94,11 +222,14 @@ test("commit failure aborts terminal delivery and does not call onComplete", asy
   assert.ok(result.error); assert.equal(result.complete, 0); assert.equal(result.errors, 1); assert.doesNotMatch(result.wire.toString(), /\[DONE\]/);
 });
 
-test("source failure after tool fragments is not normal EOF or completion", async () => {
+test("source failure after complete tool arguments is not normal EOF and exposes no tool bytes", async () => {
   assert.equal(typeof output.createAutomaticToolOutput, "function"); let complete = 0; let committed = 0; let failed = 0;
-  const transform = output.createAutomaticToolOutput({ stream: true, toolNames, commitCalls: () => { committed++; }, onComplete: () => { complete++; }, onError: () => { failed++; } }); transform.resume();
-  const source = Readable.from((async function* () { yield parts()[0]; throw new Error("synthetic reset"); })());
+  const wire: Buffer[] = [], consumer = eagerConsumer([]);
+  const transform = output.createAutomaticToolOutput({ stream: true, toolNames, commitCalls: () => { committed++; }, onComplete: () => { complete++; }, onError: () => { failed++; } });
+  transform.on("data", (raw: Buffer) => { wire.push(raw); consumer.accept(raw); });
+  const source = Readable.from((async function* () { yield completeTool(); throw new Error("synthetic reset"); })());
   await assert.rejects(pipeline(source, transform)); assert.equal(complete, 0); assert.equal(committed, 0); assert.equal(failed, 1);
+  assert.equal(Buffer.concat(wire).length, 0); assert.equal(consumer.emitted.size, 0);
 });
 
 test("parallel tool indices are assembled independently, but missing indices are invalid", async () => {

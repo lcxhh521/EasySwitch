@@ -1,5 +1,7 @@
 # 自动来源的启动级工具会话 P1
 
+> 实验状态：已推 B124 `3c1f3830` 不应用于真实工具任务。官方 OpenCode v1.19.4 源码核对确认，下游可能在参数首次可解析时、响应完整性验证前执行工具。B125 独立候选修复工具字节提前暴露；这不是网关自动重放问题。默认后台标题还可能自动带 `reasoning_effort` 而被当前合同拒绝，此兼容缺口未修，真实客户端也未验收。
+
 ## 用户入口与范围
 
 B123 的普通 HTTP 无状态纯文字自动模式保持原样；旧 order/rotate、不带新标记的启动和原生旁路不迁移。B124 在已安装 OpenCode、当前已确认的 automatic 模型卡旁增加独立的「新开工具会话（试用）」入口，用户阅读并确认后才启动。仅云端 fake/loopback/VM 已验证，尚未验证真实 OpenCode、供应商账号、浏览器 DOM 或打包。
@@ -31,9 +33,9 @@ B123 的普通 HTTP 无状态纯文字自动模式保持原样；旧 order/rotat
 
 首次请求可声明 tools，但不能带旧 tool call/result 或外来/opaque 续接。后续工具调用 ID、函数名和参数摘要必须来自本作用域已验证完整响应，结果正确配对；完整历史可以在后续请求再次携带，不把历史复述错误地当成一次性凭据消费。不同启动不能导入这些证明。
 
-JSON/SSE 同协议透传，严格核对一个 choice、声明的函数、tool_choice、parallel_tool_calls、结束原因及完整参数；不以 usage 日志支路作为工具证明来源。SSE 拒绝裸 CR、非法事件或终止后额外数据，最后的 finish/usage/DONE 待正常 EOF 才释放；所有工具证明原子登记在终止输出之前。参数摘要使用无浮点舍入的规范化 JSON，保留负零差异并拒绝重复对象 key，避免大整数、小数和极小数碰撞。
+JSON/SSE 同协议透传，严格核对一个 choice、声明的函数、tool_choice、parallel_tool_calls、结束原因及完整参数；不以 usage 日志支路作为工具证明来源。SSE 拒绝裸 CR、非法事件或终止后额外数据。B125 从首个包含 tool_calls 的帧开始，扣住该帧以及全部后续原始帧，包括文字、评论、finish/usage/DONE；只有正常 EOF、完整校验及同步工具证明提交/完成检查成功后，才按原字节原顺序释放。首个工具帧之前的普通文字仍可流式传送，工具参数不再在完整验证前暴露。未释放的缓冲遇错误、超限或取消直接丢弃，不重放。参数摘要使用无浮点舍入的规范化 JSON，保留负零差异并拒绝重复对象 key，避免大整数、小数和极小数碰撞。
 
-范围受限：32 MiB 响应、2 MiB SSE 帧、2048 个作用域、每作用域 4096 个工具证明、全局 65536 个证明。容量不足明确拒绝/暂停，不通过淘汰活跃 pin 重新选号。只保存 ID、函数名、参数哈希及固定配置摘要，不存工具参数、结果或会话全文。
+范围受限：32 MiB 响应、2 MiB SSE 帧、2048 个作用域、每作用域 4096 个工具证明、全局 65536 个证明。容量不足明确拒绝/暂停，不通过淘汰活跃 pin 重新选号。作用域登记只保存 ID、函数名、参数哈希及固定配置摘要，不持久保存工具参数、结果或会话全文。验证期间输出门会暂存原始响应字节，32 MiB 是每响应原始字节上限，不是整个进程 RSS 上限；临时解析/复制和多个独立作用域可能叠加。本批未引入新的全局缓冲预算。工具执行最早时点会推迟到本次上游响应完整结束，不承诺继续流式执行工具参数。
 
 上游拒绝、未知/不完整结果、取消、身份或已固定来源预算失效会暂停，不换源、不换 Key、不自动重发。服务重启后持久化标记仍存在，但进程内 pin 不存在，旧标记明确要求新开会话，不能降级 P0 或从外来历史重建 pin。
 
@@ -46,3 +48,12 @@ JSON/SSE 同协议透传，严格核对一个 choice、声明的函数、tool_ch
 网关不执行工具，也不识别任意客户端独立 conversation。每请求一次发送不等于工具副作用 exactly-once；客户端自行重试、新开会话重做、正常 HTTP finish 后客户端是否实际消费，以及外部工具自身行为，不在该保证内。HTTP finish 仅代表响应已交给底层发送，不是客户端应用层收讫证明。真实客户端如何处理 busy、标准字段和恢复仍须单独验收。
 
 无后台任务分派、手动派活 UI、真实模型探测、新凭据创建、网络共享或 CI runner 扩展。
+
+
+## 已知真实客户端兼容缺口
+
+官方 OpenCode `v1.19.4`（提交 `148842ef7cb1bc34192b3fff57d0f9721ab9c801`）使用 bundled `@ai-sdk/openai-compatible@2.0.41` 和 `ai@6.0.168`。源码显示其后台标题在缺少独立 small_model 时会回退主模型，`smallOptions` 采用 variants 第一项；当前 EasySwitch 无条件注入的第一项是 low，因此可能自动发送 P1 未允许的 reasoning_effort。标题与主请求还可能并行，遇到本作用域的 409 busy。这些是固定版本源码结论，不是客户端抓包。
+
+后续最小兼容方案是仅在 P1 启动的主自动模型上不注入未支持的 variants，保留原固定小模型和原生配置；尚未实施。不得为了让测试通过而直接放开 reasoning_effort 或未知字段。实际客户端安装/执行需要另行授权与严格 loopback 隔离，当前未安装、未执行。
+
+官方依据：[OpenCode v1.19.4](https://github.com/anomalyco/opencode/releases/tag/v1.19.4)、[标题回退与 small 请求](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/session/prompt.ts#L216-L235)、[smallOptions](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/provider/transform.ts#L1390-L1412)、[SDK 提前发 tool-call](https://github.com/vercel/ai/blob/99327b1d7b3d172ed0aae7230ae153f2d32b0ebb/packages/openai-compatible/src/chat/openai-compatible-chat-language-model.ts#L584-L607)、[收到事件后执行工具](https://github.com/vercel/ai/blob/c38119a2e3df201a95a9979580f2c7a3c1b319ab/packages/ai/src/generate-text/run-tools-transformation.ts#L266-L365)。

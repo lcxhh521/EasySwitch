@@ -197,6 +197,25 @@ test("response consumer cancellation pauses the scope and cancels upstream body"
   assert.equal((await f.run()).statusCode, 409); assert.equal(f.sends.length, 1); assert.equal(cancelled, 1);
 });
 
+test("cancelling a held SSE tool call leaks no arguments, cancels upstream and pauses without retry", async t => {
+  const f = await fixture(t), readAll = deferred(); let cancelled = 0;
+  const chunk = (delta: unknown) => ({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "mock-coder", choices: [{ index: 0, delta, finish_reason: null }] });
+  const frame = (value: unknown) => `data: ${JSON.stringify(value)}\r\n\r\n`;
+  const prefix = frame(chunk({ role: "assistant", content: "visible text" }));
+  const pending = [prefix, frame(chunk({ tool_calls: [{ index: 0, ...call() }] })), ": held comment\r\n\r\n"];
+  f.response = () => new Response(new ReadableStream({
+    pull(controller) { const raw = pending.shift(); if (raw === undefined) readAll.resolve(); else controller.enqueue(new TextEncoder().encode(raw)); },
+    cancel() { cancelled++; },
+  }), { headers: { "content-type": "text/event-stream" } });
+  const sink = new ResponseSink(); const first = f.run(request(undefined, { stream: true }), {}, sink);
+  t.after(() => sink.destroy());
+  await readAll.promise; await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(sink.body, prefix); assert.equal(sink.writableFinished, false);
+  sink.destroy(); await first;
+  assert.equal(sink.body, prefix); assert.equal(cancelled, 1); assert.equal(f.sends.length, 1);
+  assert.equal((await f.run()).statusCode, 409); assert.equal(f.sends.length, 1);
+});
+
 test("explicit server pause never registers missing identities or resets an existing session", async t => {
   const f = await fixture(t); f.registry.pause("missing");
   await f.run(); f.registry.pause(f.session.id);
@@ -282,6 +301,25 @@ test("validated but backpressured terminal keeps the lease busy until HTTP finis
   const second = await f.run(request(history())); assert.equal(second.statusCode, 409); assert.equal(f.sends.length, 1);
   sink.destroy(); await first;
   assert.equal((await f.run()).statusCode, 409); assert.equal(f.sends.length, 1);
+});
+
+for (const cancel of [false, true]) test(`held SSE tool release keeps the scope busy under HTTP backpressure until ${cancel ? "cancellation pauses it" : "successful finish"}`, async t => {
+  const f = await fixture(t), blocked = deferred();
+  const chunk = (delta: unknown, finish_reason: string | null = null) => ({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "mock-coder", choices: [{ index: 0, delta, finish_reason }] });
+  const frame = (value: unknown) => `data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`;
+  const wire = [frame(chunk({ role: "assistant", tool_calls: [{ index: 0, ...call() }] })), ": held comment\n\n", frame(chunk({ content: "after the tool" })), frame(chunk({}, "tool_calls")), frame("[DONE]")].join("");
+  f.response = () => new Response(wire, { headers: { "content-type": "text/event-stream" } });
+  const sink = new ResponseSink(); let flush!: () => void; let writes = 0;
+  sink._write = (raw, _encoding, done) => { sink.chunks.push(Buffer.from(raw)); if (++writes === 1) { flush = () => done(); blocked.resolve(); } else done(); };
+  t.after(() => sink.destroy());
+  const first = f.run(request(undefined, { stream: true }), {}, sink); await blocked.promise;
+  assert.match(sink.body, /fixture\.txt/); assert.equal(sink.writableFinished, false);
+  assert.equal((await f.run(request(history()))).statusCode, 409); assert.equal(f.sends.length, 1);
+  if (cancel) sink.destroy(); else flush();
+  await first;
+  f.response = () => answer();
+  assert.equal((await f.run(request(history()))).statusCode, cancel ? 409 : 200); assert.equal(f.sends.length, cancel ? 1 : 2);
+  if (!cancel) { assert.equal(sink.writableFinished, true); assert.equal(sink.body, wire); }
 });
 
 test("successful HTTP finish unlocks a backpressured response without waiting for handler logging tail", async t => {
