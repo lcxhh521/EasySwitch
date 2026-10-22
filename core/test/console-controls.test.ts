@@ -179,7 +179,7 @@ test("source and global budget forms dispatch to different endpoints", async () 
 
 test("full provider page clearly labels Qoder text limits, default-off switch and blocked Droid", () => {
   const app = ui();
-  app.run(`state.providers=[{id:'qoder-fixture',name:'Qoder fixture',icon:'letter:Q',baseUrl:'cli://qoder',models:['m'],usedBy:[],hasKey:true,off:true,billing:'subscription',cliTextBridge:{kind:'qoder',binary:'/fixture/qodercli'},supportedProtocols:['chat']}];openProvider='qoder-fixture';planInfo={accounts:[]};page='providers';renderActual();`);
+  app.run(`state.providers=[{id:'qoder-fixture',name:'Qoder fixture',icon:'letter:Q',baseUrl:'cli://qoder',models:['m'],usedBy:[],hasKey:true,off:true,billing:'subscription',cliTextBridge:{kind:'qoder',binary:'/fixture/qodercli'},supportedProtocols:['chat']}];openProvider='qoder-fixture';planInfo={accounts:[]};sourceAddOpen=true;sourceAddMode='cli';page='providers';renderActual();`);
   const html = app.html();
   assert.match(html, /CLI文字来源/); assert.match(html, /不自动运行程序/);
   assert.match(html, /data-cli-source-switch="qoder-fixture" data-on="0"/);

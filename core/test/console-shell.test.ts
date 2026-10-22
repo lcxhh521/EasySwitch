@@ -124,7 +124,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     },
     window: { addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); } },
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: () => 0,
-    FormData: class { form: Element; constructor(form: Element) { this.form = form; } get(name: string) { return this.form.values[name] ?? null; } },
+    FormData: class { form: Element; constructor(form: Element) { this.form = form; } get(name: string) { return this.form.values[name] ?? null; } [Symbol.iterator]() { return Object.entries(this.form.values)[Symbol.iterator](); } },
     fetch: async (path: string, init: { method: string; body?: string }) => {
       // Never forwards a request, including actions that would launch an agent in production.
       const request = { method: init.method, path, ...(init.body ? { body: JSON.parse(init.body) } : {}) };
@@ -147,7 +147,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   // Define a throwing browser getter inside the VM: its global proxy suppresses
   // exceptions from host-defined accessors and would otherwise test undefined.
   if (options.storage === "getter") run('Object.defineProperty(globalThis, "localStorage", { get() { throw new Error("Storage denied"); } })');
-  for (const file of ["theme.js", "controls.js", "doctor.js", "pool-suggestions.js", "usage-display.js", "overview.js"]) run(web(file));
+  for (const file of ["theme.js", "controls.js", "doctor.js", "pool-suggestions.js", "usage-display.js", "overview.js", "provider-import.js"]) run(web(file));
   const app = web("app.js"), startup = app.lastIndexOf('fetch("icons/manifest.json")');
   assert.ok(startup > 0, "Load all app handlers and panel setup, excluding startup polling and icon fetch");
   run(app.slice(0, startup));
@@ -639,4 +639,71 @@ test("client command copy is inert and profiles open only from the toolbar", asy
   await app.click('[data-profiles-toggle]');
   assert.match(app.html(), /data-profile-new/);
   assert.match(app.html(), /不会结束已有增强会话/);
+});
+
+
+test("source filters use stored account links and keep same-label unlinked accounts", async () => {
+  const app = shell({hash:"#providers"}); await app.refresh();
+  app.run(`state.providers.push({id:"subscription-p",name:"Linked source",models:["m"],billing:"subscription",off:true,plan:{kind:"codex",accountId:"account-a"}});
+    planInfo={accounts:[{id:"account-a",kind:"codex",label:"Same label",on:false,planUsage:true},{id:"account-b",kind:"codex",label:"Same label",on:false,planUsage:true}]};
+    state.pools=[{id:"pool-one",name:"One pool",strategy:"order",members:["fixture/fixture-model"],live:["fixture/fixture-model"]}];render();`);
+  assert.equal(app.document.querySelectorAll('[data-plan-switch="account-a"]').length,1);
+  assert.equal(app.document.querySelectorAll('[data-plan-switch="account-b"]').length,1);
+  await app.click('[data-source-segment="subscriptions"]');
+  assert.match(app.html(), /Linked source/); assert.doesNotMatch(app.html(), /data-toggle="fixture"|data-pool-edit/);
+  await app.click('[data-source-segment="pools"]');
+  assert.match(app.html(), /data-pool-edit="pool-one"/); assert.doesNotMatch(app.html(), /data-plan-switch/);
+  assert.equal(app.requests.filter(r=>r.method!=="GET").length,0);
+});
+
+test("opening source workflows never imports, signs in or probes and import starts with no choices", async () => {
+  const app = shell({hash:"#providers"}); await app.refresh();
+  assert.equal(app.document.querySelectorAll("[data-plan-signin]").length,0);
+  await app.click('[data-source-add-open]');
+  await app.click('[data-source-add-mode="subscription"]');
+  assert.match(app.html(), /data-plan-signin/);
+  await app.click('[data-source-add-mode="import"]');
+  assert.match(app.html(), /data-provider-import-scan/);
+  assert.equal(app.run("providerImportSources.size"),0);
+  assert.equal(app.run("providerImportChosen.size"),0);
+  assert.equal(app.node('[data-provider-import-source="opencodex"]').attrs.checked,undefined);
+  await app.click('[data-source-add-close]');
+  assert.equal(app.run("providerImportOpen"),false);
+  assert.equal(app.requests.filter(r=>r.method!=="GET").length,0);
+});
+
+test("source summaries distinguish missing accounting, unpriced calls and metadata health", async () => {
+  const app = shell({hash:"#providers"}); await app.refresh();
+  assert.match(app.html(), /本月费用未知/);
+  app.run('providerOverview={snapshotAt:new Date().toISOString(),month:{timezone:"UTC"},sources:[{id:"fixture",monthly:{calls:3,estimatedCostUsd:1.25,unknownCostCalls:2}}]};state.providers[0].sourceHealth={status:"healthy"};render()');
+  assert.match(app.html(), /本月已记录约 \$1.25/); assert.match(app.html(), /2 次成本未知/);
+  assert.match(app.html(), /模型列表检查通过/); assert.match(app.html(), /额度未知/);
+  app.run('providerOverview.month.accountingUnavailable=true;render()');
+  assert.match(app.html(), /本月费用未知/);
+});
+
+test("subscription start is single-flight and closing an active sign-in explicitly cancels it", async () => {
+  const app = shell({hash:"#providers"}); await app.refresh();
+  app.run('globalThis.signInWrites=[];call=async(method,path,body)=>{signInWrites.push({method,path,body});return new Promise(resolve=>globalThis.finishSignIn=resolve)};refresh=async()=>{}');
+  const first = app.run('startSubscription("/api/cursor/signin")');
+  await app.run('startSubscription("/api/cursor/signin")');
+  assert.equal(app.run('signInWrites.length'),1);
+  app.run('finishSignIn({});planInfo.signIn={status:"waiting"}'); await first;
+  app.run('call=async(method,path,body)=>{signInWrites.push({method,path,body});return {}};render()');
+  assert.match(app.html(), /取消登录并关闭/);
+  await app.click('[data-source-add-close]');
+  assert.equal(app.run('JSON.stringify(signInWrites[1])'),'{"method":"POST","path":"/api/plan/signin","body":{"cancelOnly":true}}');
+  assert.equal(app.run('sourceAddOpen'),false);
+});
+
+test("API source submission cannot duplicate a pending create and keeps saved source when probe fails", async () => {
+  const app = shell({hash:"#providers"}); await app.refresh();
+  app.run('sourceAddOpen=true;sourceAddMode="api";addForm={preset:null};presets=[];globalThis.sourceWrites=[];call=async(method,path,body)=>{sourceWrites.push({method,path});return new Promise(resolve=>globalThis.finishSource=resolve)};refresh=async()=>{};render()');
+  const first=app.submit('#add-form',{name:"Fixture",baseUrl:"http://127.0.0.1:1/v1",apiKey:"fixture-only-key"});
+  await app.submit('#add-form',{name:"Fixture"});
+  assert.equal(app.run('sourceWrites.length'),1);
+  app.run('call=async(method,path)=>{sourceWrites.push({method,path});throw new Error("probe failed")};finishSource({id:"new",name:"Fixture",models:["one"]})'); await first;
+  assert.equal(app.run('sourceWrites.length'),2);
+  assert.equal(app.run('addForm'),null);
+  assert.equal(app.run('sourceAddBusy'),false);
 });

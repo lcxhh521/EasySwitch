@@ -33,6 +33,11 @@ const usageRanges = { today: "今天", "7d": "7 天", "30d": "30 天", all: "已
 let usageRequest = null; // One cancellable, bounded GET for the visible range.
 let usageError = "";
 let openProvider = null;
+let sourceSegment = "all";
+let sourceAddOpen = false;
+let sourceAddMode = "";
+let sourceAddBusy = false;
+let providerOverview = null;
 let addForm = null; // { preset } while the add panel is open
 let chatgptInfo = null; // /api/chatgpt: installed, running, enhanced
 let chatgptConfirm = null; // "enhance" | "native" while the restart notice is open
@@ -860,7 +865,7 @@ function keyList(p) {
   const rows = keys.map(k => {
     const resting = k.restUntil && new Date(k.restUntil).getTime() > Date.now();
     return `<tr><td>${esc(k.label)}</td>
-      <td>${resting ? `<span class="chip warn" title="${esc(k.lastError?.reason ?? "")}"><span class="dot"></span>${esc(k.lastError?.reason ?? "休息中")} · ${inFuture(k.restUntil)}恢复</span>` : k.lastError ? `<span class="chip bad">${esc(k.lastError.reason)}</span>` : `<span class="chip ok"><span class="dot"></span>正常</span>`}</td>
+      <td>${!k.enabled ? `<span class="chip">已停用</span>` : resting ? `<span class="chip warn" title="${esc(k.lastError?.reason ?? "")}"><span class="dot"></span>${esc(k.lastError?.reason ?? "休息中")} · ${inFuture(k.restUntil)}恢复</span>` : k.lastError ? `<span class="chip bad">${esc(k.lastError.reason)}</span>` : `<span class="chip">未记录错误 · 可用性未验证</span>`}</td>
       <td class="num"><button class="btn secondary" data-key-patch="${esc(k.id)}" data-enabled="${k.enabled ? "0" : "1"}">${k.enabled ? "停用" : "启用"}</button>
         <button class="btn danger" data-key-del="${esc(k.id)}">删除</button></td></tr>`;
   }).join("");
@@ -957,6 +962,7 @@ function providerRow(p) {
   const models = modelsOf(p);
   const used = (p.usedBy ?? []).map(h => icon(agentMeta(h).icon, "sm")).join("");
   const open = openProvider === p.id;
+  const account = accountForProvider(p);
   const checks = (p.probe?.checks ?? []).map(c => `
     <div class="check ${["pass", "fail", "skip"].includes(c.status) ? c.status : ""}"><b>${esc(c.label)}</b>${esc(c.status === "fail" ? userErrorMessage({message:c.detail,status:Number(/HTTP (\d{3})/.exec(c.detail ?? "")?.[1])},"source") : c.detail)}${c.latencyMs != null ? ` · ${esc(c.latencyMs)}ms` : ""}</div>`).join("");
   const options = models.map(m => `<option ${m === p.defaultModel ? "selected" : ""}>${esc(m)}</option>`).join("");
@@ -990,15 +996,16 @@ function providerRow(p) {
       ${billingBlock(p)}
       ${budgetBlock(p)}
       ${typeof sourceHealthCard === "function" ? sourceHealthCard(p) : ""}
-      ${keyList(p)}
+      ${account ? planCard([account], false) : p.plan || p.kiro || p.kimi || p.cursor || p.antigravity ? `<p class="hint">订阅账号状态尚未读取，请刷新后管理登录。</p>` : keyList(p)}
       <div><button class="btn danger" data-remove>删除这个来源</button></div>
     </div>` : "";
   return `
     <div class="row clickable ${open ? "open" : ""}" data-toggle="${esc(p.id)}">
       ${icon(p.icon, "lg")}
-      <div class="grow"><div class="title">${esc(p.name)}</div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型${p.sourceHealth ? ` · ${p.sourceHealth.status === "unavailable" ? "轻量检查不可用" : p.sourceHealth.status === "healthy" ? "轻量检查正常" : "轻量检查未知"}` : ""}${p.budgetStatus ? ` · <span class="${p.budgetStatus.level === "ok" ? "quota" : "quota-out"}">${esc(budgetText(p.budgetStatus))}</span>` : ""}${p.quotaSupport ? ` · ${esc(p.quotaSupport.text)}` : ""}${p.quota ? ` · <span class="${p.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(p.quota.text)}</span>` : ""}</div></div>
-      ${used ? `<span title="正在使用的 agent">${used}</span>` : ""}
-      <span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>
+      <div class="grow"><div class="title"><button class="source-title" data-source-detail="${esc(p.id)}" aria-expanded="${open}">${esc(p.name)}</button></div><div class="sub">${esc(hostOf(p.baseUrl))} · ${models.length} 个模型</div>${sourceStatusSummary(p)}</div>
+      ${account ? account.needsSignIn || !account.planUsage ? `<span class="chip warn">${account.needsSignIn ? "需要重新登录" : "未授权额度"}</span>` : `<button class="switch ${account.on ? "on" : ""}" role="switch" aria-checked="${account.on}" data-plan-switch="${esc(account.id)}" data-on="${account.on ? "1" : "0"}">${account.on ? "已打开" : "已关闭"}</button>` : ""}
+      ${used ? `<span title="已配置此来源的 agent">${used}</span>` : ""}
+      ${subscriptionSource(p) ? "" : `<span class="chip ${p.hasKey ? "ok" : "warn"}"><span class="dot"></span>${p.hasKey ? "Key 在钥匙串" : "未设置 Key"}</span>`}
       ${!p.cliTextBridge&&!p.plan&&!p.kimi&&!p.cursor&&!p.kiro&&!p.antigravity ? `<button class="switch ${p.off ? "" : "on"}" data-source-switch="${esc(p.id)}" data-enabled="${p.off ? "0" : "1"}">${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button>` : ""}
       ${p.cliTextBridge ? `<button class="switch ${p.off ? "" : "on"}" data-cli-source-switch="${esc(p.id)}" data-on="${p.off ? "0" : "1"}" ${p.cliTextBridge.kind === "droid" ? "disabled" : ""}>${p.off ? "已关闭，点击开启" : "已开启，点击关闭"}</button><span class="chip warn">实验性 · 仅文字</span>` : ""}
       <span class="chev">›</span>
@@ -1054,8 +1061,8 @@ let planInfo = null; // /api/plan
 let planConfirmOut = null; // account id whose sign-out is waiting for a second click
 
 /** "Continue with ChatGPT": use the ChatGPT plan as a model source (OpenAI's sign-in for local open-source tools). */
-function planCard() {
-  const accounts = planInfo?.accounts ?? [];
+function planCard(selectedAccounts = null, showAdd = true) {
+  const accounts = selectedAccounts ?? planInfo?.accounts ?? [];
   const si = planInfo?.signIn;
   const row = a => `
     <div class="row">
@@ -1069,9 +1076,10 @@ function planCard() {
       <button class="btn secondary" data-plan-signout="${esc(a.id)}">${planConfirmOut === a.id ? "再点一次退出登录" : "退出登录"}</button>`}
     </div>`;
   return `
-    <div class="section-head"><h2>用你的订阅</h2><span class="aside">登录只在这台电脑上，令牌存在钥匙串里</span></div>
+    ${showAdd ? `<div class="section-head"><h2>用你的订阅</h2><span class="aside">登录只在这台电脑上，令牌存在钥匙串里</span></div>` : ""}
     <div class="card">
       ${accounts.map(row).join("")}
+      ${showAdd ? `
       ${si?.status === "waiting" ? `<div class="row"><div class="grow"><div class="title">${si.userCode ? `在浏览器打开的页面里输入这个码：<span class="mono" style="font-size:20px;letter-spacing:2px">${esc(si.userCode)}</span>` : "已在浏览器里打开登录页"}</div><div class="sub">登录并确认后会自动完成，不用回到这里点什么。没有自动打开的话，<a href="${esc(si.url)}" target="_blank" rel="noopener">点这里打开</a>。</div></div><button class="btn secondary" data-plan-cancel>取消</button></div>` : ""}
       ${si?.status === "error" ? `<div class="row"><div class="grow"><div class="title">没有登录成功</div><div class="sub">${esc(userErrorMessage(si.message ?? "", "source"))}</div></div></div>` : ""}
       ${si?.status === "done" && si.message ? `<div class="row"><div class="grow"><div class="sub">${esc(si.message)}</div></div></div>` : ""}
@@ -1081,8 +1089,9 @@ function planCard() {
       <button class="add-row" data-cursor-signin>${icon("cursor-color", "sm")} 用 Cursor 订阅（浏览器登录，纯文字）</button>
       <button class="add-row" data-antigravity-signin>${icon("antigravity-color", "sm")} 用 Antigravity 订阅（Google 登录）</button>
       ${(planInfo?.accounts ?? []).some(a => a.kind === "kiro") ? "" : `<button class="add-row" data-kiro-import>${icon("kiro-color", "sm")} 用 Kiro 订阅（读取本机 Kiro CLI 的登录）</button>`}
+      ` : ""}
     </div>
-    <p class="hint">ChatGPT 这边用 Codex 的登录身份一步完成（Hermes、opencodex 也是这样做的；这不是 OpenAI 给第三方工具的官方登记方式，所以 OpenAI 以后可能调整）。GitHub Copilot 同理，用的是 VS Code Copilot 插件的登录身份，GitHub 对 Copilot 在官方客户端之外的用法管得比较严，高频自动化调用有被限流的可能。额度和你的 ChatGPT 订阅共用，登录只在这台电脑上，令牌存在钥匙串里。Claude 的订阅不在这里用。</p>`;
+    ${showAdd ? `<p class="hint">ChatGPT 这边用 Codex 的登录身份一步完成（Hermes、opencodex 也是这样做的；这不是 OpenAI 给第三方工具的官方登记方式，所以 OpenAI 以后可能调整）。GitHub Copilot 同理，用的是 VS Code Copilot 插件的登录身份，GitHub 对 Copilot 在官方客户端之外的用法管得比较严，高频自动化调用有被限流的可能。额度和你的 ChatGPT 订阅共用，登录只在这台电脑上，令牌存在钥匙串里。Claude 的订阅不在这里用。</p>` : ""}`;
 }
 
 let poolForm = null; // { id?, name, strategy, members: [] } while the pool form is open
@@ -1133,7 +1142,7 @@ function poolContextDetails(pool) {
   return `<details data-keep="pool-context:${esc(pool.id)}" ${keepOpen(`pool-context:${pool.id}`)}><summary class="hint">上下文窗口依据</summary><p class="hint">${esc(text)} 更改在下次启动生效；手动设置和兼容默认值均未经真实模型验证。</p></details>`;
 }
 
-function poolsCard() {
+function poolsCard({ catalog = true, tools = true, suggestions = true } = {}) {
   const pools = state.pools ?? [];
   const nameOf = key => { const i = key.indexOf("/"); const p = providerById(key.slice(0, i)); return `${key.slice(i + 1)}${p ? `（${p.name}）` : ""}`; };
   const reasons = { catalog_eligible: "配置允许参与选择", source_missing: "找不到来源记录", source_disabled: "来源已关闭", budget_blocked: "预算暂停，请检查预算和记账状态", model_missing: "当前目录未列出此模型", unsupported: "当前传输尚不支持", unknown_excluded: "暂不参与选择，原因未提供" };
@@ -1166,29 +1175,86 @@ function poolsCard() {
     <div class="section-head"><h2>模型池</h2><span class="aside">同一个模型的多个来源合成一个名字</span></div>
     <p class="hint">可参与选择只代表配置允许，不代表来源实际可用或额度充足。仅在开始回复前遇到可重试错误时改试其他候选；不是每次失败都会切换，也不保证重试成功。</p>
     <div class="card">
-      ${pools.map(row).join("")}
-      ${typeof poolSuggestionsCard === "function" ? poolSuggestionsCard() : ""}
-      ${form}
-      ${poolForm ? "" : `<button class="add-row" data-pool-new>＋ 新建模型池</button>`}
+      ${catalog ? pools.map(row).join("") : ""}
+      ${suggestions && typeof poolSuggestionsCard === "function" ? poolSuggestionsCard() : ""}
+      ${tools ? form : ""}
+      ${!tools || poolForm ? "" : `<button class="add-row" data-pool-new>＋ 新建模型池</button>`}
     </div>`;
 }
 
+/** Join subscriptions by their stored account identity, never a label or email. */
+function accountForProvider(p) {
+  return (planInfo?.accounts ?? []).find(a => p.plan ? a.id === p.plan.accountId && a.kind === (p.plan.kind ?? "open")
+    : p.kiro ? a.kind === "kiro" && a.id === p.id
+    : ["kimi", "cursor", "antigravity"].some(kind => p[kind] && a.kind === kind && a.id === p[kind].accountId));
+}
+function subscriptionSource(p) { return Boolean(p.plan || p.kiro || p.kimi || p.cursor || p.antigravity || p.billing === "subscription"); }
+function sourceStatusSummary(p) {
+  const source = providerOverview?.sources?.find(s => s.id === p.id);
+  const month = providerOverview?.month;
+  const monthly = source?.monthly;
+  const health = p.sourceHealth?.status === "healthy" ? "模型列表检查通过" : p.sourceHealth?.status === "unavailable" ? "模型列表检查失败" : "连接状态未知";
+  const cost = !source || !month || month.accountingUnavailable ? "本月费用未知" : subscriptionSource(p) ? "按订阅套餐计费" : !monthly?.calls ? "本月暂无调用记录" : `本月已记录约 $${Number(monthly?.estimatedCostUsd ?? 0).toFixed(2)}${monthly?.unknownCostCalls ? ` · ${monthly.unknownCostCalls} 次成本未知` : ""}`;
+  const quota = p.quota?.text ?? p.quotaSupport?.text ?? "额度未知";
+  return `<div class="source-summary"><span>${esc(health)}</span><span>${esc(quota)}</span><span>${esc(cost)}</span><span>${p.budgetStatus ? esc(budgetText(p.budgetStatus)) : p.billing === "subscription" ? "套餐额度由厂商管理" : "未设置来源预算"}</span></div>`;
+}
+function sourceAddLocked() {
+  return sourceAddBusy || vertexForm?.busy || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof providerImportBusy !== "undefined" && providerImportBusy);
+}
+function clearSourceAddForms() {
+  addForm = null; vertexForm = null; poolForm = null;
+  if (typeof resetProviderImport === "function") resetProviderImport(false);
+  if (typeof cliTextFormOpen !== "undefined") cliTextFormOpen = false;
+}
+async function chooseSourceAdd(mode) {
+  if (sourceAddLocked()) return;
+  if (planInfo?.signIn?.status === "waiting") { toast("请先完成或取消正在进行的订阅登录"); return; }
+  clearSourceAddForms(); sourceAddOpen = true; sourceAddMode = mode; sourceSegment = "all";
+  if (mode === "api") {
+    sourceAddBusy = true; render();
+    try { if (!presets.length) presets = await call("GET", "/api/presets"); addForm = { preset:null }; }
+    catch (error) { showError(error); }
+    finally { sourceAddBusy = false; }
+  } else if (mode === "vertex") vertexForm = {};
+  else if (mode === "import" && typeof resetProviderImport === "function") resetProviderImport(true);
+  else if (mode === "pool") poolForm = { name:"", strategy:"order", members:[] };
+  render();
+}
+function sourceAddPanel() {
+  const importing = typeof providerImportOpen !== "undefined" && providerImportOpen;
+  const cli = typeof cliTextFormOpen !== "undefined" && cliTextFormOpen;
+  if (!sourceAddOpen && !addForm && !vertexForm && !importing && !cli && !poolForm) return "";
+  const mode = addForm ? "api" : vertexForm ? "vertex" : importing ? "import" : poolForm ? "pool" : cli ? "cli" : sourceAddMode;
+  const modes = {api:"API / 预设",subscription:"订阅登录",import:"从工具导入",vertex:"Vertex 服务账号",cli:"文字桥",pool:"模型池"};
+  const content = addForm ? renderAddForm() : vertexForm ? renderVertexForm() : importing ? providerImportCard()
+    : poolForm ? poolsCard({catalog:false,suggestions:false}) : mode === "subscription" ? planCard([])
+    : mode === "cli" && typeof cliTextSourcesCard === "function" ? cliTextSourcesCard() : `<p class="hint">${sourceAddBusy ? "正在读取预设…" : "选择接入方式。打开此面板不会登录、导入或探测模型。"}</p>`;
+  return `<section class="card source-add-panel" aria-label="添加来源"><div class="client-toolbar"><h2>添加来源</h2><button class="btn secondary" data-source-add-close ${sourceAddLocked() ? "disabled" : ""}>${planInfo?.signIn?.status === "waiting" ? "取消登录并关闭" : "关闭"}</button></div>
+    <div class="source-add-modes" role="group" aria-label="接入方式">${Object.entries(modes).map(([id,label])=>`<button class="btn secondary" data-source-add-mode="${id}" aria-pressed="${mode === id}" ${sourceAddLocked() || planInfo?.signIn?.status === "waiting" ? "disabled" : ""}>${label}</button>`).join("")}</div>${content}</section>`;
+}
 function renderProviders() {
-  return `
-    ${planCard()}
-    ${typeof cliTextSourcesCard === "function" ? cliTextSourcesCard() : ""}
-    ${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}
-    <div class="section-head"><h2>模型来源</h2><span class="aside">支持中转站、官方 API 和本地模型；导入后请核对并开启</span></div>
-    <div class="card">
-      ${state.providers.map(providerRow).join("") || `<div class="empty">还没有模型来源</div>`}
-      ${typeof providerImportCard === "function" ? providerImportCard() : ""}
-      ${vertexForm ? renderVertexForm() : ""}
-      ${addForm ? renderAddForm() : `<button class="add-row" data-add>＋ 添加模型来源</button><button class="add-row" data-vertex-open>${icon("gemini-color", "sm")} 添加 Google Vertex AI（服务账号）</button><button class="add-row" data-provider-import-open>从其他工具导入</button>`}
-    </div>
-    ${state.providers.length ? poolsCard() : ""}`;
+  const providers = state.providers.filter(p => sourceSegment === "all" || sourceSegment === "subscriptions" && subscriptionSource(p));
+  const orphans = (planInfo?.accounts ?? []).filter(a => !state.providers.some(p => accountForProvider(p) === a));
+  const suggestions = typeof poolSuggestionsCard === "function" ? poolSuggestionsCard() : "";
+  return `<div class="client-toolbar"><div class="seg" role="group" aria-label="来源范围">${Object.entries({all:"全部",subscriptions:"订阅",pools:"模型池"}).map(([id,label])=>`<button data-source-segment="${id}" aria-pressed="${sourceSegment === id}">${label}</button>`).join("")}</div><button class="btn" data-source-add-open>＋ 添加来源</button></div>
+    ${sourceAddPanel()}
+    ${suggestions ? `<div class="card source-suggestions"><div class="section-head"><h3>可合并的同名模型</h3></div>${suggestions}</div>` : ""}
+    ${sourceSegment !== "pools" ? `<div class="card source-list">${providers.map(providerRow).join("")}${orphans.map(a => planCard([a], false)).join("")}${!providers.length && !orphans.length ? `<div class="empty">${sourceSegment === "subscriptions" ? "还没有订阅来源" : "还没有模型来源"}，从「添加来源」开始。</div>` : ""}</div>` : ""}
+    ${sourceSegment !== "subscriptions" && state.pools?.length ? poolsCard({tools:false,suggestions:false}) : sourceSegment === "pools" ? `<div class="card empty">还没有模型池。从「添加来源」选择模型池。</div>` : ""}
+    <p class="hint">连接状态仅来自已有模型列表检查；额度和费用可能不完整。${providerOverview?.month ? `费用按本地日历月记录（${esc(providerOverview.month.timezone)}）；快照 ${esc(new Date(providerOverview.snapshotAt).toLocaleTimeString())}。` : "本月汇总暂未读取，费用保持未知。"}</p>
+    <details class="card source-support" data-keep="subscription-support" ${keepOpen("subscription-support")}><summary>订阅与客户端支持说明</summary>${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}</details>`;
+}
+
+async function startSubscription(path, body = {}) {
+  if (sourceAddBusy || planInfo?.signIn?.status === "waiting") return;
+  sourceAddBusy = true; sourceAddOpen = true; sourceAddMode = "subscription"; render();
+  try { await call("POST", path, body); }
+  catch (error) { showError(error); }
+  finally { sourceAddBusy = false; await refresh(true); }
 }
 
 async function submitAdd(form) {
+  if (sourceAddBusy || !addForm) return;
   if (addForm?.preset?.unavailable) { render(); return; }
   const data = Object.fromEntries(new FormData(form));
   // Placeholder values travel as their own object; the preset (not the page) decides the wire details.
@@ -1199,6 +1265,9 @@ async function submitAdd(form) {
     data.vertex = addForm.preset.vertexMode === "standard" ? { mode: "standard", auth: "access-token", project: data.vertexProject, location: data.vertexLocation } : { mode: "express", auth: "api-key" };
     delete data.vertexProject; delete data.vertexLocation;
   }
+  sourceAddBusy = true;
+  const controls = [...form.querySelectorAll("input, button, select")];
+  controls.forEach(control => { control.disabled = true; });
   const msg = $("#add-msg");
   msg.className = "msg";
   msg.textContent = "正在添加并读取模型列表…";
@@ -1210,7 +1279,8 @@ async function submitAdd(form) {
     openProvider = p.id;
     if (model && !p.vertex) {
       toast(`已添加「${p.name}」，正在用 ${model} 做一致性测试…`);
-      await call("POST", `/api/providers/${p.id}/probe`, { model });
+      try { await call("POST", `/api/providers/${p.id}/probe`, { model }); }
+      catch (error) { showError(error); toast("来源已保存，测试尚未完成；可在详情中重试检测。"); }
     } else {
       toast(`已添加「${p.name}」，读到 ${p.models.length} 个模型；选一个做一致性测试`);
     }
@@ -1218,7 +1288,7 @@ async function submitAdd(form) {
     msg.className = "msg bad";
     msg.textContent = userErrorMessage(error);
     return;
-  }
+  } finally { sourceAddBusy = false; controls.forEach(control => { control.disabled = false; }); }
   await refresh(true);
 }
 
@@ -1569,7 +1639,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
   const fallback=e.target.closest?.("[data-fallback-select]");
@@ -1617,6 +1687,7 @@ async function refresh(force = false) {
   if (navigation !== pageNavigationVersion) return false;
   if (typeof firstRunSync === "function" && state) firstRunSync();
   if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
+  if (page === "providers" && !PANEL) providerOverview = await call("GET", "/api/overview").catch(() => null);
   if (page === "agents" && !PANEL) {
     chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
     claudeDesktopInfo = await call("GET", "/api/claude-desktop").catch(() => null);
@@ -1663,7 +1734,7 @@ async function navigatePage(value) {
 
 document.addEventListener("click", async e => {
   const overviewSource = e.target.closest?.("[data-overview-source]");
-  if (overviewSource) { openProvider = overviewSource.dataset.overviewSource; await navigatePage("providers"); return; }
+  if (overviewSource) { sourceSegment = "all"; openProvider = overviewSource.dataset.overviewSource; await navigatePage("providers"); return; }
   if(e.target.closest?.("[data-skip-content]")){e.preventDefault();$("#page")?.focus?.();return;}
   const theme=e.target.closest?.("[data-theme-choice]");
   if(theme){globalThis.EasySwitchTheme?.set(theme.dataset.themeChoice);return;}
@@ -1694,6 +1765,22 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.closest("#guard-chip")) { if (popover) closePopover(); else if (state) openGuard($("#guard-chip")); return; }
+
+  if (t.closest("[data-source-add-open]")) { sourceAddOpen = true; render(); return; }
+  if (t.closest("[data-source-add-close]")) {
+    if (sourceAddLocked()) return;
+    if (planInfo?.signIn?.status === "waiting") {
+      sourceAddBusy = true;
+      try { await call("POST", "/api/plan/signin", {cancelOnly:true}); planInfo.signIn = null; }
+      catch (error) { showError(error); return; }
+      finally { sourceAddBusy = false; }
+    }
+    clearSourceAddForms(); sourceAddOpen = false; sourceAddMode = ""; render(); return;
+  }
+  const sourceMode = t.closest("[data-source-add-mode]");
+  if (sourceMode) { await chooseSourceAdd(sourceMode.dataset.sourceAddMode); return; }
+  const sourceTab = t.closest("[data-source-segment]");
+  if (sourceTab) { sourceSegment = sourceTab.dataset.sourceSegment; planConfirmOut = null; render(); return; }
 
   const client = t.closest("[data-agent-select]");
   if (client) { selectClient(client.dataset.agentSelect); return; }
@@ -1827,8 +1914,7 @@ document.addEventListener("click", async e => {
     // A Codex-identity account just signs in again the same way; one made with OpenAI's own route signs in again with its own client.
     const again = againBtn && againBtn.dataset.planKind !== "codex" ? againBtn.dataset.planSigninAgain : undefined;
     const mode = againBtn?.dataset.planKind === "copilot" ? "copilot" : t.closest("[data-plan-mode]")?.dataset.planMode;
-    try { await call("POST", "/api/plan/signin", again ? { accountId: again, mode: "open" } : mode ? { mode } : {}); } catch (error) { showError(error); }
-    await refresh(true);
+    await startSubscription("/api/plan/signin", again ? { accountId: again, mode: "open" } : mode ? { mode } : {});
     return;
   }
   if (t.closest("[data-plan-cancel]")) { await call("POST", "/api/plan/signin", { cancelOnly: true }).catch(() => {}); await refresh(true); return; }
@@ -1857,11 +1943,8 @@ document.addEventListener("click", async e => {
     try { await navigator.clipboard.writeText(copyBtn.dataset.copy); toast("已复制"); } catch { toast("复制失败：请手动选中复制"); }
     return;
   }
-  if (t.closest("[data-kimi-signin]")) {
-    try { await call("POST", "/api/kimi/signin", {}); toast("已在浏览器里打开 Kimi 登录页，确认页面上的码"); } catch (error) { showError(error); }
-    await refresh(true);
-    return;
-  }
+  if (t.closest("[data-kimi-signin]")) { await startSubscription("/api/kimi/signin"); return; }
+
   const kmRefresh = t.closest("[data-kimi-refresh]");
   if (kmRefresh) {
     try { const r = await call("POST", `/api/kimi/${kmRefresh.dataset.kimiRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { showError(error); }
@@ -1877,11 +1960,8 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
-  if (t.closest("[data-cursor-signin]")) {
-    try { await call("POST", "/api/cursor/signin", {}); toast("已在浏览器里打开 Cursor 登录页"); } catch (error) { showError(error); }
-    await refresh(true);
-    return;
-  }
+  if (t.closest("[data-cursor-signin]")) { await startSubscription("/api/cursor/signin"); return; }
+
   const cuRefresh = t.closest("[data-cursor-refresh]");
   if (cuRefresh) {
     try { const r = await call("POST", `/api/cursor/${cuRefresh.dataset.cursorRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { showError(error); }
@@ -1897,11 +1977,8 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
-  if (t.closest("[data-antigravity-signin]")) {
-    try { await call("POST", "/api/antigravity/signin", {}); toast("已在浏览器里打开 Google 登录页"); } catch (error) { showError(error); }
-    await refresh(true);
-    return;
-  }
+  if (t.closest("[data-antigravity-signin]")) { await startSubscription("/api/antigravity/signin"); return; }
+
   const agRefresh = t.closest("[data-antigravity-refresh]");
   if (agRefresh) {
     try { const r = await call("POST", `/api/antigravity/${agRefresh.dataset.antigravityRefresh}/refresh`, {}); toast(`模型列表已更新，有 ${r.models.length} 个`); } catch (error) { showError(error); }
@@ -1918,7 +1995,9 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.closest("[data-kiro-import]")) {
-    try { const r = await call("POST", "/api/kiro/import", {}); toast(`已读到 Kiro 的登录，有 ${r.models} 个模型；开关是关的，打开后才能用`); } catch (error) { showError(error); }
+    if (sourceAddBusy) return;
+    sourceAddBusy = true;
+    try { const r = await call("POST", "/api/kiro/import", {}); toast(`已读到 Kiro 的登录，有 ${r.models} 个模型；${r.on ? "来源已开启" : "来源保持关闭，打开后才能用"}`); } catch (error) { showError(error); } finally { sourceAddBusy = false; }
     await refresh(true);
     return;
   }
@@ -1962,10 +2041,11 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
-  if (t.closest("[data-pool-new]")) { poolForm = { name: "", strategy: "order", members: [] }; render(); return; }
-  if (t.closest("[data-pool-cancel]")) { poolForm = null; render(); return; }
+  if (t.closest("[data-pool-new]")) { if (sourceAddBusy) return; poolForm = { name: "", strategy: "order", members: [] }; render(); return; }
+  if (t.closest("[data-pool-cancel]")) { if (sourceAddBusy) return; poolForm = null; render(); return; }
   const poolEdit = t.closest("[data-pool-edit]");
-  if (poolEdit) { const p = (state.pools ?? []).find(x => x.id === poolEdit.dataset.poolEdit); if (p) { if (p.strategy === "automatic") { toast("请在 Agent 页重新选择直接来源，再确认自动来源名单；不能在旧编辑器修改。"); return; } poolForm = { id: p.id, name: p.name, strategy: p.strategy, members: [...p.members] }; render(); } return; }
+  if (poolEdit) {
+    if (sourceAddBusy) return; const p = (state.pools ?? []).find(x => x.id === poolEdit.dataset.poolEdit); if (p) { if (p.strategy === "automatic") { toast("请在 Agent 页重新选择直接来源，再确认自动来源名单；不能在旧编辑器修改。"); return; } poolForm = { id: p.id, name: p.name, strategy: p.strategy, members: [...p.members] }; render(); } return; }
   const poolDel = t.closest("[data-pool-del]");
   if (poolDel) {
     const id = poolDel.dataset.poolDel;
@@ -2015,20 +2095,15 @@ document.addEventListener("click", async e => {
     return;
   }
 
-  if (t.closest("[data-add]")) {
-    if (!presets.length) presets = await call("GET", "/api/presets").catch(() => []);
-    addForm = { preset: null };
-    if (typeof resetProviderImport === "function") resetProviderImport(false);
-    render();
-    return;
-  }
+  if (t.closest("[data-add]")) { await chooseSourceAdd("api"); return; }
+
   const preset = t.closest("[data-preset]");
   if (preset) {
     const selected = presets.find(x => x.id === preset.dataset.preset);
-    if (preset.disabled || !selected || selected.unavailable) return;
+    if (sourceAddBusy || preset.disabled || !selected || selected.unavailable) return;
     addForm = { preset: selected }; render(); return;
   }
-  if (t.closest("[data-cancel-add]")) { addForm = null; render(); return; }
+  if (t.closest("[data-cancel-add]")) { if (sourceAddBusy) return; addForm = null; render(); return; }
 
   const detail = t.closest(".detail");
   if (detail) {
@@ -2179,7 +2254,7 @@ document.addEventListener("submit", async e => {
     if (saved) await refresh(true);
     return;
   }
-  if (e.target.id === "add-form") { e.preventDefault(); submitAdd(e.target); return; }
+  if (e.target.id === "add-form") { e.preventDefault(); await submitAdd(e.target); return; }
   if (e.target.dataset?.providerBudgetForm) {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -2237,16 +2312,18 @@ document.addEventListener("submit", async e => {
   const poolFormEl = e.target.closest("form[data-pool-form]");
   if (poolFormEl) {
     e.preventDefault();
+    if (sourceAddBusy) return;
     if (poolForm?.strategy === "automatic" || state.pools?.find(p => p.id === poolForm?.id)?.strategy === "automatic") { poolForm = null; toast("自动来源名单需要在 Agent 页重新确认，未修改原模型池。"); render(); return; }
     const f = new FormData(poolFormEl);
     const body = { name: f.get("name"), strategy: f.get("strategy"), members: f.getAll("members") };
+    sourceAddBusy = true;
     try {
       await call(poolForm?.id ? "PUT" : "POST", poolForm?.id ? `/api/pools/${poolForm.id}` : "/api/pools", body);
       poolForm = null;
       toast("模型池已保存");
     } catch (error) {
       poolForm = { ...poolForm, name: body.name, strategy: body.strategy, members: body.members, error: userErrorMessage(error) };
-    }
+    } finally { sourceAddBusy = false; }
     await refresh(true);
     return;
   }

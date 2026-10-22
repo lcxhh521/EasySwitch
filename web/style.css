@@ -389,3 +389,19 @@ body.panel .panel-foot button:hover { color: var(--fg); background: var(--pill);
 .client-command code { flex:1; overflow-wrap:anywhere; }
 @media(max-width:1100px) { .client-layout { grid-template-columns:minmax(230px,.85fr) minmax(320px,1.15fr); } }
 @media(max-width:820px) { .client-layout { grid-template-columns:minmax(0,1fr); } .client-detail { position:static; } .client-grid { grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); } }
+
+/* One source list and one explicit add workflow. */
+.source-add-panel { padding:20px; margin-bottom:20px; }
+.source-add-panel h2 { margin:0; font-size:16px; }
+.source-add-modes { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
+.source-add-modes [aria-pressed="true"] { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
+.source-title { background:none; border:0; font-weight:600; padding:0; text-align:left; cursor:pointer; }
+.source-summary { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:8px; color:var(--muted); font-size:11px; }
+.source-list .row { flex-wrap:wrap; }
+.source-list .row .sub { white-space:normal; overflow-wrap:anywhere; }
+.source-list .row > .grow { min-width:180px; }
+.source-suggestions { margin-bottom:18px; }
+.source-suggestions > .section-head { padding:0 18px; }
+.source-support { padding:18px; margin-top:18px; }
+.source-support > summary { cursor:pointer; font-weight:600; }
+.source-add-panel .card { box-shadow:none; }
