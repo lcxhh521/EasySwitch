@@ -63,7 +63,8 @@ import { liveMembers, modelOfBody, poolEfforts, poolMemberStates, poolOf, runWit
 import { sessionToken } from "./gateway-chat.ts";
 import { GatewayTokenAuthority, GatewayIssuanceLimitError, GatewaySessionStoreError, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
 import { BudgetController, BudgetExceededError } from "./global-budget.ts";
-import { gatewayError } from "./gateway-route.ts";
+import { gatewayError, parseRequest } from "./gateway-route.ts";
+import { hasResponsesContinuation } from "./responses-continuation.ts";
 import { vertexConfigIssue, vertexKind as vertexMode, type VertexConfig } from "./vertex-config.ts";
 import { CLAUDE_DESKTOP_ISOLATION_BLOCKER, findClaudeDesktopExecutable, prepareClaudeDesktopFixtureSession, type ClaudeDesktopOptions, type ClaudeDesktopSession } from "./claude-desktop.ts";
 import { chatgptStatus, gatewayBase, prepareLauncher, restartChatgpt } from "./chatgpt.ts";
@@ -1835,6 +1836,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       });
       if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
         const raw = await readBody(req);
+        const body = parseRequest(res, "responses", raw);
+        if (!body) return;
+        // Preserve the caller's target so the continuation guard can reject a pool
+        // before its name is replaced by a member or a rotate turn is consumed.
+        // Automatic mode owns its compatibility error and rejects opaque history itself.
+        if (hasResponsesContinuation(body) && poolOf(store, modelOfBody(raw) ?? "")?.strategy !== "automatic") {
+          await handleResponses(req, res, raw, { store, secrets, log: requestLog(), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+          return;
+        }
         await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }

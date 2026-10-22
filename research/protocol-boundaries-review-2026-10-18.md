@@ -19,15 +19,17 @@ Same-protocol Responses keeps hosted `web_search`, options, forced search select
 
 ## Open boundary: opaque conversation/account affinity
 
+**2026-10-23 update (B126, local candidate on e818f99):** the automatic fallback portion below is fixed. The six historical TODO reproductions have moved into `core/test/responses-continuation.test.ts` as ordinary passing assertions: ambiguous pools/multiple enabled keys now stop before any credential read or send. Direct single-credential requests retain their target, skip per-agent fallback and key retries, and preserve native failure responses. See `docs/outbound-adapters.md` for the exact scope and remaining provenance limits. Full originating-account affinity and trusted model windows remain open.
+
 Cross-protocol compaction is rejected before network I/O because the native opaque item cannot be translated. The gateway has no `/v1/responses/compact` endpoint. Same-protocol opaque history is forwarded, but there is no verified originating-account binding.
 
-`research/opaque-continuation-fallback.repro.ts` demonstrates the gap with fake account A/B keys and a loopback server: after A returns 401, the same synthetic compaction payload is retried against B. The same applies to `previous_response_id` and `conversation`, both through key fallback and provider-pool fallback. All six desired one-account assertions are explicit TODO failures outside the standard test glob, not passing safety claims. They demonstrate routing behavior, not real third-party disclosure or a vendor's acceptance of foreign encrypted data.
+At the reviewed 6639b6b baseline, `research/opaque-continuation-fallback.repro.ts` demonstrated the gap with fake account A/B keys and a loopback server: after A returned 401, the same synthetic compaction payload was retried against B. The same applied to `previous_response_id` and `conversation`, both through key fallback and provider-pool fallback. Those six TODO failures were outside the standard test glob. They demonstrated routing behavior, not real third-party disclosure or a vendor's acceptance of foreign encrypted data. The obsolete reproduction file is removed in B126; Git history retains the original evidence.
 
-Run the known-gap reproduction:
+Run the current focused regression with the local network/process guard:
 
-`node --test --test-force-exit research/opaque-continuation-fallback.repro.ts`
+`node --import ./core/test/local-only-guard.ts --test --test-force-exit core/test/responses-continuation.test.ts`
 
-A narrow future guard can detect these three opaque Responses markers, disable cross-key and cross-pool retries plus automatic model substitution, and return the original failure. Same selected-account transient retries can remain. A provider/key identifier is not proof of account identity; the initial selected account may already differ from the origin, and rotating pool selection can choose a different first member on the next request. Consequently, “no retry after first attempt” alone is not full affinity. A conservative guard should reject opaque histories addressed to ambiguous multi-account pools unless the caller names a concrete source/key, or explicitly disclose that the first selection is unverified. Full protection needs a separately defined provenance/binding contract. No fallback behavior was changed in this patch.
+B126 implements a narrow guard for these three markers: it requires a concrete source with a single enabled credential, bypasses pool selection and per-agent substitution, and returns the first upstream result without key retry. A provider/key identifier is not proof of account identity; the initial selected account may already differ from the origin. Full protection still needs a separately defined provenance/binding contract. The original October 18 review did not change fallback behavior; B126 is a later local update.
 
 ## Open capability gap: per-model context windows
 
@@ -45,4 +47,4 @@ Focused tests: 103 passed, zero failed/skipped, using only pure code and synthet
 
 Independent reviewer initially found noncanonical duplicate-wrapper keys could pass through the buffered path. The patch was revised to validate all wrapper layouts independently; regression tests cover the reported cases. Reviewer also exercised 5,000 randomized fragmented UTF-16 strings without corruption. Final independent review status is reported separately rather than inferred here.
 
-Combined integration validation (2026-10-18): audited pure `custom-tool-input` suite added to the controlled whitelist; final `npm run test:local` reported 1,272 tests, 1,271 passed, 1 real Keychain skipped, zero failures/todos. All 396 code/script hashes were unchanged during the run. The six known-gap TODO reproductions remain outside this aggregate and remain unresolved. No real client or provider was invoked.
+Combined integration validation (2026-10-18): audited pure `custom-tool-input` suite added to the controlled whitelist; final `npm run test:local` reported 1,272 tests, 1,271 passed, 1 real Keychain skipped, zero failures/todos. All 396 code/script hashes were unchanged during the run. The six known-gap TODO reproductions remained outside that historical aggregate; B126 now covers them as ordinary regressions. No real client or provider was invoked.

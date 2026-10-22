@@ -1,4 +1,5 @@
 import { poolOf } from "./pools.ts";
+import { hasResponsesContinuation, CONTINUATION_SOURCE_REQUIRED } from "./responses-continuation.ts";
 import { safeUpstreamReason } from "./upstream-error.ts";
 import { currentAutomaticAttempt } from "./automatic-dispatch.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -69,13 +70,20 @@ async function observe(response: Response, protocol: ApiProtocol, onUsage?: (usa
 export async function routeRequest(req: IncomingMessage, res: ServerResponse, input: InboundRequest, harness: string, deps: GatewayDeps): Promise<void> {
   const started = performance.now();
   harness = deps.session?.agentId ?? harness;
-  const fallback = deps.fallback?.(input.model);
+  const continuation = input.protocol === "responses" && hasResponsesContinuation(input.body);
+  if (continuation && input.model.startsWith("pool/")) {
+    gatewayError(res, input.protocol, 409, CONTINUATION_SOURCE_REQUIRED, "continuation_source_required"); return;
+  }
+  const fallback = continuation ? undefined : deps.fallback?.(input.model);
   if (fallback?.change && fallback.model) input = { ...input, model: fallback.model };
   // A direct gateway/fallback path must not flatten an automatic pool to its first source.
   if (poolOf(deps.store, input.model)?.strategy === "automatic") { gatewayError(res, input.protocol, 409, "自动模型必须通过已确认名单的受控选择入口，不会退回第一个来源。", "automatic_route_required"); return; }
   const resolved = resolveModel(deps.store, input.model);
   if (!resolved) { gatewayError(res, input.protocol, 404, noModelMessage(deps.store, input.model), "model_not_found"); return; }
   const { provider, model } = resolved;
+  if (continuation && provider.keys?.length && provider.keys.filter(key => key.enabled).length !== 1) {
+    gatewayError(res, input.protocol, 409, CONTINUATION_SOURCE_REQUIRED, "continuation_source_required"); return;
+  }
   const automatic = currentAutomaticAttempt();
   let prepared: PreparedOutbound | undefined; let keyId = automatic?.providerId === provider.id ? automatic.keyId : undefined; let usage: Usage | undefined; let usageComplete = false;
   const finish = (status: number, note?: string) => deps.log({
@@ -103,7 +111,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     }
     const sent = provider.mimoFree || provider.kiro
       ? { response: await prepared.send(undefined, abort.signal), keyId: undefined }
-      : await withKey(deps.store, deps.secrets, provider, key => prepared!.send(key, abort.signal), abort.signal);
+      : await withKey(deps.store, deps.secrets, provider, key => prepared!.send(key, abort.signal), abort.signal, { retry: !continuation });
     keyId = sent.keyId;
     const unobservedRetry = ("hadRetry" in sent && sent.hadRetry === true) || prepared.dropped.includes("max_tokens:upstream_limit");
     let upstream = sent.response;

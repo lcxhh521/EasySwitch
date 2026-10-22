@@ -31,6 +31,16 @@
 
 用量观察不改变回复。Key 失败可在输出前按现有规则重试；模型池也只在输出前切换。连接中断会终止上游；已经开始输出后不能换模型重放，截断的原生流不会被包装成正常 EOF。
 
+### Responses 原生续接（B126）
+
+Responses 的非 null `previous_response_id`、非 null `conversation`（字符串或对象），以及 `input` 中的 `compaction` 属于来源相关的历史。带这些字段时，不应用逐 agent 备用模型，也不在失败后重试另一把 Key；已选 Key 的认证/限流失败仍记入原有休息状态，上游状态、回复字节和重试头照常返回。
+
+这类请求须直接指定原来源的 `provider/model`，不能使用 `pool/*`（包括 order、rotate、automatic 和当前只剩一个可用成员的池）。普通 Key 来源必须只有一个启用的 Key；尚无 Key 池的旧单 Key 来源保留原路径。多个启用 Key 即使部分正在休息也不会被当成单一身份；所有 Key 已停用时也不会改读旧的单 Key。条件不满足返回 409 `continuation_source_required`（automatic 模式保留已有 400 不兼容检查），发生在读取凭据、消耗池轮次和发送之前。`/responses` 别名及 ChatGPT 桌面网关的外接模型 HTTP 路径遵循同一规则。原生厂商转发不变。
+
+该限制只阻止 EasySwitch 自动改变目标，不证明当前来源/Key 是历史最初所属的账号。用户改写来源端点、Key 值、订阅登录，或导入外来历史后，最初身份仍无法核验；不能确认原账号时应新开会话。这三个标记之外的加密推理、`item_reference` 或其他 opaque 扩展不因此获得完整账号亲和保证。跨协议无法解释的续接仍在出站前拒绝；普通无状态请求（含两个引用字段为 null）保留已有备用、池和 Key 重试。
+
+2026-10-23 本地验证：17 项新增 pure/loopback 用例，加 94 项相关协议、Key/池、备用、automatic 和桌面边界回归通过；类型检查通过。未跑全量套件、真实客户端/账号/模型，也未重启服务、提交或推送。
+
 ## 跨协议边界
 
 - 支持文本、base64 图片、函数工具/结果，以及 Responses namespace/custom 工具。Gemini 目标不替用户下载外部图片 URL，需要调用方提供 base64

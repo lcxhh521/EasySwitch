@@ -145,11 +145,13 @@ export async function markResult(store: Store, provider: Provider, keyId: string
  * Runs a request against the pool: try a key; if the failure is the key's own
  * and another key is available, rest this one and try the next. Network errors
  * are passed through untouched — they are not a key's fault.
+ * Native continuation disables retries but still records the selected key's failure.
  */
 export async function withKey(
   store: Store, secrets: SecretStore, provider: Provider,
   run: (apiKey?: string) => Promise<Response | Error>,
   signal: AbortSignal = new AbortController().signal,
+  options: { retry?: boolean } = {},
 ): Promise<{ response: Response | Error; keyId?: string; hadRetry?: boolean }> {
   const automatic = assertAutomaticProvider(provider);
   if (automatic) {
@@ -163,6 +165,7 @@ export async function withKey(
   const response = await run(first.apiKey);
   if (response instanceof Error || !isKeyFailure(response.status)) return { response, keyId: first.keyId };
   const updated = await markResult(store, provider, first.keyId, response.status);
+  if (options.retry === false) return { response, keyId: first.keyId };
   const next = await pickKey(secrets, updated);
   if (!next.apiKey || next.keyId === first.keyId) return { response, keyId: first.keyId };
   await response.body?.cancel();

@@ -14,7 +14,7 @@ const files = [
   "automatic-tool-auth", "automatic-tool-policy", "automatic-tool-output", "automatic-tool-sessions",
   "automatic-tool-api", "automatic-tool-ui", "automatic-tool-dispatch",
   "pool-transparency",
-  "pool-signals",
+  "pool-signals", "responses-continuation",
   "onboarding-draft-storage", "onboarding-draft",
   "anthropic", "translate", "responses-upstream", "quirks", "model-efforts", "thinking",
   "gateway-chat", "gateway-gemini", "source-adapters", "source-health", "source-health-ui", "agent-fallback", "source-health-api", "protocol-safety", "outbound-shape", "outbound-corrections", "upstream-error", "protocol-streaming", "custom-tool-input", "wire", "pool", "pool-suggestions", "pool-suggestions-api", "pool-suggestions-ui", "keypool",
