@@ -182,6 +182,16 @@ export class SourceHealthMonitor {
       ...(entry.checkedAt === undefined ? {} : { checkedAt: entry.checkedAt }), ...(entry.eligibility.eligible ? { nextCheckAt: entry.nextCheckAt } : {}) };
   }
   snapshots(): SourceHealthSnapshot[] { return [...this.#entries.keys()].map(id => this.snapshot(id)); }
+
+  /** Read-only view for a supplied configuration, without sync or verification. */
+  snapshotFor(provider: Provider): SourceHealthSnapshot {
+    const entry = this.#entries.get(provider.id), fingerprint = modelsHealthFingerprint(provider);
+    if (!entry || !fingerprint || entry.fingerprint !== fingerprint
+      || JSON.stringify(entry.eligibility) !== JSON.stringify(this.#eligibility(provider))) {
+      return { providerId: provider.id, status: "unknown", reason: "unverified", verified: false, eligible: false, consecutiveFailures: 0 };
+    }
+    return this.snapshot(provider.id);
+  }
   drainTransitions(): SourceHealthTransition[] { const events = this.#events; this.#events = []; return events.filter(event => this.snapshot(event.providerId).status === event.status); }
   close(): void { this.#closed = true; for (const entry of this.#entries.values()) entry.controller?.abort(); this.pump(); }
 

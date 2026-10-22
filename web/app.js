@@ -1004,6 +1004,41 @@ function planCard() {
 let poolForm = null; // { id?, name, strategy, members: [] } while the pool form is open
 let poolConfirmDel = null;
 
+/** Existing observations only. Unknowns never become a green availability verdict. */
+function poolSignalsDetails(pool, nameOf) {
+  const signals = Array.isArray(pool.signals?.members) ? pool.signals.members : [];
+  if (!signals.length) return `<div class="hint">尚无择源信号；推理可用性未验证。</div>`;
+  const moment = value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 8.64e15 ? new Date(value).toLocaleString() : "时间未知";
+  const waiting = (evidence, label) => evidence?.state === "active" ? `${label}至 ${moment(evidence.until)}，不保证届时恢复`
+    : evidence?.state === "elapsed" ? `${label}已到期；未验证恢复`
+    : evidence?.state === "unknown" ? `${label}时间无法核实` : "";
+  const evidence = member => {
+    const s = signals.find(item => item.member === member);
+    if (!s) return `<p class="hint">${esc(nameOf(member))}：信号未提供；推理可用性未验证。</p>`;
+    const effect = { excluded: "配置不允许参与选择，请检查上方原因", later: "现有规则暂时后置，仍可能被尝试", normal: "按原有顺序或轮流策略尝试" };
+    const q = s.quota, lines = [Object.hasOwn(effect, s.effect) ? effect[s.effect] : "选择影响未知"];
+    const rest = waiting(s.failureWait, "本地失败等待标记"); if (rest) lines.push(rest);
+    lines.push(q?.state === "stale" ? "额度记录已过期，当前额度未知" : q?.state === "recorded" ? "有历史额度记录，当前额度未知" : "额度未知，未验证剩余量");
+    for (const w of Array.isArray(q?.windows) ? q.windows : []) {
+      if (!["primary", "secondary"].includes(w.id) || typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent) || w.usedPercent < 0 || w.usedPercent > 100) continue;
+      lines.push(`${w.id === "primary" ? "主" : "次"}窗口历史已用 ${Math.round(w.usedPercent)}%${w.state === "stale" ? "（窗口已过期）" : "（时效未核验）"}${w.vendorResetAt === undefined ? "" : `；厂商曾报告重置时间 ${moment(w.vendorResetAt)}，不保证恢复`}`);
+    }
+    const quotaWait = waiting(q?.wait, q?.wait?.basis === "vendor_reset" ? "额度记录等待标记（厂商重置提示）" : "额度记录重试等待标记");
+    if (quotaWait) lines.push(quotaWait);
+    if (q?.updatedAt !== undefined) lines.push(`额度状态记录更新于 ${moment(q.updatedAt)}，不代表各窗口观测时间`);
+    const metadata = { passed: "模型列表检查通过，仅为元数据检查", failed: "模型列表连续检查失败，不代表所有生成请求都会失败", stale: "模型列表检查记录已过期", unknown: "模型列表检查结果未知" };
+    lines.push(Object.hasOwn(metadata, s.metadata?.state) ? metadata[s.metadata.state] : metadata.unknown);
+    if (s.metadata?.checkedAt !== undefined) lines.push(`模型列表检查时间 ${moment(s.metadata.checkedAt)}`);
+    lines.push("推理可用性未验证");
+    return `<p class="hint"><strong>${esc(nameOf(member))}</strong><br>${lines.map(esc).join("<br>")}</p>`;
+  };
+  return `<details data-keep="pool-signals:${esc(pool.id)}" ${keepOpen(`pool-signals:${pool.id}`)}>
+    <summary class="hint">查看选择依据（当前可用性未验证）</summary>
+    <p class="hint">只读取已有记录，不发送检查请求。等待标记和额度记录未核验当前账号、Key或端点；未知不等于有余量。全部成员有等待标记时，现有策略仍可能尝试，不会自动改成暂停。</p>
+    ${pool.members.map(evidence).join("")}
+  </details>`;
+}
+
 /** Model pools: catalog eligibility and attempts are not proof of live availability. */
 function poolsCard() {
   const pools = state.pools ?? [];
@@ -1019,7 +1054,7 @@ function poolsCard() {
     <div class="row">
       <span class="ic lg" style="display:grid;place-items:center;background:var(--pill);border-radius:10px;width:34px;height:34px">▦</span>
       <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "rotate" ? "轮流优先尝试" : "按顺序尝试"}</span></div>
-        <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div></div>
+        <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div>${poolSignalsDetails(p, nameOf)}</div>
       <button class="btn secondary" data-pool-edit="${esc(p.id)}">编辑</button>
       <button class="btn secondary" data-pool-del="${esc(p.id)}">${poolConfirmDel === p.id ? "再点一次删除" : "删除"}</button>
     </div>`;

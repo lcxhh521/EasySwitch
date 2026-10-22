@@ -1,6 +1,7 @@
 import { SourceHealthMonitor, modelsHealthFingerprint } from "./source-health.ts";
 import { resolveAgentFallback } from "./agent-fallback.ts";
 import { buildPoolSuggestions } from "./pool-suggestions.ts";
+import { poolSignalSnapshot } from "./pool-signals.ts";
 import { buildDoctorReport, runDoctorChecks, DoctorCheckRequestError, type DoctorInput, type DoctorAgent, type DoctorCheckRunners } from "./doctor.ts";
 import { verifyLauncher, type Verdict } from "./verify-launchers.ts";
 import { humanError, type UserErrorContext } from "./user-errors.ts";
@@ -74,7 +75,7 @@ import { expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "./upstream.ts
 import { officialThinkingProfile, upstreamModelId } from "./quirks.ts";
 import { sourceProtocols } from "./outbound.ts";
 import { subscriptionSourceIssue, subscriptionSignInIssue, subscriptionSupport } from "./subscription-support.ts";
-import type { ApiProtocol, Account, DisplaySettings, GatewayLogEntry, Harness, Provider, ProviderRoute } from "./types.ts";
+import type { ApiProtocol, Account, DisplaySettings, GatewayLogEntry, Harness, Pool, Provider, ProviderRoute } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -255,6 +256,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     syncHealth();
     return { ...basePublicProvider(p, hasKey, usedBy), sourceHealth: health.snapshot(p.id), ...(status ? { budgetStatus: status } : {}) };
   };
+  const publicPool = (p: Pool) => ({ ...p, live: liveMembers(store, p), memberStates: poolMemberStates(store, p),
+    signals: poolSignalSnapshot(store, p, { now: deps.sourceHealth?.now?.(), healthOf: provider => health.snapshotFor(provider) }) });
   const providerHasKey = async (p: Provider): Promise<boolean> => { try { return Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id)); } catch { return false; } };
   const doctorHelp = new Map<string, { checkedAt: string; verdicts: Verdict[] }>();
   const desktopSessions = new Map<string, ClaudeDesktopSession>();
@@ -696,7 +699,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
         selectableModels: store.catalog().map(m => `${m.providerId}/${m.model}`),
-        pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p), memberStates: poolMemberStates(store, p) })),
+        pools: store.pools().map(publicPool),
         poolSuggestions: poolSuggestions(),
         profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
         modelEffortNotes: Object.fromEntries(store.catalog().map(m => { const p = store.provider(m.providerId); return [`${m.providerId}/${m.model}`, p ? officialThinkingProfile(p.baseUrl, m.model)?.note ?? "" : ""]; })),
@@ -751,7 +754,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       store.upsertPool(pool); json(res, 200, pool); return;
     }
     if (path === "/api/pools" && method === "GET") {
-      json(res, 200, { pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p), memberStates: poolMemberStates(store, p), efforts: poolEfforts(store, p) })) });
+      json(res, 200, { pools: store.pools().map(p => ({ ...publicPool(p), efforts: poolEfforts(store, p) })) });
       return;
     }
     const poolBody = (): { name: string; strategy: "order" | "rotate"; members: string[] } | string => {

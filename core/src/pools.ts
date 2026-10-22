@@ -84,6 +84,11 @@ export function markFailed(member: string): void {
   resting.set(member, Date.now() + REST_MS);
 }
 
+/** Existing member marker only; reading it neither clears it nor consumes a turn. */
+export function poolRestUntil(member: string): number | undefined {
+  return resting.get(member);
+}
+
 /** The thinking levels every member has: the pool can only promise what all of them can do. */
 export function poolEfforts(store: Store, pool: Pool): string[] {
   const lists = liveMembers(store, pool).map(member => {
