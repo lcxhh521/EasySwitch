@@ -1082,7 +1082,6 @@ function poolsCard() {
 
 function renderProviders() {
   return `
-    ${typeof firstRunVisible === "function" && firstRunVisible() ? `<div class="card" style="padding:16px">准备好来源后，回到三步向导选择 Agent。<button class="btn secondary" data-first-action="resume">继续首次设置</button></div>` : ""}
     ${planCard()}
     ${typeof cliTextSourcesCard === "function" ? cliTextSourcesCard() : ""}
     ${typeof subscriptionSupportCard === "function" ? subscriptionSupportCard() : ""}
@@ -1457,13 +1456,14 @@ function render() {
   const restoreFocus = preserveActionFocus(main);
   renderedPage = page;
   try {
-    if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=renderDoctor();return;}
+    if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=(typeof firstRunResumeCard === "function" ? firstRunResumeCard() : "") + renderDoctor();return;}
     if (!state && page !== "usage") {
       main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
       return;
     }
     const views = { agents: renderAgents, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
     main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
+    if (typeof firstRunResumeCard === "function") main.innerHTML = firstRunResumeCard() + main.innerHTML;
     if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
     if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
     if (page === "sessions") requestAnimationFrame(drawFlowLines);

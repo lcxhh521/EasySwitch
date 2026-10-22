@@ -34,14 +34,14 @@ function ui() {
   return {run,dispatch,button,form,html:()=>page.innerHTML};
 }
 
-test("first empty console renders the real three-step wizard with safe choices", () => {
+test("first empty console renders the real two-step wizard with safe choices", () => {
   const app=ui();app.run('renderActual()'); const html=app.html();
-  assert.match(html,/第一次使用，三步准备好/);assert.match(html,/添加并检测/);assert.match(html,/可能产生费用/);
+  assert.match(html,/第一次使用，两步准备好/);assert.match(html,/添加并检测/);assert.match(html,/可能产生费用/);
   assert.doesNotMatch(html,/value="vertex"/);assert.match(html,/type="password" autocomplete="off"/);
   app.run("presets[0].name='<script>bad</script>';renderActual()");assert.match(app.html(),/&lt;script&gt;/);assert.doesNotMatch(app.html(),/<script>bad/);
 });
 
-test("preset add, select, launch uses three primary clicks and carries no key into state or copied command", async () => {
+test("preset add and save-launch use two primary clicks and carries no key into state or copied command", async () => {
   const app=ui();app.run('renderActual()');
   const form=app.form('source',{presetId:'example',apiKey:'fixture-key'});await app.dispatch('submit',form);
   assert.equal(form.values.apiKey,'');assert.equal(app.run('firstRun.step'),2);
@@ -49,8 +49,7 @@ test("preset add, select, launch uses three primary clicks and carries no key in
   assert.doesNotMatch(app.run('JSON.stringify(firstRun)'),/fixture-key/);
   assert.match(app.html(),/Aider/);assert.doesNotMatch(app.html(),/value="uninstalled"/);
   await app.dispatch('submit',app.form('agent',{agent:'aider',model:'m'})); assert.equal(app.run('firstRun.step'),3);
-  await app.dispatch('click',app.button('copy'));assert.equal(app.run('copied'),'es aider');
-  await app.dispatch('click',app.button('launch'));assert.equal(app.run('firstRun.done'),true);
+  assert.equal(app.run('firstRun.done'),true);
   assert.equal(app.run("requests.at(-1).path"),'/api/agents/aider/launch');
   assert.equal(app.run("JSON.stringify(requests.at(-1).body)"),'{"model":"p/m"}');
 });
@@ -98,7 +97,7 @@ test("launch failure unlocks controls, preserves choices and never copies a capa
   const app=ui();app.run("renderActual();state.providers=[{id:'p',name:'Example',models:['m']}];Object.assign(firstRun,{providerId:'p',model:'m',agent:'aider',step:3});call=async()=>{throw new Error('spawn private-secret failed')}");
   await app.dispatch('click',app.button('launch'));assert.equal(app.run('firstRun.busy'),false);assert.equal(app.run('firstRun.done'),false);
   assert.match(app.html(),/启动没有完成/);assert.doesNotMatch(app.html(),/private-secret/);
-  await app.dispatch('click',app.button('copy'));assert.equal(app.run('copied'),'es aider');
+  await app.dispatch('click',app.button('copy'));assert.equal(app.run('copied'),"es aider --model 'p/m'");
 });
 
 test("existing sources skip first-run takeover and dismissal does not remove saved sources", async () => {
@@ -113,5 +112,5 @@ test("blank keys and malformed discovered IDs cannot create a source or enter a 
   await app.dispatch('submit',app.form('source',{presetId:'example',apiKey:'   '}));
   assert.equal(app.run('requests.length'),0);assert.equal(app.run('firstRun.step'),1);
   app.run("agentList=[{id:'hermes',installed:true,can:{interactive:true}}];Object.assign(firstRun,{step:3,agent:'aider'});firstRunSync()");
-  assert.equal(app.run('firstRun.agent'),'');
+  assert.equal(app.run('firstRun.agent'),'aider');
 });
