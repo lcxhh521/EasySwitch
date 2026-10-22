@@ -52,7 +52,7 @@ import { describeQuota, exhaustedUntil, quotaOf } from "./quota.ts";
 import { isMimoFree, mimoFreeIssue } from "./mimo-free.ts";
 import { discoverEfforts } from "./efforts.ts";
 import { levelsForAgentAndModel, modelEfforts } from "./model-efforts.ts";
-import { liveMembers, modelOfBody, poolEfforts, poolOf, runWithPool, withModel } from "./pools.ts";
+import { liveMembers, modelOfBody, poolEfforts, poolMemberStates, poolOf, runWithPool, withModel, type PoolContext } from "./pools.ts";
 import { sessionToken } from "./gateway-chat.ts";
 import { GatewayTokenAuthority, GatewayIssuanceLimitError, GatewaySessionStoreError, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
 import { BudgetController, BudgetExceededError } from "./global-budget.ts";
@@ -696,7 +696,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         claudeLogin: store.settings().claudeNative && await claudeLoggedIn(),
         prefs: store.allPrefs(),
         selectableModels: store.catalog().map(m => `${m.providerId}/${m.model}`),
-        pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p) })),
+        pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p), memberStates: poolMemberStates(store, p) })),
         poolSuggestions: poolSuggestions(),
         profiles: store.profiles().map(p => ({ id: p.id, name: p.name, agents: p.bindings.length })),
         modelEffortNotes: Object.fromEntries(store.catalog().map(m => { const p = store.provider(m.providerId); return [`${m.providerId}/${m.model}`, p ? officialThinkingProfile(p.baseUrl, m.model)?.note ?? "" : ""]; })),
@@ -751,7 +751,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       store.upsertPool(pool); json(res, 200, pool); return;
     }
     if (path === "/api/pools" && method === "GET") {
-      json(res, 200, { pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p), efforts: poolEfforts(store, p) })) });
+      json(res, 200, { pools: store.pools().map(p => ({ ...p, live: liveMembers(store, p), memberStates: poolMemberStates(store, p), efforts: poolEfforts(store, p) })) });
       return;
     }
     const poolBody = (): { name: string; strategy: "order" | "rotate"; members: string[] } | string => {
@@ -1730,8 +1730,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const path = url.pathname;
     let session: GatewaySession | undefined;
     let isDesktop = false;
-    const requestLog = (ctx?: { pool: string; attempt: number; attempts: number }) => (entry: GatewayLogEntry) => {
-      pushLog({ ...entry, ...(ctx ? { pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts } : {}) });
+    const requestLog = (ctx?: PoolContext) => (entry: GatewayLogEntry) => {
+      pushLog({ ...entry, ...(ctx ? { pool: ctx.pool, attempt: ctx.attempt, attempts: ctx.attempts, ...(ctx.retryFrom ? { retryFrom: { ...ctx.retryFrom } } : {}) } : {}) });
     };
     try {
       // DNS-rebinding guard: only our own loopback authority may talk to us.

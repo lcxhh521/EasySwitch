@@ -142,6 +142,8 @@ test("the log says which pool and which try each request was, so a failover can 
   assert.deepEqual(tries.map(e => [e.attempt, e.attempts, e.status]), [[1, 2, 401], [2, 2, 200]]);
   assert.equal(tries[0]!.providerId, ids.bad);
   assert.equal(tries[1]!.providerId, ids.good);
+  assert.equal((tries[0] as Json).retryFrom, undefined, "a failed entry cannot promise a future attempt");
+  assert.deepEqual((tries[1] as Json).retryFrom, { member: `${ids.bad}/mock-mini`, attempt: 1, status: 401 }, "only the subsequent attempt carries evidence; no extra billable log entry is added");
 });
 
 test("profiles over the API: save, list, apply, delete", async () => {

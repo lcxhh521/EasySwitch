@@ -212,6 +212,9 @@ export interface HarnessBinding {
   model: string;
 }
 
+/** Evidence attached to a subsequent pool attempt, not a new billable log entry. */
+export interface PoolRetryEvidence { member: string; attempt: number; status: number }
+
 export interface GatewayLogEntry {
   fallback?: import("./agent-fallback.ts").AgentFallbackChange;
   /** Issued capability identity, never its token. */
@@ -236,6 +239,8 @@ export interface GatewayLogEntry {
   pool?: string;
   attempt?: number;
   attempts?: number;
+  /** The previous member's retryable pre-output refusal. Does not imply success or outbound I/O. */
+  retryFrom?: PoolRetryEvidence;
   /** True only when reported usage and protocol termination are both complete. */
   usageComplete?: boolean;
   /** Bounded decoder observations, separate from normalized usage and pricing claims. */

@@ -3,7 +3,7 @@ import { Writable } from "node:stream";
 import { fromClaudeModelId } from "./catalog.ts";
 import { modelEfforts } from "./model-efforts.ts";
 import type { Store } from "./store.ts";
-import type { Pool } from "./types.ts";
+import type { Pool, PoolRetryEvidence } from "./types.ts";
 import { exhaustedUntil } from "./quota.ts";
 
 /**
@@ -34,6 +34,27 @@ export function poolOf(store: Store, name: string): Pool | undefined {
 export function liveMembers(store: Store, pool: Pool): string[] {
   const have = new Set(store.catalog().filter(m => m.providerId !== "pool").map(m => `${m.providerId}/${m.model}`));
   return pool.members.filter(m => have.has(m));
+}
+
+export interface PoolMemberState {
+  member: string;
+  /** Catalog eligibility only, never a health or remaining-quota assertion. */
+  selectable: boolean;
+  reason: "catalog_eligible" | "source_missing" | "source_disabled" | "budget_blocked" | "model_missing" | "unsupported" | "unknown_excluded";
+}
+
+/** Read-only explanation. Unlike poolMembers(), this never consumes a rotate turn. */
+export function poolMemberStates(store: Store, pool: Pool): PoolMemberState[] {
+  const live = new Set(liveMembers(store, pool));
+  return pool.members.map(member => {
+    const slash = member.indexOf("/"), provider = store.provider(member.slice(0, slash));
+    const model = member.slice(slash + 1);
+    const reason: PoolMemberState["reason"] = !provider ? "source_missing" : provider.off ? "source_disabled"
+      : store.providerBudgetStopped(provider) ? "budget_blocked" : provider.cliTextBridge?.kind === "droid" ? "unsupported"
+      : !(provider.models.length ? provider.models : provider.defaultModel ? [provider.defaultModel] : []).includes(model) ? "model_missing"
+      : live.has(member) ? "catalog_eligible" : "unknown_excluded";
+    return { member, selectable: reason === "catalog_eligible", reason };
+  });
 }
 
 /** The members to try for one request, in order; undefined when the name is not a pool. */
@@ -132,6 +153,8 @@ export interface PoolContext {
   pool: string;
   attempt: number;
   attempts: number;
+  /** Present only when this subsequent attempt actually enters its handler. */
+  retryFrom?: PoolRetryEvidence;
 }
 
 export async function runWithPool(
@@ -140,15 +163,17 @@ export async function runWithPool(
 ): Promise<void> {
   const members = exposed ? poolMembers(store, exposed) : undefined;
   if (!members?.length) { await attempt(res, undefined); return; }
+  let retryFrom: PoolRetryEvidence | undefined;
   for (let i = 0; i < members.length; i++) {
     if (res.destroyed || res.writableEnded) return;
     const gate = new Gate(res, i < members.length - 1);
     const settled = new Promise<void>(resolve => { gate.once("finish", resolve); gate.once("close", resolve); });
-    await attempt(gate as unknown as ServerResponse, members[i], { pool: exposed!, attempt: i + 1, attempts: members.length });
+    await attempt(gate as unknown as ServerResponse, members[i], { pool: exposed!, attempt: i + 1, attempts: members.length, ...(retryFrom ? { retryFrom: { ...retryFrom } } : {}) });
     await settled;
     if (res.destroyed || res.writableEnded) return;
     if (!gate.retry) return;
     markFailed(members[i]!);
+    retryFrom = { member: members[i]!, attempt: i + 1, status: gate.statusCode };
   }
 }
 

@@ -1004,15 +1004,22 @@ function planCard() {
 let poolForm = null; // { id?, name, strategy, members: [] } while the pool form is open
 let poolConfirmDel = null;
 
-/** Model pools: one name for several places to get a model from; a failing member is skipped. */
+/** Model pools: catalog eligibility and attempts are not proof of live availability. */
 function poolsCard() {
   const pools = state.pools ?? [];
   const nameOf = key => { const i = key.indexOf("/"); const p = providerById(key.slice(0, i)); return `${key.slice(i + 1)}${p ? `（${p.name}）` : ""}`; };
+  const reasons = { catalog_eligible: "配置允许参与选择", source_missing: "找不到来源记录", source_disabled: "来源已关闭", budget_blocked: "预算暂停，请检查预算和记账状态", model_missing: "当前目录未列出此模型", unsupported: "当前传输尚不支持", unknown_excluded: "暂不参与选择，原因未提供" };
+  const memberText = (p, member) => {
+    const status = p.memberStates?.find(s => s.member === member);
+    const reason = status && Object.hasOwn(reasons, status.reason) ? reasons[status.reason]
+      : p.live?.includes(member) ? reasons.catalog_eligible : reasons.unknown_excluded;
+    return `${esc(nameOf(member))} · ${reason}`;
+  };
   const row = p => `
     <div class="row">
       <span class="ic lg" style="display:grid;place-items:center;background:var(--pill);border-radius:10px;width:34px;height:34px">▦</span>
-      <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "rotate" ? "轮流用" : "按顺序，前面的挂了再用后面的"}</span></div>
-        <div class="sub">${p.members.map(m => esc(nameOf(m))).join(" → ")}${p.live.length < p.members.length ? " · <b>有来源已经不存在了</b>" : ""}</div></div>
+      <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "rotate" ? "轮流优先尝试" : "按顺序尝试"}</span></div>
+        <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div></div>
       <button class="btn secondary" data-pool-edit="${esc(p.id)}">编辑</button>
       <button class="btn secondary" data-pool-del="${esc(p.id)}">${poolConfirmDel === p.id ? "再点一次删除" : "删除"}</button>
     </div>`;
@@ -1022,13 +1029,14 @@ function poolsCard() {
   const form = poolForm ? `
     <form class="form" data-pool-form>
       <div class="field"><label>名字（agent 里会看到 pool/名字）</label><input type="text" name="name" value="${esc(poolForm.name)}" required placeholder="比如 sonnet"></div>
-      <div class="field"><label>怎么选</label><select name="strategy"><option value="order" ${poolForm.strategy === "order" ? "selected" : ""}>按顺序：先用勾在前面的，它挂了再用后面的</option><option value="rotate" ${poolForm.strategy === "rotate" ? "selected" : ""}>轮流：大家轮着来，分摊额度</option></select></div>
+      <div class="field"><label>怎么选</label><select name="strategy"><option value="order" ${poolForm.strategy === "order" ? "selected" : ""}>按顺序：优先尝试前面的来源</option><option value="rotate" ${poolForm.strategy === "rotate" ? "selected" : ""}>轮流：轮换优先尝试的来源</option></select></div>
       ${options}
       <div class="controls"><button class="btn" type="submit">保存</button><button class="btn secondary" type="button" data-pool-cancel>取消</button></div>
       ${poolForm.error ? `<p class="hint" style="color:var(--bad)">${esc(poolForm.error)}</p>` : ""}
     </form>` : "";
   return `
-    <div class="section-head"><h2>模型池</h2><span class="aside">同一个模型有多个来源时合成一个名字，一个挂了自动换下一个</span></div>
+    <div class="section-head"><h2>模型池</h2><span class="aside">同一个模型的多个来源合成一个名字</span></div>
+    <p class="hint">可参与选择只代表配置允许，不代表来源实际可用或额度充足。仅在开始回复前遇到可重试错误时改试其他候选；不是每次失败都会切换，也不保证重试成功。</p>
     <div class="card">
       ${pools.map(row).join("")}
       ${typeof poolSuggestionsCard === "function" ? poolSuggestionsCard() : ""}
@@ -1095,7 +1103,14 @@ function explain(e) {
   const provider = providerById(e.providerId ?? e.model.split("/")[0]);
   const pname = provider?.name ?? e.providerId ?? "未知来源";
   const parts = [];
-  if (e.pool) parts.push(`走的是模型池 ${e.pool}，第 ${e.attempt}/${e.attempts} 个来源${e.status >= 400 && e.attempt < e.attempts ? "，它没答上，已经换下一个" : ""}`);
+  if (e.pool) {
+    parts.push(`走的是模型池 ${e.pool}，第 ${e.attempt}/${e.attempts} 个候选`);
+    // Only the subsequent handler's own evidence proves it was attempted. An
+    // earlier failed log, a candidate count or an old record cannot prove that.
+    if (e.retryFrom && Number.isInteger(e.attempt) && e.attempt > 1 && e.retryFrom.attempt === e.attempt - 1
+      && ([401, 403, 429].includes(e.retryFrom.status) || Number.isInteger(e.retryFrom.status) && e.retryFrom.status >= 500 && e.retryFrom.status <= 599))
+      parts.push(`上个候选在开始回复前失败，本次已改试第 ${e.attempt} 个候选；不代表已向来源发出请求或重试成功`);
+  }
   if (e.inboundProtocol && e.outboundProtocol) parts.push(e.inboundProtocol === e.outboundProtocol
     ? `来源支持 ${PROTOCOL[e.inboundProtocol]}，保留原生请求与回复`
     : `${PROTOCOL[e.inboundProtocol]} → ${PROTOCOL[e.outboundProtocol]}，按来源转换请求与回复`);
