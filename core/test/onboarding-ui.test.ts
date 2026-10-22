@@ -34,6 +34,70 @@ function ui() {
   return {run,dispatch,button,form,html:()=>page.innerHTML};
 }
 
+// Checks the rendered HTML contract, not a browser accessibility tree.
+function assertAssociatedLabel(html: string, name: string, expected: string) {
+  const controls = [...html.matchAll(/<(?:input|select)\b[^>]*>/g)].map(match => match[0]);
+  const named = controls.filter(tag => tag.includes(`name="${name}"`));
+  assert.equal(named.length, 1, `exactly one ${name} control`);
+  const control = named[0]; assert.ok(control);
+  const id = control.match(/\bid="([^"]+)"/)?.[1];
+  assert.ok(id, `${name} needs a stable id for its visible label`);
+  assert.equal([...html.matchAll(/\bid="([^"]+)"/g)].filter(match => match[1] === id).length, 1, `${id} must be unique in the rendered page`);
+  const labels = [...html.matchAll(/<label\b([^>]*)>([^<]*)<\/label>/g)].filter(match => match[1]?.includes(`for="${id}"`));
+  assert.equal(labels.length, 1, `exactly one explicit label for ${name}`);
+  const label = labels[0]; assert.ok(label);
+  assert.equal(label[2], expected);
+  return id;
+}
+
+test("first-run preset and secret controls have stable unique visible labels", () => {
+  const app = ui(); app.run("renderActual()");
+  const preset = assertAssociatedLabel(app.html(), "presetId", "选择你已经购买或准备好的来源");
+  const key = assertAssociatedLabel(app.html(), "apiKey", "粘贴这个来源的 Key");
+  assert.notEqual(preset, key);
+  app.run("renderActual()");
+  assert.equal(assertAssociatedLabel(app.html(), "presetId", "选择你已经购买或准备好的来源"), preset);
+  assert.equal(assertAssociatedLabel(app.html(), "apiKey", "粘贴这个来源的 Key"), key);
+  assert.match(app.html(), /name="apiKey" type="password" autocomplete="off"/);
+});
+
+test("first-run custom and local sources keep address and conditional key labels associated", () => {
+  const app = ui();
+  app.run("presets.push({id:'relay',name:'Custom',category:'其他'});firstRun.presetId='relay';renderActual()");
+  const ids = [assertAssociatedLabel(app.html(), "presetId", "选择你已经购买或准备好的来源"),
+    assertAssociatedLabel(app.html(), "baseUrl", "来源地址"), assertAssociatedLabel(app.html(), "apiKey", "粘贴这个来源的 Key")];
+  assert.equal(new Set(ids).size, 3);
+  app.run("presets[0].category='本地';firstRun.presetId='example';renderActual()");
+  assertAssociatedLabel(app.html(), "apiKey", "粘贴这个来源的 Key（本地模型可留空）");
+  assert.doesNotMatch(app.html(), /name="baseUrl"/);
+});
+
+test("first-run advanced controls keep their labels across redraw and unavailable choices", async () => {
+  const app = ui(); app.run("renderActual()");
+  await app.dispatch("submit", app.form("source", {presetId:"example", apiKey:"fixture-key"}));
+  const agent = assertAssociatedLabel(app.html(), "agent", "已安装的程序（Agent）");
+  const model = assertAssociatedLabel(app.html(), "model", "增强会话的模型");
+  assert.notEqual(agent, model);
+  app.run("firstRun.agent='missing';firstRun.model='unavailable';renderActual()");
+  assert.equal(assertAssociatedLabel(app.html(), "agent", "已安装的程序（Agent）"), agent);
+  assert.equal(assertAssociatedLabel(app.html(), "model", "增强会话的模型"), model);
+  assert.match(app.html(), /value="missing" selected disabled/);
+  assert.match(app.html(), /value="unavailable" selected disabled/);
+});
+
+test("first-run busy redraw preserves explicit label associations without creating requests", async () => {
+  const app = ui(); app.run("firstRun.busy=true;renderActual()");
+  assertAssociatedLabel(app.html(), "presetId", "选择你已经购买或准备好的来源");
+  assertAssociatedLabel(app.html(), "apiKey", "粘贴这个来源的 Key");
+  assert.equal(app.run("requests.length"), 0);
+  app.run("firstRun.busy=false");
+  await app.dispatch("submit", app.form("source", {presetId:"example", apiKey:"fixture-key"}));
+  const before = app.run("requests.length"); app.run("firstRun.busy=true;renderActual()");
+  assertAssociatedLabel(app.html(), "agent", "已安装的程序（Agent）");
+  assertAssociatedLabel(app.html(), "model", "增强会话的模型");
+  assert.equal(app.run("requests.length"), before);
+});
+
 test("first empty console renders the real two-step wizard with safe choices", () => {
   const app=ui();app.run('renderActual()'); const html=app.html();
   assert.match(html,/第一次使用，两步准备好/);assert.match(html,/添加并检测/);assert.match(html,/可能产生费用/);
