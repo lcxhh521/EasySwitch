@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { modelEfforts } from "./model-efforts.ts";
+import { contextTokens, providerContext, type ModelContext } from "./model-context.ts";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -24,13 +25,17 @@ export interface CatalogModel {
   model: string;
   /** The thinking levels this model has (see model-efforts.ts); empty when it has none to set. */
   efforts: string[];
+  context?: ModelContext;
 }
 
 export function catalogModels(providers: readonly Provider[]): CatalogModel[] {
   // A subscription the user switched off is used nowhere.
   return providers.filter(p => !p.off && p.cliTextBridge?.kind !== "droid").flatMap(p => {
     const models = p.models.length ? p.models : p.defaultModel ? [p.defaultModel] : [];
-    return models.map(model => ({ providerId: p.id, providerName: p.name, model, efforts: modelEfforts(p, model) }));
+    return models.map(model => {
+      const context = providerContext(p, model);
+      return { providerId: p.id, providerName: p.name, model, efforts: modelEfforts(p, model), ...(context ? { context } : {}) };
+    });
   });
 }
 
@@ -156,12 +161,12 @@ export function codexCatalog(template: Json, models: readonly CatalogModel[]): J
       ...template,
       slug: `${m.providerId}/${m.model}`,
       display_name: m.model,
-      description: `${m.providerName} · 经 EasySwitch`,
+      description: `${m.providerName} · 经 EasySwitch · ${m.context ? m.context.source === "partial-pool" ? "部分成员窗口未知，使用兼容上限" : "上下文来自手动配置" : "上下文未知，暂用128K兼容值"}`,
       visibility: "list",
       priority: i + 1,
-      context_window: DEFAULT_CONTEXT,
-      max_context_window: DEFAULT_CONTEXT,
-      auto_compact_token_limit: Math.round(DEFAULT_CONTEXT * 0.9),
+      context_window: contextTokens(m.context, DEFAULT_CONTEXT),
+      max_context_window: contextTokens(m.context, DEFAULT_CONTEXT),
+      auto_compact_token_limit: Math.round(contextTokens(m.context, DEFAULT_CONTEXT) * 0.9),
       // Classic function tools. Newer GPT entries wrap every tool in a JS
       // "code mode" tool and use a trimmed Responses dialect; both are built
       // for OpenAI's own models, and other models then never call a tool.

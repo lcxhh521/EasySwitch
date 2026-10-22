@@ -81,6 +81,11 @@
     "reasoningEffort": {
       "type": "boolean"
     },
+    "modelContextWindows": {
+      "type": "object",
+      "description": "User-configured source/model context tokens; absent is unknown, not a model-name inference.",
+      "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+    },
     "modelEfforts": {
       "type": "object",
       "additionalProperties": {

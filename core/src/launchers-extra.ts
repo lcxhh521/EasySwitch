@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { AgentLauncher, LaunchInput, LaunchSpec } from "./agent-launch.ts";
+import { contextTokens } from "./model-context.ts";
 
 /**
  * Launchers for the command-line agents beyond the first few. Each one gives the agent a private
@@ -17,6 +18,9 @@ const gateway = (i: LaunchInput) => `http://127.0.0.1:${i.port}`;
 const q = (s: string) => JSON.stringify(s);
 const bare = (model: string) => model.slice(model.indexOf("/") + 1);
 const levels = (all: string[]) => all;
+const windowFor = (i: LaunchInput, model: string, fallback = 200000) => contextTokens(i.modelContexts?.[model], fallback);
+// Output defaults are compatibility settings, not discovered model capabilities.
+const outputFor = (i: LaunchInput, model: string, fallback: number) => Math.min(fallback, windowFor(i, model));
 
 const dir = (i: LaunchInput, name: string) => join(i.sessionDir, name);
 
@@ -48,7 +52,7 @@ function kimiToml(i: LaunchInput): string {
     ...allModels(i).flatMap(model => {
       const efforts = (i.modelEfforts?.[model] ?? (model === i.model && i.effort ? [i.effort] : []))
         .filter(effort => ["low", "medium", "high"].includes(effort));
-      return [`[models.${q(`es/${model}`)}]`, 'provider = "es"', `model = ${q(model)}`, "max_context_size = 128000",
+      return [`[models.${q(`es/${model}`)}]`, 'provider = "es"', `model = ${q(model)}`, `max_context_size = ${windowFor(i, model, 128000)}`,
         `capabilities = ${JSON.stringify(efforts.length ? ["thinking", "tool_use"] : ["tool_use"])}`,
         ...(efforts.length ? [`support_efforts = ${JSON.stringify(efforts)}`] : []),
         ...(model === i.model && i.effort && efforts.includes(i.effort) ? [`default_effort = ${q(i.effort)}`] : []), ""];
@@ -63,7 +67,7 @@ function kimiToml(i: LaunchInput): string {
 function piFiles(i: LaunchInput): Record<string, string> {
   return {
     [join(dir(i, "pi-agent"), "models.json")]: JSON.stringify({
-      providers: { easyswitch: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, api: "openai-completions", apiKey: i.token, models: allModels(i).map(m => ({ id: m, name: bare(m), reasoning: true, input: ["text", "image"], contextWindow: 200000, maxTokens: 32000 })) } },
+      providers: { easyswitch: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, api: "openai-completions", apiKey: i.token, models: allModels(i).map(m => ({ id: m, name: bare(m), reasoning: true, input: ["text", "image"], contextWindow: windowFor(i, m), maxTokens: outputFor(i, m, 32000) })) } },
     }),
     [join(dir(i, "pi-agent"), "settings.json")]: JSON.stringify({ defaultProvider: "easyswitch", defaultModel: i.model, ...(i.effort ? { defaultThinkingLevel: i.effort } : {}) }),
   };
@@ -84,7 +88,7 @@ function ompFiles(i: LaunchInput): Record<string, string> {
         const efforts = (i.modelEfforts?.[m] ?? (m === i.model && i.effort ? [i.effort] : []))
           .filter(level => ["minimal", "low", "medium", "high", "xhigh", "max"].includes(level));
         return [`      - id: ${q(m)}`, `        name: ${q(bare(m))}`, `        reasoning: ${efforts.length > 0}`,
-          "        contextWindow: 200000", "        maxTokens: 32000", "        input: [text]",
+          `        contextWindow: ${windowFor(i, m)}`, `        maxTokens: ${outputFor(i, m, 32000)}`, "        input: [text]",
           ...(efforts.length ? [`        thinking: ${JSON.stringify({ mode: "effort", efforts })}`] : [])];
       }),
       "",
@@ -118,7 +122,7 @@ function clineFiles(i: LaunchInput): Record<string, string> {
     }),
     [join(data, "settings", "models.json")]: JSON.stringify({
       version: 1,
-      providers: { "openai-compatible": { provider: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, defaultModelId: i.model }, models: Object.fromEntries(allModels(i).map(m => [m, { id: m, name: bare(m), capabilities: ["streaming", "tools", "reasoning"], contextWindow: 200000, maxTokens: 32000 }])) } },
+      providers: { "openai-compatible": { provider: { name: "EasySwitch", baseUrl: `${gateway(i)}/v1`, defaultModelId: i.model }, models: Object.fromEntries(allModels(i).map(m => [m, { id: m, name: bare(m), capabilities: ["streaming", "tools", "reasoning"], contextWindow: windowFor(i, m), maxTokens: outputFor(i, m, 32000) }])) } },
     }),
   };
   return files;
@@ -132,7 +136,7 @@ function gooseFiles(i: LaunchInput): Record<string, string> {
     [join(config, "custom_providers", "easyswitch.json")]: JSON.stringify({
       name: "easyswitch", engine: "openai", display_name: "EasySwitch", api_key_env: "", base_url: `${gateway(i)}/v1`,
       headers: { Authorization: `Bearer ${i.token}` }, requires_auth: false, skip_canonical_filtering: true, dynamic_models: false,
-      models: allModels(i).map(m => ({ name: m, reasoning: true, context_limit: 200000 })),
+      models: allModels(i).map(m => ({ name: m, reasoning: true, context_limit: windowFor(i, m) })),
     }),
   };
   return files;
@@ -144,7 +148,7 @@ function crushFiles(i: LaunchInput): Record<string, string> {
   const models = allModels(i);
   return {
     [join(dir(i, "crush-config"), "crush.json")]: JSON.stringify({
-      providers: { easyswitch: { type: "openai", name: "EasySwitch", base_url: `${gateway(i)}/v1`, api_key: i.token, models: models.map(m => ({ id: m, name: bare(m), context_window: 200000, default_max_tokens: 16384, can_reason: true })) } },
+      providers: { easyswitch: { type: "openai", name: "EasySwitch", base_url: `${gateway(i)}/v1`, api_key: i.token, models: models.map(m => ({ id: m, name: bare(m), context_window: windowFor(i, m), default_max_tokens: outputFor(i, m, 16384), can_reason: true })) } },
       models: { large: { provider: "easyswitch", model: i.model, ...(i.effort ? { reasoning_effort: i.effort } : {}) }, small: { provider: "easyswitch", model: i.tiers?.small ?? i.model } },
     }),
   };
@@ -160,7 +164,7 @@ function grokToml(i: LaunchInput): string {
     "",
     ...allModels(i).flatMap(m => [
       `[model.${q(`easyswitch/${m}`)}]`, `model = ${q(m)}`, `name = ${q(bare(m))}`, `base_url = ${q(`${gateway(i)}/v1`)}`, `api_key = ${q(i.token)}`,
-      'api_backend = "chat_completions"', "context_window = 200000", 'reasoning_efforts = ["low", "medium", "high"]', "",
+      'api_backend = "chat_completions"', `context_window = ${windowFor(i, m)}`, 'reasoning_efforts = ["low", "medium", "high"]', "",
     ]),
     "[features]",
     "campaigns = false",
@@ -185,7 +189,7 @@ function mcodeYaml(i: LaunchInput): string {
     "      authMode: api-key",
     "    models:",
     ...allModels(i).flatMap(m => [
-      `      ${q(m)}:`, `        name: ${q(bare(m))}`, "        limit: { context: 200000, output: 16384 }", "        reasoning: true",
+      `      ${q(m)}:`, `        name: ${q(bare(m))}`, `        limit: { context: ${windowFor(i, m)}, output: ${outputFor(i, m, 16384)} }`, "        reasoning: true",
       `        thinking: { effortOptions: [low, medium, high], defaultEffort: ${i.effort ?? "high"} }`,
     ]),
     "",
@@ -198,7 +202,7 @@ function qoderSettings(i: LaunchInput): string {
   const alias = `easyswitch/${i.model}`;
   return JSON.stringify({
     providers: { easyswitch: { displayName: "EasySwitch", protocol: "openai", baseUrl: `${gateway(i)}/v1`, apiKey: i.token, model: i.model,
-      models: allModels(i).map(m => ({ model: m, displayName: bare(m), contextWindow: 200000, maxOutputTokens: 16384, capabilities: { tools: true, vision: false, thinking: { modes: ["enabled"], supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"], requiresBudgetForEnabled: false } } })) } },
+      models: allModels(i).map(m => ({ model: m, displayName: bare(m), contextWindow: windowFor(i, m), maxOutputTokens: outputFor(i, m, 16384), capabilities: { tools: true, vision: false, thinking: { modes: ["enabled"], supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"], requiresBudgetForEnabled: false } } })) } },
     model: { name: alias, ...(i.effort ? { preferences: { [alias]: { reasoning: { effort: i.effort } } } } : {}) },
   });
 }
@@ -207,7 +211,7 @@ function qoderSettings(i: LaunchInput): string {
 
 function openclawConfig(i: LaunchInput): string {
   return JSON.stringify({
-    models: { mode: "merge", providers: { easyswitch: { baseUrl: `${gateway(i)}/v1`, apiKey: "${EASYSWITCH_OPENCLAW_KEY}", api: "openai-completions", models: allModels(i).map(m => ({ id: m, name: bare(m), contextWindow: 200000, input: ["text", "image"] })) } } },
+    models: { mode: "merge", providers: { easyswitch: { baseUrl: `${gateway(i)}/v1`, apiKey: "${EASYSWITCH_OPENCLAW_KEY}", api: "openai-completions", models: allModels(i).map(m => ({ id: m, name: bare(m), contextWindow: windowFor(i, m), input: ["text", "image"] })) } } },
     agents: { defaults: { model: { primary: `easyswitch/${i.model}` }, ...(i.tiers?.subagent ? { subagents: { model: `easyswitch/${i.tiers.subagent}` } } : {}) } },
   });
 }
@@ -228,7 +232,7 @@ function atomcodeToml(i: LaunchInput): string {
       const efforts = (i.modelEfforts?.[model] ?? (model === i.model && i.effort ? [i.effort] : []))
         .filter(level => ["low", "medium", "high", "xhigh", "max"].includes(level));
       return [`[models.${q(`es/${model}`)}]`, 'account = "es"', `model = ${q(model)}`,
-        "context_window = 128000", "max_tokens = 8192", "supports_vision = false",
+        `context_window = ${windowFor(i, model, 128000)}`, `max_tokens = ${outputFor(i, model, 8192)}`, "supports_vision = false",
         `reasoning_effort_levels = ${JSON.stringify(efforts)}`,
         ...(model === i.model && i.effort && efforts.includes(i.effort) ? [`reasoning_effort = ${q(i.effort)}`] : []), ""];
     }),

@@ -33,6 +33,8 @@ B126 implements a narrow guard for these three markers: it requires a concrete s
 
 ## Open capability gap: per-model context windows
 
+**2026-10-23 update (B127):** explicit per-source/model user settings now flow into Codex and the eleven extra launchers that already declared context fields. Pools take the minimum across configured members, including temporarily unavailable members; partial/unknown metadata is explicit and retains the existing launcher fallback as an additional cap. Unknown model names never establish capability. This closes the configuration/propagation gap described below, not verified vendor discovery, true output limits, every client integration, or real-client acceptance. See `docs/outbound-adapters.md` for the current contract. The constants below describe the October 18 baseline.
+
 `core/src/catalog.ts` applies 128,000 context/max-context tokens and a 90% auto-compaction threshold to every external Codex model. `Provider` and `CatalogModel` contain no trusted per-model context-window field. Multiple extra launchers separately use 200,000 or 128,000 constants. Model-name context suffix normalization is not evidence of actual source support.
 
 This review does not replace those values with guessed model-family limits or a universal 1M window. A future change needs metadata provenance, per-source overrides, explicit unknown-model fallback, mixed-window tests, and safe pool capability intersection. Native Codex catalog entries are preserved when included; the arbitrary external-model constants remain an open gap.

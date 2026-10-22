@@ -5,6 +5,7 @@ import { claudeArgs, claudeEnv, codexArgs } from "./launch.ts";
 import { knownEfforts } from "./efforts.ts";
 import { allModels, EXTRA_LAUNCHERS } from "./launchers-extra.ts";
 import { DSH_EFFORTS, dshLaunch } from "./dsh-launch.ts";
+import type { ModelContext } from "./model-context.ts";
 
 /**
  * How to start each agent on the EasySwitch gateway, for one launch only:
@@ -47,6 +48,8 @@ export interface LaunchInput {
   effort?: string;
   /** Model-owned capabilities for every exposed model, keyed by <provider>/<model>. */
   modelEfforts?: Record<string, string[]>;
+  /** Context provenance for main, menu and tier models. Missing entries are unknown. */
+  modelContexts?: Record<string, ModelContext>;
 }
 
 export interface LaunchSpec {

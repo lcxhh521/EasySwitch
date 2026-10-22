@@ -844,6 +844,30 @@ function budgetBlock(p) {
 const PROTOCOL = { chat: "Chat", responses: "Responses", messages: "Messages", gemini: "Gemini" };
 // Keep in-progress choices through polling, collapsing, or an unrelated refresh.
 const protocolDrafts = new Map();
+const contextDrafts = new Map();
+
+function modelContextForm(p) {
+  const models = [...new Set([...modelsOf(p), ...Object.keys(p.modelContextWindows ?? {})])];
+  if (!models.length) return "";
+  const draft = contextDrafts.get(p.id);
+  const model = draft?.model ?? (models.includes(p.defaultModel) ? p.defaultModel : models[0]);
+  const tokens = draft?.tokens ?? p.modelContextWindows?.[model] ?? "";
+  return `<details data-keep="context:${esc(p.id)}" ${keepOpen(`context:${p.id}`)}>
+    <summary class="hint" style="cursor:pointer">上下文窗口 · 高级设置</summary>
+    <form class="form" data-context-form><fieldset ${providerOperations.has(p.id) ? "disabled" : ""} style="border:0;padding:0;margin:0;display:grid;gap:12px">
+      <div class="field"><label>模型</label><select name="model" data-context-model>${[...new Set([...models, model])].map(m => `<option value="${esc(m)}" ${m === model ? "selected" : ""}>${esc(m)}${p.modelContextWindows?.[m] ? "（已设置）" : ""}</option>`).join("")}</select></div>
+      <div class="field"><label>可容纳的上下文（tokens）</label><input name="tokens" type="number" min="1" step="1" value="${esc(tokens)}" placeholder="未知，使用兼容默认值"></div>
+      <div class="hint">仅在知道这个来源的模型限制时填写。未设置时暂用各客户端的兼容默认值，不代表模型实际支持的长度。留空保存可清除设置；更改在下次启动增强会话时生效。</div>
+      <button class="btn secondary" type="submit">保存窗口</button>
+    </fieldset></form></details>`;
+}
+
+function rememberContextForm(form) {
+  const id = form?.closest(".detail")?.dataset.provider;
+  if (!id) return;
+  const fields = new FormData(form);
+  contextDrafts.set(id, { model: String(fields.get("model") ?? ""), tokens: String(fields.get("tokens") ?? "") });
+}
 const providerOperations = new Set();
 function protocolChoices(p, model = "") {
   const values = p?.modelProtocols?.[model] ?? p?.protocols ?? p?.supportedProtocols ?? ["chat"];
@@ -900,6 +924,7 @@ function providerRow(p) {
         <div class="hint">按来源文档勾选它支持的协议。与客户端相同的协议优先；需要转换时，按这里的显示顺序选择。单个模型可独立设置。</div>
         <div class="controls"><button class="btn secondary" type="submit">保存协议</button><button class="btn secondary" type="button" data-protocol-auto>恢复默认</button></div>
       </fieldset></form></details>`}
+      ${modelContextForm(p)}
       ${p.cliTextBridge ? `<p class="hint">${esc(cliTextSourceNotice(p))}</p>` : `<div class="controls">
         <label class="hint">测试用模型</label>
         <select class="probe-model">${options || "<option value=''>（没有可选模型）</option>"}</select>
@@ -1046,6 +1071,14 @@ function poolSignalsDetails(pool, nameOf) {
 }
 
 /** Model pools: catalog eligibility and attempts are not proof of live availability. */
+function poolContextDetails(pool) {
+  const context = pool.context;
+  const text = !context ? "成员上下文窗口未知，暂用各客户端兼容默认值。"
+    : context.source === "partial-pool" ? `部分成员窗口未知；启动时取已设置的 ${context.tokens} tokens 与客户端兼容默认值中的较小值。`
+    : `按所有成员的手动设置取较小窗口：${context.tokens} tokens。`;
+  return `<details data-keep="pool-context:${esc(pool.id)}" ${keepOpen(`pool-context:${pool.id}`)}><summary class="hint">上下文窗口依据</summary><p class="hint">${esc(text)} 更改在下次启动生效；手动设置和兼容默认值均未经真实模型验证。</p></details>`;
+}
+
 function poolsCard() {
   const pools = state.pools ?? [];
   const nameOf = key => { const i = key.indexOf("/"); const p = providerById(key.slice(0, i)); return `${key.slice(i + 1)}${p ? `（${p.name}）` : ""}`; };
@@ -1060,7 +1093,7 @@ function poolsCard() {
     <div class="row">
       <span class="ic lg" style="display:grid;place-items:center;background:var(--pill);border-radius:10px;width:34px;height:34px">▦</span>
       <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "automatic" ? "已确认名单内自动选择" : p.strategy === "rotate" ? "轮流优先尝试" : "按顺序尝试"}</span></div>
-        <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div>${poolSignalsDetails(p, nameOf)}</div>
+        <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div>${poolSignalsDetails(p, nameOf)}${poolContextDetails(p)}</div>
       ${p.strategy === "automatic" ? `<button class="btn secondary" data-automatic-manage="${esc(p.id)}">重新确认来源</button>` : `<button class="btn secondary" data-pool-edit="${esc(p.id)}">编辑</button>`}
       <button class="btn secondary" data-pool-del="${esc(p.id)}">${poolConfirmDel === p.id ? "再点一次删除" : "删除"}</button>
     </div>`;
@@ -1977,6 +2010,7 @@ document.addEventListener("click", async e => {
         if (!window.confirm("删除这个模型来源？钥匙串里的 Key 也会一起删除。")) { button.disabled = false; return; }
         await call("DELETE", `/api/providers/${id}`);
         protocolDrafts.delete(id);
+        contextDrafts.delete(id);
         openProvider = null;
       }
     } catch (error) { showError(error); }
@@ -1989,6 +2023,15 @@ document.addEventListener("click", async e => {
 });
 
 document.addEventListener("change", async e => {
+  if (e.target.matches("[data-context-model]")) {
+    const form = e.target.closest("[data-context-form]");
+    const id = form?.closest(".detail")?.dataset.provider;
+    if (!id || providerOperations.has(id)) return;
+    const tokens = providerById(id)?.modelContextWindows?.[e.target.value] ?? "";
+    form.querySelector('[name="tokens"]').value = tokens;
+    contextDrafts.set(id, { model: e.target.value, tokens: String(tokens) });
+    return;
+  }
   if (e.target.matches("[data-protocol-model]")) {
     const detail = e.target.closest(".detail");
     if (!detail || providerOperations.has(detail.dataset.provider)) return;
@@ -2007,6 +2050,8 @@ document.addEventListener("change", async e => {
 });
 
 document.addEventListener("input", e => {
+  const contextForm = e.target.closest?.("[data-context-form]");
+  if (contextForm) { rememberContextForm(contextForm); return; }
   if (e.target.matches("#import-form textarea")) importFormOpen = true;
   if (e.target.id === "preset-search") {
     presetQuery = e.target.value;
@@ -2015,6 +2060,25 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("submit", async e => {
+  if (e.target.matches("[data-context-form]")) {
+    e.preventDefault();
+    const form = e.target, detail = form.closest(".detail"), id = detail?.dataset.provider;
+    if (!id || providerOperations.has(id)) return;
+    const fields = new FormData(form), model = String(fields.get("model") ?? "");
+    const value = String(fields.get("tokens") ?? "").trim(), tokens = value === "" ? null : Number(value);
+    if (tokens !== null && (!Number.isSafeInteger(tokens) || tokens <= 0)) { toast("请填写正整数 tokens，或留空清除设置"); return; }
+    rememberContextForm(form);
+    let saved = false;
+    try {
+      await withProviderOperation(detail, async () => {
+        await call("PUT", `/api/providers/${encodeURIComponent(id)}/model-context`, { model, tokens });
+        contextDrafts.delete(id); saved = true;
+        toast(tokens === null ? "已清除窗口设置，下次启动生效" : "窗口已保存，下次启动生效");
+      });
+    } catch (error) { showError(error); }
+    if (saved) await refresh(true);
+    return;
+  }
   if (e.target.matches("[data-protocol-form]")) {
     e.preventDefault();
     const form = e.target;

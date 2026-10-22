@@ -28,7 +28,8 @@ function canonical(value: unknown): string {
 
 /** Identity-affecting configuration only. Passive usage/health records are not a new authorization. */
 export function automaticProviderConfiguration(provider: Provider): string {
-  const { probe: _probe, healthMonitor: _health, icon: _icon, keys, ...config } = provider;
+  // Context windows only describe a future client's catalog; they do not change dispatch identity.
+  const { probe: _probe, healthMonitor: _health, icon: _icon, modelContextWindows: _windows, keys, ...config } = provider;
   // sourceProtocols uses this exact legacy Chat result; observation timestamps/latency/detail do not affect routing.
   const routingChatProbeStatus = provider.probe?.checks.find(check => check.id === "chat" && check.status !== "skip")?.status;
   return canonical({ ...config, routingChatProbeStatus, ...(keys !== undefined ? { keys: Array.isArray(keys) ? keys.map(({ lastUsedAt: _used, restUntil: _rest, lastError: _error, ...key }) => key) : keys } : {}) });

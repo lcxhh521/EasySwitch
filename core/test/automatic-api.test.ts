@@ -48,6 +48,18 @@ test("automatic cannot be enabled through legacy pool creation or edit",async()=
  assert.equal((await f.api("/api/pools","POST",{name:"Bypass",strategy:"automatic",members:["a/mock-coder","b/mock-coder"]})).status,400);
  const p=await f.preview(),c=await f.confirm(p.confirmationId);assert.equal((await f.api(`/api/pools/${c.pool.id}`,"PUT",{name:"Changed",strategy:"order",members:c.pool.members})).status,409);assert.equal(f.store.pool(c.pool.id)!.strategy,"automatic");
 }));
+test("context-only edits preserve reviewed source identity and an approved pool remains usable", async () => fixture(async f => {
+  const preview = await f.preview();
+  const revision = f.store.providerConfigurationRevision("a");
+  const saved = await f.api("/api/providers/a/model-context", "PUT", { model: "mock-coder", tokens: 32000 });
+  assert.equal(saved.status, 200);
+  assert.equal(f.store.providerConfigurationRevision("a"), revision);
+  const confirmed = await f.confirm(preview.confirmationId);
+  await f.api("/api/providers/a/model-context", "PUT", { model: "mock-coder", tokens: null });
+  const response = await f.request(`pool/${confirmed.pool.id}`);
+  assert.equal(response.status, 200, await response.text());
+  assert.deepEqual(f.calls.map(call => call.source), ["a"]);
+}));
 test("changed endpoint and same-ID secret invalidate pending confirmation",async()=>fixture(async f=>{
  let p=await f.preview();f.store.upsertProvider({...f.store.provider("b")!,baseUrl:"http://127.0.0.1:1"});assert.equal((await f.api("/api/pools/automatic/confirm","POST",{confirmationId:p.confirmationId})).status,409);assert.equal(f.store.pools().length,0);
  p=await f.preview();await f.secrets.set("a","replacement-fixture");assert.equal((await f.api("/api/pools/automatic/confirm","POST",{confirmationId:p.confirmationId})).status,409);assert.equal(f.store.pools().length,0);assert.equal(f.calls.length,0);

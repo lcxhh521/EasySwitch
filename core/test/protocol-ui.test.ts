@@ -74,6 +74,68 @@ test("a failed protocol save keeps the chosen values and permits retry", async (
 function provider(app: ReturnType<typeof ui>) {
   app.run(`state.providers=[{id:'source',name:'Fixture',icon:'letter:F',baseUrl:'https://fixture.invalid',models:['m'],usedBy:[],billing:'subscription',hasKey:true,supportedProtocols:['chat']}];openProvider='source';`);
 }
+
+function contextForm(app: ReturnType<typeof ui>, tokens: string, model = "m") {
+  const form: any = app.form([], model);
+  form.values = { model, tokens };
+  form.matches = (selector: string) => selector === "[data-context-form]";
+  form.querySelector = () => ({ set value(value: string) { form.values.tokens = value; } });
+  return form;
+}
+
+test("context settings start folded and distinguish manual values, unknown and partial pools", () => {
+  const app = ui(); provider(app);
+  let html = app.run("providerRow(state.providers[0])") as string;
+  assert.match(html, /上下文窗口 · 高级设置/);
+  assert.doesNotMatch(html, /data-keep="context:source" open/);
+  assert.match(html, /name="tokens"[^>]*value=""/);
+  assert.match(html, /不代表模型实际支持/);
+  app.run("state.providers[0].modelContextWindows = {m:32000}");
+  html = app.run("providerRow(state.providers[0])");
+  assert.match(html, /name="tokens"[^>]*value="32000"/);
+  assert.match(app.run("poolContextDetails({id:'p',context:{tokens:512000,source:'partial-pool'}})"), /部分成员窗口未知.*较小值/);
+  assert.match(app.run("poolContextDetails({id:'p',context:null})"), /窗口未知/);
+  assert.equal(app.run("requests.length"), 0);
+});
+
+test("context save sends the selected model once and clearing explicitly sends null", async () => {
+  const app = ui(), form = contextForm(app, "64000", "m");
+  app.run("call = async (method,path,body) => { requests.push({method,path,body}); return new Promise(resolve => { globalThis.finishSave = resolve; }); }");
+  const pending = app.dispatch("submit", form);
+  await app.dispatch("submit", form);
+  assert.equal(app.run("requests.length"), 1); assert.equal(form.controls[0].disabled, true);
+  assert.equal(app.run("requests[0].path"), "/api/providers/source/model-context");
+  assert.equal(app.run("JSON.stringify(requests[0].body)"), '{"model":"m","tokens":64000}');
+  app.run("finishSave({})"); await pending;
+  assert.equal(form.controls[0].disabled, false);
+  app.run("call = async (method,path,body) => { requests.push({method,path,body}); return {}; }");
+  await app.dispatch("submit", contextForm(app, ""));
+  assert.equal(app.run("JSON.stringify(requests[1].body)"), '{"model":"m","tokens":null}');
+});
+
+test("context editing survives redraw and failed saves; changing model loads that model's own value", async () => {
+  const app = ui(); provider(app);
+  const form = contextForm(app, "48000");
+  await app.dispatch("input", { closest: () => form });
+  assert.match(app.run("providerRow(state.providers[0])"), /name="tokens"[^>]*value="48000"/);
+  app.run("call = async () => { throw new Error('fixture failure'); }");
+  await app.dispatch("submit", form);
+  assert.equal(form.controls[0].disabled, false);
+  assert.match(app.run("providerRow(state.providers[0])"), /name="tokens"[^>]*value="48000"/);
+  app.run("state.providers[0].models.push('other'); state.providers[0].modelContextWindows = {other:96000}");
+  await app.dispatch("change", { matches: (s: string) => s === "[data-context-model]", value: "other", closest: () => form });
+  assert.equal(form.values.tokens, 96000);
+  assert.equal(app.run("contextDrafts.get('source').model"), "other");
+});
+
+test("invalid context input does not send a request or disable the form", async () => {
+  const app = ui();
+  for (const value of ["0", "-2", "3.5", "not-a-number"]) {
+    const form = contextForm(app, value); await app.dispatch("submit", form);
+    assert.equal(form.controls[0].disabled, false);
+  }
+  assert.equal(app.run("requests.length"), 0);
+});
 function buttonFor(form: ReturnType<ReturnType<typeof ui>["form"]>, attribute: string, model = "m") {
   const button = { disabled: false, type: "button", textContent: attribute === "data-probe" ? "检测一下" : "恢复默认",
     hasAttribute: (name: string) => name === attribute,

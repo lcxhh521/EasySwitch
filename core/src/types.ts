@@ -49,6 +49,8 @@ export interface Provider {
   reasoningEffort?: boolean;
   /** Thinking levels the user says a model on this provider has, by model id. Overrides what EasySwitch knows. */
   modelEfforts?: Record<string, string[]>;
+  /** User-configured context tokens for this exact source/model; absent means unknown. */
+  modelContextWindows?: Record<string, number>;
   /** This provider is Google Antigravity (Cloud Code Assist): the Google account that signed in and the project found for it (see antigravity.ts). */
   antigravity?: { accountId: string; email: string; projectId: string };
   /** This provider is a Kimi Code account signed in with a device code (see kimi.ts). */

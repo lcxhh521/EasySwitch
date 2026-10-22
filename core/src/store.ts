@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { dataDir } from "./paths.ts";
 import type { SiwcAccount, SiwcStorage } from "./siwc.ts";
 import { catalogModels, type CatalogModel } from "./catalog.ts";
+import { poolContext, providerContext } from "./model-context.ts";
 import type { Profile } from "./types.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
 import { automaticProviderConfiguration } from "./automatic-approval.ts";
@@ -305,9 +306,14 @@ export class Store {
     const have = new Set(own.map(m => `${m.providerId}/${m.model}`));
     const pools: CatalogModel[] = (this.state.pools ?? []).map(pool => {
       const lists = pool.members.filter(m => have.has(m)).map(member => own.find(m => `${m.providerId}/${m.model}` === member)!.efforts);
+      const context = poolContext(pool.members.map(member => {
+        const slash = member.indexOf("/");
+        return providerContext(this.provider(member.slice(0, slash)), member.slice(slash + 1));
+      }));
       return {
         providerId: "pool", providerName: "模型池", model: pool.id,
         efforts: lists.length ? lists[0]!.filter(l => lists.every(x => x.includes(l))) : [],
+        ...(context ? { context } : {}),
       };
     }).filter(p => this.state.pools!.find(x => x.id === p.model)!.members.some(m => have.has(m)));
     return [...own, ...pools];

@@ -64,6 +64,7 @@ import { sessionToken } from "./gateway-chat.ts";
 import { GatewayTokenAuthority, GatewayIssuanceLimitError, GatewaySessionStoreError, gatewayTokens, type GatewaySession } from "./gateway-auth.ts";
 import { BudgetController, BudgetExceededError } from "./global-budget.ts";
 import { gatewayError, parseRequest } from "./gateway-route.ts";
+import { providerContext, validContextTokens } from "./model-context.ts";
 import { hasResponsesContinuation } from "./responses-continuation.ts";
 import { vertexConfigIssue, vertexKind as vertexMode, type VertexConfig } from "./vertex-config.ts";
 import { CLAUDE_DESKTOP_ISOLATION_BLOCKER, findClaudeDesktopExecutable, prepareClaudeDesktopFixtureSession, type ClaudeDesktopOptions, type ClaudeDesktopSession } from "./claude-desktop.ts";
@@ -268,6 +269,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     return { ...basePublicProvider(p, hasKey, usedBy), sourceHealth: health.snapshot(p.id), ...(status ? { budgetStatus: status } : {}) };
   };
   const publicPool = (p: Pool) => ({ ...publicAutomaticPool(p), live: liveMembers(store, p), memberStates: poolMemberStates(store, p),
+    context: store.catalog().find(m => m.providerId === "pool" && m.model === p.id)?.context ?? null,
     signals: poolSignalSnapshot(store, p, { now: deps.sourceHealth?.now?.(), healthOf: provider => health.snapshotFor(provider) }) });
   const providerHasKey = async (p: Provider): Promise<boolean> => { try { return Boolean(await secrets.get(p.vertex && !vertexConfigIssue(p.vertex) && vertexMode(p.vertex) === "service-account" ? `vertex:${p.id}` : p.id)); } catch { return false; } };
   const doctorHelp = new Map<string, { checkedAt: string; verdicts: Verdict[] }>();
@@ -370,7 +372,8 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     token = issued.token;
     if (automaticTools) { toolSessionId = issued.id; automaticToolSessions.register(issued); }
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
-    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
+    const modelContexts = Object.fromEntries(store.catalog().filter(m => m.context).map(m => [`${m.providerId}/${m.model}`, m.context!]));
+    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelContexts, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
     materialize(spec, sessionDir);
     return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
     } catch (error) { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
@@ -1537,6 +1540,25 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         json(res, 200, publicProvider(provider, true));
         return;
       }
+    }
+
+    const contextMatch = /^\/api\/providers\/([a-z0-9-]+)\/model-context$/.exec(path);
+    if (contextMatch && method === "PUT") {
+      const provider = store.provider(contextMatch[1]!);
+      if (!provider) { json(res, 404, { error: "没有这个模型来源" }); return; }
+      const model = body.model;
+      if (typeof model !== "string" || !model || (!provider.models.includes(model) && model !== provider.defaultModel && !Object.hasOwn(provider.modelContextWindows ?? {}, model))) {
+        json(res, 400, { error: "请选择这个来源已有的模型" }); return;
+      }
+      if (body.tokens !== null && !validContextTokens(body.tokens)) {
+        json(res, 400, { error: "上下文窗口需要正整数 tokens；清除时传 tokens:null" }); return;
+      }
+      const windows = { ...provider.modelContextWindows };
+      if (body.tokens === null) delete windows[model]; else windows[model] = body.tokens;
+      if (Object.keys(windows).length) provider.modelContextWindows = windows; else delete provider.modelContextWindows;
+      store.upsertProvider(provider);
+      json(res, 200, { model, context: providerContext(provider, model) ?? null });
+      return;
     }
 
     const levelsMatch = /^\/api\/providers\/([a-z0-9-]+)\/model-efforts$/.exec(path);
