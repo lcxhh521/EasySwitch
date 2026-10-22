@@ -574,19 +574,21 @@ function renderAgents() {
 
 let autoConfirm = false; // the inline terms notice for auto pick is open
 
+function accountIsResting(a, now = Date.now()) { return Date.parse(a.restUntil) > now; }
+
 function accountRow(a) {
-  const resting = a.resting;
-  const state = !a.enabled ? `<span class="chip">已停用</span>`
-    : resting ? `<span class="chip warn"><span class="dot"></span>限额中 · ${inFuture(a.restUntil)}恢复</span>`
-    : `<span class="chip ok"><span class="dot"></span>可用</span>`;
+  const resting = accountIsResting(a);
+  const state = !a.enabled ? `<span class="chip">不参与自动选号</span>`
+    : resting ? `<span class="chip warn"><span class="dot"></span>休息标记 · ${inFuture(a.restUntil)}到期</span>`
+    : `<span class="chip">未标记休息</span>`;
   return `
     <div class="row" data-account="${esc(a.id)}">
       ${icon(HARNESS[a.harness].icon, "sm")}
       <div class="grow"><div class="title">${esc(a.label)}</div><div class="sub">${a.lastUsedAt ? `上次用：${ago(a.lastUsedAt)}` : "还没用过；第一次启动要在终端里登录一次"}</div></div>
       ${state}
-      <button class="btn" data-acc-launch="${esc(a.id)}" data-h="${a.harness}">启动</button>
-      <button class="btn secondary" data-acc-rest="${esc(a.id)}" data-on="${resting ? "0" : "1"}">${resting ? "恢复" : "撞限额了"}</button>
-      <button class="btn secondary" data-acc-toggle="${esc(a.id)}" data-enabled="${a.enabled ? "0" : "1"}">${a.enabled ? "停用" : "启用"}</button>
+      <button class="btn" data-acc-launch="${esc(a.id)}" data-h="${a.harness}">手动启动</button>
+      <button class="btn secondary" data-acc-rest="${esc(a.id)}" data-on="${resting ? "0" : "1"}">${resting ? "清除休息标记" : "撞限额了"}</button>
+      <button class="btn secondary" data-acc-toggle="${esc(a.id)}" data-enabled="${a.enabled ? "0" : "1"}" title="仅影响自动选号，仍可手动启动">${a.enabled ? "停用" : "启用"}</button>
       <button class="btn danger" data-acc-del="${esc(a.id)}">移除</button>
     </div>`;
 }
@@ -600,6 +602,12 @@ function renderAccounts() {
   const settings = state.accountSettings ?? { autoPick: false };
   const section = h => {
     const mine = accounts.filter(a => a.harness === h);
+    const enabled = mine.filter(a => a.enabled), now = Date.now();
+    const ready = enabled.filter(a => !accountIsResting(a, now));
+    const allResting = enabled.length > 0 && ready.length === 0;
+    const retryAt = allResting ? new Date(Math.min(...enabled.map(a => Date.parse(a.restUntil)))).toISOString() : "";
+    const reason = !settings.autoPick ? "先了解说明并开启自动选号" : !enabled.length ? "请添加账号或让已有账号参与自动选号"
+      : allResting ? "全部账号都有休息标记，暂不自动启动" : "从未标记休息的账号中选最久没用的；实际登录和额度未核实";
     return `
       <div class="section-head"><h2>${icon(HARNESS[h].icon, "sm")} ${HARNESS[h].name}</h2>
         <span class="aside">${mine.length} 个账号</span></div>
@@ -608,15 +616,16 @@ function renderAccounts() {
         <form class="form" data-add-account="${h}"><div class="controls">
           <input type="text" name="label" placeholder="给这个账号起个名字，例如：个人 Plus" style="flex:1">
           <button class="btn secondary" type="submit">＋ 添加 ${HARNESS[h].name} 账号</button>
-          <button class="btn" type="button" data-acc-auto="${h}" ${settings.autoPick && mine.some(a => a.enabled) ? "" : "disabled"} title="${settings.autoPick ? "挑一个没撞限额、最久没用的" : "先开启自动选号"}">自动选号启动</button>
+          <button class="btn" type="button" data-acc-auto="${h}" ${settings.autoPick && ready.length ? "" : "disabled"} title="${reason}">自动选号启动</button>
         </div></form>
+        <p class="hint" data-account-readiness="${h}" ${retryAt ? `data-acc-retry-at="${esc(retryAt)}"` : ""}>${allResting ? `全部参与自动选号的账号都有休息标记，暂不自动启动。最早标记到期：${esc(new Date(retryAt).toLocaleString())}（${inFuture(retryAt)}）。标记时间不代表实际额度恢复；请先核对账号，再手动启动或清除休息标记。` : reason}</p>
       </div>`;
   };
   return `
     <div class="section-head"><h2>订阅账号</h2><span class="aside">一个人的多份订阅；全部在本机，登录令牌不经过 EasySwitch</span></div>
     <div class="card"><div class="row">
       <div class="grow"><div class="title">自动选号</div>
-        <div class="sub">${settings.autoPick ? "已开启：点「自动选号启动」时，自动挑一个没撞限额、最久没用的账号" : "未开启：每次自己选账号启动"}</div></div>
+        <div class="sub">${settings.autoPick ? "已开启：启动时只从未标记休息的账号中选最久没用的；不保证实际登录或额度可用" : "未开启：每次自己选账号启动"}</div></div>
       <button class="btn secondary" data-acc-autopick="${settings.autoPick ? "off" : "ask"}">${settings.autoPick ? "关闭" : "开启…"}</button>
     </div>
     ${autoConfirm && !settings.autoPick ? `<div class="detail" style="display:block"><p class="hint">请注意：服务商的条款可能限制「为绕开用量限制而在多个账号之间切换」。自动选号只在<b>启动会话时</b>替你挑账号，不转发请求、不接触任何登录令牌，也不会在会话中途换号；是否符合你所用服务的条款，由你自己确认。</p>
@@ -1561,8 +1570,10 @@ document.addEventListener("click", async e => {
   }
   const accAuto = t.closest("[data-acc-auto]");
   if (accAuto) {
-    try { const r = await call("POST", "/api/accounts/launch", { harness: accAuto.dataset.accAuto }); toast(`自动选了「${r.account.label}」${r.note ? `（${r.note}）` : ""}`); } catch (error) { showError(error); }
-    setTimeout(() => refresh(true), 800);
+    if (accAuto.disabled) return;
+    accAuto.disabled = true;
+    try { const r = await call("POST", "/api/accounts/launch", { harness: accAuto.dataset.accAuto }); toast(`自动选了「${r.account.label}」`); } catch (error) { showError(error); }
+    await refresh(true);
     return;
   }
   const accRest = t.closest("[data-acc-rest]");

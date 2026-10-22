@@ -81,22 +81,22 @@ export function clearResting(store: Store, id: string): Account | undefined {
 }
 
 export type PickResult =
-  | { ok: true; account: Account; note?: string }
-  | { ok: false; reason: string };
+  | { ok: true; account: Account }
+  | { ok: false; code: "account_auto_disabled" | "account_unavailable" | "account_resting"; reason: string; retryAt?: string };
 
 /**
  * Automatic choice, only when the user turned it on: among enabled accounts,
- * those not resting go first and the one used longest ago wins; when every
- * account rests, the one whose rest ends soonest is offered with a note.
+ * only those not resting qualify and the one used longest ago wins. A rest
+ * marker is not a live quota reading; never silently override it to launch.
  */
 export function pickAccount(store: Store, harness: Account["harness"], settings: AccountSettings = store.accountSettings(), now = Date.now()): PickResult {
-  if (!settings.autoPick) return { ok: false, reason: "自动选号没有开启；先在账号页手动选一个，或开启自动选号" };
+  if (!settings.autoPick) return { ok: false, code: "account_auto_disabled", reason: "自动选号没有开启；请在设置中手动选一个账号，或了解说明后开启" };
   const enabled = store.accounts(harness).filter(a => a.enabled);
-  if (!enabled.length) return { ok: false, reason: "还没有可用的账号" };
+  if (!enabled.length) return { ok: false, code: "account_unavailable", reason: "这个客户端还没有参与自动选号的账号" };
   const ready = enabled.filter(a => !isResting(a, now)).sort((a, b) => (a.lastUsedAt ?? "").localeCompare(b.lastUsedAt ?? ""));
   if (ready[0]) return { ok: true, account: ready[0] };
-  const soonest = [...enabled].sort((a, b) => (a.restUntil ?? "").localeCompare(b.restUntil ?? ""))[0]!;
-  return { ok: true, account: soonest, note: "所有账号都标了限额，先用最早恢复的这个" };
+  const retryAt = new Date(Math.min(...enabled.map(a => Date.parse(a.restUntil!)))).toISOString();
+  return { ok: false, code: "account_resting", reason: "所有参与自动选号的账号都有休息标记，本次没有启动；标记时间不代表实际额度恢复", retryAt };
 }
 
 export function touch(store: Store, id: string): void {

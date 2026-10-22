@@ -1247,28 +1247,45 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       return;
     }
     if (path === "/api/accounts/launch" && method === "POST") {
+      if (body.harness !== undefined && body.harness !== "claude" && body.harness !== "codex") {
+        json(res, 409, { code: "account_selection_invalid", error: "选择的客户端不受支持" });
+        return;
+      }
       const harness = body.harness === "claude" ? "claude" : "codex";
       const label = harness === "codex" ? "ChatGPT" : "Claude Code";
-      let account = typeof body.accountId === "string" ? store.account(body.accountId) : undefined;
-      let note: string | undefined;
-      if (!account) {
+      const automatic = !Object.hasOwn(body, "accountId");
+      const chooseAccount = (): Account | undefined => {
+        if (!automatic) {
+          const account = typeof body.accountId === "string" ? store.account(body.accountId) : undefined;
+          if (!account || account.harness !== harness) {
+            json(res, 409, { code: "account_selection_invalid", error: "选择的账号不存在或不属于这个客户端；没有自动改选其他账号" });
+            return;
+          }
+          // Disabled/resting only excludes automatic choice. An explicit manual
+          // launch remains available and does not clear either stored marker.
+          return account;
+        }
         const picked = pickAccount(store, harness);
         if (!picked.ok) {
-          json(res, 409, { error: picked.reason });
+          json(res, 409, { code: picked.code, error: picked.reason, ...(picked.retryAt ? { retryAt: picked.retryAt } : {}) });
           return;
         }
-        account = picked.account;
-        note = picked.note;
-      }
-      const binary = harness === "codex" ? await findCodex() : await findClaude();
+        return picked.account;
+      };
+      if (!chooseAccount()) return;
+      const binary = await agentBinary(harness);
       if (!binary) {
         json(res, 409, { error: `找不到 ${label} 的命令` });
         return;
       }
+      // Discovery yields to other requests: recheck settings, markers and IDs
+      // before starting a process, without falling back from manual to auto.
+      const account = chooseAccount();
+      if (!account) return;
       const command = accountCommandLine(binary, account);
-      await launchInTerminal(command, `${label} · 账号「${account.label}」（独立的登录目录；第一次用需要在这里登录一次；关掉窗口即结束）`);
+      await (deps.interactiveRuntime?.launchInTerminal ?? launchInTerminal)(command, `${label} · 账号「${account.label}」（独立的登录目录；第一次用需要在这里登录一次；关掉窗口即结束）`);
       touchAccount(store, account.id);
-      json(res, 200, { account: publicAccount(account), ...(note ? { note } : {}) });
+      json(res, 200, { account: publicAccount(account) });
       return;
     }
     const accountMatch = /^\/api\/accounts\/(a-[a-z0-9]+)$/.exec(path);

@@ -49,6 +49,10 @@ test("existing error paths map to useful fixed categories", () => {
     [{ status: 503, code: "gateway_session_storage_unavailable" }, "storage_unavailable"],
     [{ status: 401, code: "invalid_gateway_session" }, "session_invalid"],
     [{ status: 429, message: "已有 3 个文字桥请求运行，请稍后再试。" }, "request_busy"],
+    [{ status: 409, code: "account_auto_disabled" }, "account_auto_disabled"],
+    [{ status: 409, code: "account_unavailable" }, "account_unavailable"],
+    [{ status: 409, code: "account_resting", retryAt: "2026-10-21T12:00:00Z" }, "account_resting"],
+    [{ status: 409, code: "account_selection_invalid" }, "account_selection_invalid"],
   ];
   assert.deepEqual(new Set(cases.map(([, code]) => code)), new Set(registeredErrors().map(e => e.code)));
   for (const [input, code] of cases) assert.equal(humanError(input).code, code);

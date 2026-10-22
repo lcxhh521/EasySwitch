@@ -2,7 +2,7 @@
 import "../../web/errors.js";
 
 export type UserErrorContext = "local" | "source" | "session" | "launch" | "budget" | "storage" | "keychain" | "request";
-export type UserErrorTarget = "doctor" | "current" | "providers" | "usage" | "agents" | "sessions";
+export type UserErrorTarget = "doctor" | "current" | "providers" | "usage" | "agents" | "sessions" | "settings";
 export interface UserErrorEntry { code: string; title: string; reason: string; action: { label: string; target: UserErrorTarget } }
 export interface HumanError extends UserErrorEntry { message: string; details: { code: string; status?: number; technicalCode?: string; osStatus?: number } }
 export interface UserErrorsApi {

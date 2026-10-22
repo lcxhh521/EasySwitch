@@ -18,6 +18,11 @@ function ui(){
 test('doctor direct navigation reads only its guarded metadata API, never state or account discovery',async()=>{
  const app=ui();await app.run('refresh(true)');assert.equal(app.run('requests.length'),1);assert.equal(app.run('requests[0].p'),'/api/doctor');assert.match(app.html(),/来源已关闭/);assert.match(app.html(),/不会读取密钥/);
 });
+test('account recovery opens settings without running a check or changing account state',async()=>{
+ const app=ui();app.run('globalThis.visits=[];refresh=async()=>{visits.push(page)}');
+ await app.dispatch('click',app.button('open-settings'));
+ assert.equal(app.run('page'),'settings');assert.equal(app.run('requests.length'),0);assert.equal(app.run('visits[0]'),'settings');
+});
 test('active source and CLI checks require specific visible confirmation and suppress repeated submissions',async()=>{
  const app=ui();await app.run('refresh(true)');await app.dispatch('click',app.button('probe-provider'));assert.equal(app.run('requests.length'),1);assert.match(app.html(),/可能产生费用/);
  const form={values:{ack:''},matches:(s:string)=>s==='[data-doctor-confirm]'};await app.dispatch('submit',form);assert.equal(app.run('requests.length'),1);

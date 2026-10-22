@@ -28,6 +28,11 @@
 | session_invalid | 这个窗口的连接凭据已失效 | 当前窗口没有有效的本地访问权限，可能已过期或被撤销 | 重新准备连接 | agents | server.ts invalid_gateway_session 与已撤销或过期本地会话 |
 | request_busy | 当前正在处理的请求太多 | 同时运行的请求或连接达到本地上限，需要先等待或停止不再使用的会话 | 查看正在运行的会话 | sessions | cli-text-process.ts 本地并发；手动会话签发限制 |
 
+| account_auto_disabled | 自动选号还没有开启 | 自动选号需要先了解说明并明确开启，本次没有启动账号 | 到设置选择账号 | settings | accounts.ts 自动选号须明确开启 |
+| account_unavailable | 没有参与自动选号的账号 | 这个客户端尚未添加账号，或已有账号都已停用自动选号 | 到设置检查账号 | settings | accounts.ts 同客户端启用账号筛选 |
+| account_resting | 账号都在休息，已暂停自动启动 | 所有参与自动选号的账号都有休息标记；标记时间不代表实际额度恢复，确认后可手动启动或清除标记 | 到设置检查休息标记 | settings | accounts.ts 全部休息时拒绝自动启动；本地标记不是实时额度 |
+| account_selection_invalid | 选择的账号或客户端已不可用 | 账号可能已移除、与客户端不匹配，或选择的信息不完整；没有自动改选其他账号 | 到设置重新选择 | settings | server.ts 显式账号与客户端校验，不回退自动选号 |
+
 ## 接入合同
 
 - 浏览器加载 web/errors.js 后使用 EasySwitchErrors.humanError；Node 使用 core/src/user-errors.ts 的同名导出，两端只有一份文案

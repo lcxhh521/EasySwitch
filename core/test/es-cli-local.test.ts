@@ -191,6 +191,7 @@ test("request failures use fixed CLI wording and never echo hostile server prose
     [404, { code: "agent_not_found", error: { message: sensitive }, uiError: { message: sensitive } }, /没有检测到/],
     [500, { code: sensitive, error: sensitive, uiError: { code: sensitive, message: sensitive } }, /这次操作没有完成/],
     [409, { code: "provider_disabled", error: sensitive }, /来源还没打开/],
+    [409, { code: "account_resting", error: sensitive }, /已暂停自动启动.*「设置」检查账号和休息标记/],
   ] as const) {
     const errors: string[] = [];
     const code = await esMain(["fixture"], { env: {}, spawn: (() => assert.fail("no process on rejection")) as EsCliDeps["spawn"], out: () => assert.fail("no successful output"), err: line => errors.push(line),
@@ -198,7 +199,7 @@ test("request failures use fixed CLI wording and never echo hostile server prose
     });
     assert.equal(code, 1); assert.match(errors.join("\n"), expected);
     assert.doesNotMatch(errors.join("\n"), /HTTP|\b[45]\d\d\b|fixture-private|fixture-secret|session-leak|Users\/private|\u001b/);
-    assert.match(errors.join("\n"), /es list|es doctor|模型来源/);
+    assert.match(errors.join("\n"), /es list|es doctor|模型来源|「设置」/);
   }
 });
 

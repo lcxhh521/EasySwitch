@@ -7,7 +7,7 @@ import { diagnoseMessagesEndpoint, type ProviderEndpointMetadata } from "./endpo
 /** Diagnostics consume metadata only. No filesystem, credential store, process, or network imports. */
 export type DoctorStatus = "ok" | "warn" | "error" | "unchecked";
 export type DoctorArea = "gateway" | "helper" | "provider" | "agent" | "tokens" | "budget" | "recent-failure";
-export type DoctorActionKind = "open-providers" | "open-agents" | "open-sessions" | "open-budget" | "open-helper-help" | "open-login" | "probe-provider" | "check-agent-help" | "refresh-doctor";
+export type DoctorActionKind = "open-providers" | "open-agents" | "open-sessions" | "open-budget" | "open-settings" | "open-helper-help" | "open-login" | "probe-provider" | "check-agent-help" | "refresh-doctor";
 export interface DoctorAction { kind: DoctorActionKind; label: string; targetId?: string; requiresConfirmation?: boolean }
 export interface DoctorFinding {
   code: string;
@@ -163,7 +163,7 @@ export function buildDoctorReport(input: DoctorInput): DoctorReport {
 function recentFailureFinding(failure: DoctorFailure): DoctorFinding {
   const mapped=failure.code && Object.hasOwn(ERROR_CODES,failure.code) ? ERROR_CODES[failure.code] : failure.code;
   const error=humanError({code:mapped,status:failure.status},{context:"source"});
-  const targets={doctor:"refresh-doctor",current:"open-providers",providers:"open-providers",usage:"open-budget",agents:"open-agents",sessions:"open-sessions"} as const;
+  const targets={doctor:"refresh-doctor",current:"open-providers",providers:"open-providers",usage:"open-budget",agents:"open-agents",sessions:"open-sessions",settings:"open-settings"} as const;
   const result=finding("recent-failure",error.code,"warn",`最近一次失败：${error.title}`,error.reason,`请点击「${error.action.label}」检查后再试。`,[action(targets[error.action.target],error.action.label)]);
   result.errorCode=error.code;
   const at=iso(failure.at); if(at) result.checkedAt=at; return result;

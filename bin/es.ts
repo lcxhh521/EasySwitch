@@ -28,6 +28,7 @@ function cliErrorMessage(view: HumanError): string {
     doctor: "请运行 es doctor 检查服务和配置。", current: "请检查命令参数后重试。",
     providers: "请在控制台的「模型来源」检查设置。", usage: "请在控制台的「用量」检查预算。",
     agents: "请运行 es list 查看可用程序，并在控制台重新准备连接。", sessions: "请在控制台检查并停止不再使用的会话。",
+    settings: "请在控制台的「设置」检查账号和休息标记。",
   }[view.action.target];
   return `${view.title}。${view.reason}。${next}`;
 }

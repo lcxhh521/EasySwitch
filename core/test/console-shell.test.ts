@@ -253,6 +253,60 @@ test("account controls in settings still dispatch their original actions without
   assert.equal(app.writes.length, 0, "Account actions do not write browser preferences or secrets");
 });
 
+test("all-resting accounts disable automatic launch with a marked expiry, not a quota promise", async () => {
+  const app = shell({ hash: "#settings" });
+  app.fixtureState.accountSettings.autoPick = true;
+  Object.assign(app.fixtureState.accounts[0]!, { restUntil: "2099-10-21T20:00:00+08:00", resting: true });
+  app.fixtureState.accounts.push({ ...app.fixtureState.accounts[0]!, id: "codex-later", ...{ restUntil: "2099-10-21T13:00:00Z" } });
+  app.fixtureState.accounts.push({ ...app.fixtureState.accounts[0]!, id: "codex-disabled", enabled: false, ...{ restUntil: undefined } });
+  await app.refresh();
+  assert.equal(app.node('[data-acc-auto="codex"]').disabled, true);
+  assert.equal(app.node('[data-acc-auto="claude"]').disabled, false, "another client's ready account is independent");
+  assert.equal(app.node('[data-account-readiness="codex"]').getAttribute("data-acc-retry-at"), "2099-10-21T12:00:00.000Z");
+  assert.match(app.html(), /标记时间不代表实际额度恢复/);
+  assert.match(app.html(), /手动启动或清除休息标记/);
+  assert.doesNotMatch(app.html(), /限额中|最早恢复的这个/);
+  assert.equal(app.node('[data-acc-launch="codex-fixture"]').disabled, false);
+  assert.equal(app.node('[data-acc-rest="codex-fixture"]').dataset.on, "0");
+  await app.click('[data-acc-auto="codex"]');
+  assert.equal(app.requests.filter(r => r.method !== "GET").length, 0, "even synthetic clicks cannot auto-launch a disabled control");
+  await app.click('[data-acc-launch="codex-fixture"]');
+  assert.deepEqual(app.requests.filter(r => r.method !== "GET")[0]?.body, { harness: "codex", accountId: "codex-fixture" });
+  await app.click('[data-acc-rest="codex-fixture"]');
+  assert.deepEqual(app.requests.filter(r => r.method !== "GET")[1]?.body, { rest: false });
+});
+
+test("account UI reevaluates exact expiry instead of trusting a stale resting boolean", async () => {
+  const app = shell({ hash: "#settings" });
+  app.run('Date.now = () => Date.parse("2026-10-21T12:00:00Z")');
+  app.fixtureState.accountSettings.autoPick = true;
+  Object.assign(app.fixtureState.accounts[0]!, { restUntil: "2026-10-21T12:00:00Z", resting: true });
+  await app.refresh();
+  assert.equal(app.node('[data-acc-auto="codex"]').disabled, false);
+  assert.equal(app.node('[data-acc-rest="codex-fixture"]').dataset.on, "1");
+  assert.match(app.html(), /未标记休息/);
+  assert.doesNotMatch(app.html(), /data-acc-retry-at=/);
+});
+
+test("a stale automatic launch refusal shows recovery wording and refreshes without a success toast", async () => {
+  const app = shell({ hash: "#settings" }); app.run(web("errors.js"));
+  app.fixtureState.accountSettings.autoPick = true; await app.refresh();
+  app.run(`const fixtureFetch = fetch; fetch = async (path, init) => {
+    const response = await fixtureFetch(path, init);
+    if (path !== "/api/accounts/launch") return response;
+    state.accounts[0].restUntil = "2099-10-21T12:00:00Z";
+    return { ok: false, status: 409, json: async () => ({ code: "account_resting", error: "untrusted detail", uiError: {code:"account_resting", action:{target:"evil"}} }) };
+  }`);
+  const reads = app.requests.filter(r => r.method === "GET").length;
+  await app.click('[data-acc-auto="codex"]');
+  assert.equal(app.node('[data-acc-auto="codex"]').disabled, true);
+  assert.ok(app.requests.filter(r => r.method === "GET").length > reads);
+  const messages = Array.from(app.run("fixtureMessages")) as string[];
+  assert.equal(messages.length, 1); assert.match(messages[0]!, /已暂停自动启动.*到设置检查休息标记/);
+  assert.doesNotMatch(messages[0]!, /自动选了|untrusted|evil/);
+  await app.toastAction("settings"); assert.equal(app.run("page"), "settings");
+});
+
 test("theme defaults to system and manual/system choices persist only their appearance key without HTTP", async () => {
   const app = shell({ hash: "#settings" }); await app.refresh();
   assert.equal(app.run("EasySwitchTheme.get()"), "system"); assert.equal(app.root.getAttribute("data-theme"), null); assert.equal(app.writes.length, 0);

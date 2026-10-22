@@ -19,6 +19,10 @@
     ["storage_unavailable", "本地记录暂时无法保存或读取", "记录文件可能不完整、不可写，或磁盘空间不足；先检查再重试，避免覆盖原记录", "检查本地存储", "doctor"],
     ["session_invalid", "这个窗口的连接凭据已失效", "当前窗口没有有效的本地访问权限，可能已过期或被撤销", "重新准备连接", "agents"],
     ["request_busy", "当前正在处理的请求太多", "同时运行的请求或连接达到本地上限，需要先等待或停止不再使用的会话", "查看正在运行的会话", "sessions"],
+    ["account_auto_disabled", "自动选号还没有开启", "自动选号需要先了解说明并明确开启，本次没有启动账号", "到设置选择账号", "settings"],
+    ["account_unavailable", "没有参与自动选号的账号", "这个客户端尚未添加账号，或已有账号都已停用自动选号", "到设置检查账号", "settings"],
+    ["account_resting", "账号都在休息，已暂停自动启动", "所有参与自动选号的账号都有休息标记；标记时间不代表实际额度恢复，确认后可手动启动或清除标记", "到设置检查休息标记", "settings"],
+    ["account_selection_invalid", "选择的账号或客户端已不可用", "账号可能已移除、与客户端不匹配，或选择的信息不完整；没有自动改选其他账号", "到设置重新选择", "settings"],
   ];
   const entries = rows.map(([code, title, reason, label, target]) => Object.freeze({ code, title, reason, action: Object.freeze({ label, target }) }));
   const dictionary = new Map(entries.map(entry => [entry.code, entry]));

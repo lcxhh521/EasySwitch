@@ -55,7 +55,7 @@ test("auto pick is off until the user turns it on, then it prefers the longest-u
 
   markResting(store, a.id);
   const all = pickAccount(store, "claude");
-  assert.ok(all.ok && all.note, "everything rests: still serves one, with a note");
+  assert.ok(!all.ok && all.code === "account_resting", "everything rests: do not automatically launch an account");
 
   clearResting(store, a.id);
   assert.equal(store.account(a.id)!.restUntil, undefined);
@@ -67,7 +67,7 @@ test("a rest mark ends by itself", () => {
   store.setAccountSettings({ autoPick: true });
   markResting(store, a.id, new Date(Date.now() - 1000));
   const picked = pickAccount(store, "codex");
-  assert.ok(picked.ok && !picked.note, "an expired rest is just a ready account");
+  assert.ok(picked.ok, "an expired rest is just a ready account");
 });
 
 test("the command line sets the home and clears variables that would override the login", () => {

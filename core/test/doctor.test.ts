@@ -47,6 +47,15 @@ test("five common faults have distinct actionable findings and shared human-erro
   }
 });
 
+test("account refusals retain their fixed settings recovery destination in metadata diagnostics",()=>{
+  for(const code of ["account_auto_disabled","account_unavailable","account_resting","account_selection_invalid"]) {
+    const data=input(); data.recentFailure={status:409,code};
+    const row=buildDoctorReport(data).findings.at(-1)!;
+    assert.equal(row.errorCode,code); assert.equal(row.actions[0]!.kind,"open-settings");
+    assert.equal(row.message,humanError({code}).reason);
+  }
+});
+
 test("arbitrary secret-shaped and opaque data in all diagnostics are never serialized",()=>{
   const data=input() as DoctorInput & Record<string,unknown>;
   data.token=SECRET;data.apiKey=SECRET;data.environment={secret:SECRET};

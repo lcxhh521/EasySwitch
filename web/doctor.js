@@ -35,7 +35,7 @@ document.addEventListener("click", async event => {
     const id=button.dataset.doctorTarget;if(!/^[a-z][a-z0-9-]{0,79}$/.test(id??""))return;
     doctorConfirmation={kind:action==="probe-provider"?"provider":"agent-help",id};render();return;
   }
-  const targets={"open-providers":"providers","open-login":"providers","open-agents":"agents","open-sessions":"sessions","open-budget":"usage"};
+  const targets={"open-providers":"providers","open-login":"providers","open-agents":"agents","open-sessions":"sessions","open-budget":"usage","open-settings":"settings"};
   if(targets[action]){pageNavigationVersion++;page=targets[action];history.replaceState(null,"",`#${page}`);doctorConfirmation=null;await refresh(true);}
 });
 document.addEventListener("submit", async event=>{
