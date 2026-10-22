@@ -9,6 +9,7 @@ function ui(){
  document:{addEventListener(k:string,f:any){(handlers[k]??=[]).push(f)},querySelector:(s:string)=>nodes[s]??null,querySelectorAll:()=>[],activeElement:null,createElement:element,body:{append(e:any){added.push(e)}}},
  setTimeout:()=>0,clearTimeout(){},requestAnimationFrame(){},fetch(){throw new Error('unexpected network')},FormData:class{f:any;constructor(f:any){this.f=f}get(k:string){return this.f.values[k]}}});
  for(const name of ['errors','doctor'])vm.runInContext(readFileSync(new URL(`../../web/${name}.js`,import.meta.url),'utf8'),context);
+ vm.runInContext(readFileSync(new URL("../../web/overview.js", import.meta.url), "utf8"), context);
  const app=readFileSync(new URL('../../web/app.js',import.meta.url),'utf8');vm.runInContext(app.slice(0,app.lastIndexOf('fetch("icons/manifest.json")')),context);
  const run=(s:string):any=>vm.runInContext(s,context);run(`globalThis.requests=[];globalThis.report={version:1,mode:'metadata',status:'warn',notice:'metadata only',findings:[{code:'source_disabled',title:'来源已关闭',status:'warn',message:'保持关闭',nextStep:'去来源页面',targetId:'p',actions:[{kind:'probe-provider',label:'检测来源',targetId:'p'}]}]};call=async(m,p,b,o)=>{requests.push({m,p,b,signal:o?.signal});return report;};`);
  const dispatch=async(k:string,target:any)=>{let stop=false;for(const f of handlers[k]??[]){await f({target,preventDefault(){},stopImmediatePropagation(){stop=true}});if(stop)break;}};

@@ -101,6 +101,8 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
   const abort = new AbortController(); res.on("close", () => abort.abort());
   let downstream: Downstream | undefined;
   let upstreamFailed = false;
+  const endActivity = deps.session && deps.activity?.begin({ sessionId: deps.session.id, agentId: harness, providerId: provider.id, model: input.model });
+  if (endActivity) res.once("close", endActivity);
   try {
     const saved = deps.store.prefs(harness).effort;
     const effort = saved ? resolveModelEffort(saved, modelEfforts(provider, model)) : undefined;
@@ -161,5 +163,7 @@ export async function routeRequest(req: IncomingMessage, res: ServerResponse, in
     else if (prepared?.passthrough) res.destroy();
     else { downstream?.fail(message); res.end(); }
     finish(status, message);
+  } finally {
+    if (endActivity) { endActivity(); res.off("close", endActivity); }
   }
 }

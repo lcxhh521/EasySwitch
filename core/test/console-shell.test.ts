@@ -18,7 +18,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   const requests: Array<{ method: string; path: string; body?: any }> = [];
   const writes: Array<[string, string]> = [];
   const storage = new Map(options.stored === undefined ? [] : [["easyswitch.theme", options.stored]]);
-  const location = { search: options.panel ? "?panel=1" : "", hash: options.hash ?? "" };
+  const location = { search: options.panel ? "?panel=1" : "", hash: options.hash ?? "#agents" };
   const history: string[] = [];
   const visits = [location.hash];
   let visit = 0;
@@ -108,6 +108,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   };
   const fixtureAgent = { id: "pi", name: "Fixture agent", icon: "letter:P", vendor: "Fixture", note: "VM fixture", support: "planned", installed: true, where: "/fixture/pi", can: { interactive: true, headless: true, efforts: ["off", "high"], tiers: [] } };
   const responses: Record<string, unknown> = {
+    "/api/overview": { version:"fixture", snapshotAt:new Date().toISOString(), display:{currency:"USD"}, activity:{observedSince:new Date().toISOString(),activeRequests:0,sessions:[]},sources:[],month:{estimatedCostUsd:0,unknownCostCalls:0,calls:0,startsAt:new Date().toISOString(),resetsAt:new Date().toISOString(),timezone:"UTC"},budget:{settings:{enabled:false}} },
     "/api/state": fixtureState,
     "/api/agents": { agents: [fixtureAgent] },
     "/api/chatgpt": null, "/api/claude-desktop": null,
@@ -145,7 +146,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   // Define a throwing browser getter inside the VM: its global proxy suppresses
   // exceptions from host-defined accessors and would otherwise test undefined.
   if (options.storage === "getter") run('Object.defineProperty(globalThis, "localStorage", { get() { throw new Error("Storage denied"); } })');
-  for (const file of ["theme.js", "controls.js", "doctor.js", "pool-suggestions.js", "usage-display.js"]) run(web(file));
+  for (const file of ["theme.js", "controls.js", "doctor.js", "pool-suggestions.js", "usage-display.js", "overview.js"]) run(web(file));
   const app = web("app.js"), startup = app.lastIndexOf('fetch("icons/manifest.json")');
   assert.ok(startup > 0, "Load all app handlers and panel setup, excluding startup polling and icon fetch");
   run(app.slice(0, startup));
@@ -176,8 +177,8 @@ test("shell uses the approved navigation hierarchy, stable brand and pre-paint t
   const pages = (html: string) => [...html.matchAll(/data-page="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(pages(primary), ["overview", "agents", "providers"]);
   assert.deepEqual(pages(secondary), ["usage", "sessions", "doctor", "settings"]);
-  assert.match(primary, /data-page="overview"[^>]*disabled[^>]*aria-disabled="true"/);
-  assert.match(primary, /待接入/);
+  assert.doesNotMatch(primary, /data-page="overview"[^>]*disabled/);
+  assert.doesNotMatch(primary, /待接入/);
   assert.doesNotMatch(index, /data-page="accounts"/);
   assert.match(index, /class="logo" src="favicon.svg"/);
   assert.ok(index.indexOf('src="theme.js"') < index.indexOf('href="style.css"'));
@@ -210,11 +211,11 @@ test("real sidebar navigation renders every existing page and preserves settings
   assert.match(app.html(), /data-theme-choice="system"/);
   assert.equal(app.requests.every(request => request.method === "GET"), true, "Navigating never triggers a mutating operation");
   const count = app.requests.length; await app.click('[data-page="overview"]');
-  assert.equal(app.run("page"), "settings"); assert.equal(app.requests.length, count);
+  assert.equal(app.run("page"), "overview"); assert.deepEqual(app.requests.slice(count).map(r => r.path), ["/api/overview"]);
 });
 
 test("legacy and invalid deep links resolve safely, including later hash navigation", async () => {
-  for (const [hash, expected] of [["#accounts", "settings"], ["#tasks", "agents"], ["#overview", "agents"], ["#unknown", "agents"], ["", "agents"]]) {
+  for (const [hash, expected] of [["#accounts", "settings"], ["#tasks", "agents"], ["#overview", "overview"], ["#unknown", "agents"], ["", "overview"]]) {
     const app = shell({ hash }); await app.refresh(); assert.equal(app.run("page"), expected);
     if (expected === "settings") assert.match(app.html(), /data-add-account="codex"/);
     if (hash) assert.equal(app.location.hash, `#${expected}`);
@@ -344,7 +345,7 @@ test("invalid or inaccessible storage preserves usable theme controls even with 
 test("native keyboard controls retain navigation focus and the skip button focuses main content", async () => {
   const app = shell(); await app.refresh();
   assert.equal(app.node('[data-page="agents"]').tag, "button");
-  assert.equal(app.node('[data-page="overview"]').disabled, true);
+  assert.equal(app.node('[data-page="overview"]').disabled, false);
   await app.click("[data-skip-content]"); assert.equal(app.document.activeElement, app.page);
   assert.match(css, /button:focus-visible[^{}]*\{[^}]*outline:\s*2px solid var\(--accent\)/);
   assert.match(css, /\.skip-link:focus\s*\{[^}]*transform:\s*none/);
@@ -571,4 +572,21 @@ test("Back/Forward closes desktop launch confirmation so the destination can kee
   await app.traverse(1);
   assert.equal(app.run("page"), "settings"); assert.equal(app.run("claudeDesktopConfirm"), false);
   assert.equal(app.run("Boolean(busy())"), false);
+});
+
+test("overview default uses only its read-only snapshot and keeps onboarding reachable", async () => {
+  const app = shell({hash:""}); await app.refresh();
+  assert.equal(app.run("page"),"overview"); assert.deepEqual(app.requests.map(r=>r.path),["/api/overview"]);
+  assert.match(app.html(),/开始首次设置/); assert.match(app.node("#guard-chip").innerHTML,/只读总览/);
+  await app.click('[data-go="agents"]'); assert.equal(app.run("page"),"agents");
+});
+test("overview keeps old snapshot visibly stale after failure and discards a cancelled late response", async () => {
+  const app=shell({hash:"#overview"});await app.refresh();
+  app.run('globalThis.originalCall=call;call=async()=>{throw new Error("offline")};');await app.refresh();
+  assert.match(app.html(),/上次读取的快照/);assert.match(app.html(),/暂时无法更新/);
+  app.run('call=originalCall;globalThis.delayedOverview=null;globalThis.overviewSignal=null;call=(method,path,body,options)=>path==="/api/overview"?new Promise(resolve=>{delayedOverview=resolve;overviewSignal=options.signal;}):originalCall(method,path,body,options);');
+  const pending=app.run("refresh()");await app.hash("#settings");
+  assert.equal(app.run("overviewSignal.aborted"),true);
+  app.run('delayedOverview({version:"late"})');await pending;
+  assert.equal(app.run("page"),"settings");assert.notEqual(app.run("overviewSnapshot.version"),"late");
 });

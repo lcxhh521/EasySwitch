@@ -13,7 +13,7 @@ const files = [
   "automatic-dispatch", "automatic-approval", "automatic-policy", "automatic-pools-ui", "automatic-api", "automatic-console-races",
   "automatic-tool-auth", "automatic-tool-policy", "automatic-tool-output", "automatic-tool-sessions",
   "automatic-tool-api", "automatic-tool-ui", "automatic-tool-dispatch",
-  "pool-transparency",
+  "pool-transparency", "overview",
   "pool-signals", "responses-continuation", "model-context",
   "onboarding-draft-storage", "onboarding-draft",
   "anthropic", "translate", "responses-upstream", "quirks", "model-efforts", "thinking",

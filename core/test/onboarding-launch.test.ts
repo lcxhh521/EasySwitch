@@ -18,6 +18,7 @@ function ui() {
   });
   for (const file of ["errors.js", "onboarding.js"]) vm.runInContext(readFileSync(new URL(`../../web/${file}`, import.meta.url), "utf8"), context);
   const app = readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  vm.runInContext(readFileSync(new URL("../../web/overview.js", import.meta.url), "utf8"), context);
   vm.runInContext(app.slice(0, app.lastIndexOf('fetch("icons/manifest.json")')), context);
   const run = (code: string): any => vm.runInContext(code, context);
   run(`globalThis.requests=[];globalThis.copied='';

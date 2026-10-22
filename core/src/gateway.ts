@@ -16,6 +16,7 @@ export interface GatewayDeps {
   secrets: SecretStore;
   log: (entry: GatewayLogEntry) => void;
   session?: GatewaySession;
+  activity?: import("./inference-activity.ts").InferenceActivity;
   /** Applied once after client model aliases resolve, before outbound I/O; omitted for pool attempts. */
   fallback?: (model: string) => import("./agent-fallback.ts").AgentFallbackDecision;
   /** Explicit local-test transport; never read from a request. */

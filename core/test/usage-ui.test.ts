@@ -52,6 +52,7 @@ function ui(rows: GatewayLogEntry[]) {
   vm.runInContext(readFileSync(new URL("../../web/errors.js", import.meta.url), "utf8"), context);
   vm.runInContext(readFileSync(new URL("../../web/usage-display.js", import.meta.url), "utf8"), context);
   const source = readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
+  vm.runInContext(readFileSync(new URL("../../web/overview.js", import.meta.url), "utf8"), context);
   vm.runInContext(source.slice(0, source.lastIndexOf('fetch("icons/manifest.json")')), context);
   const run = (code: string): any => vm.runInContext(code, context);
   run(`globalThis.fixtureState={providers:[{id:'fixture',name:'Fixture',icon:'letter:F'}],display:{currency:'USD',usdToCny:8}};

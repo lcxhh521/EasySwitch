@@ -16,12 +16,12 @@ const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样�
 const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_agent_v1": "子 agent 工具" };
 
 let state = null;
-const PAGE_META = {agents:["Agent","为每个工具选择合适的模型"],providers:["模型","管理来源、订阅与模型池"],usage:["用量","查看已记录用量与估算费用"],sessions:["会话记录","查看连接与实际模型线路"],doctor:["自检","检查运行状态，找到下一步"],settings:["设置","外观与本机订阅账号"]};
+const PAGE_META = {overview:["总览","会话、来源与费用，一眼看清"],agents:["Agent","为每个工具选择合适的模型"],providers:["模型","管理来源、订阅与模型池"],usage:["用量","查看已记录用量与估算费用"],sessions:["会话记录","查看连接与实际模型线路"],doctor:["自检","检查运行状态，找到下一步"],settings:["设置","外观与本机订阅账号"]};
 function pageOf(value) { return value === "accounts" ? "settings" : Object.hasOwn(PAGE_META,value) ? value : "agents"; }
 // Bookmarks for removed or renamed pages always resolve to a supported route.
 function pageFromHash() {
   const requested = location.hash.slice(1);
-  const next = pageOf(requested);
+  const next = requested ? pageOf(requested) : "overview";
   if (requested && requested !== next) history.replaceState(null, "", `#${next}`);
   return next;
 }
@@ -251,6 +251,13 @@ function renderHeader() {
   if($("#page-title"))$("#page-title").textContent=meta[0];
   if($("#page-caption"))$("#page-caption").textContent=meta[1];
   $("#ver").textContent = state ? `v${state.version}` : "";
+  if (page === "overview") {
+    $("#ver").textContent = overviewSnapshot ? `v${overviewSnapshot.version}` : "";
+    const chip = $("#guard-chip");
+    chip.className = `chip ${overviewError ? "warn" : ""}`;
+    chip.innerHTML = overviewError ? "总览暂未更新" : "只读总览";
+    return;
+  }
   const files = state?.native?.filter(f => f.exists) ?? [];
   const clean = files.every(f => !f.mentionsEasySwitch);
   const chip = $("#guard-chip");
@@ -261,6 +268,7 @@ function renderHeader() {
 }
 
 function openGuard(anchor) {
+  if (page === "overview") { toast("总览只读已有状态。原生配置检查可在自检页查看。"); return; }
   closePopover();
   const el = document.createElement("div");
   el.className = "popover guard";
@@ -1495,6 +1503,7 @@ function render() {
   const restoreFocus = preserveActionFocus(main);
   renderedPage = page;
   try {
+    if (page === "overview") { main.innerHTML = renderOverview(); return; }
     if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=(typeof firstRunResumeCard === "function" ? firstRunResumeCard() : "") + renderDoctor();return;}
     if (!state && page !== "usage") {
       main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
@@ -1537,6 +1546,8 @@ let importFormOpen = false;
 /** Result covers the core snapshot (or the dedicated doctor/usage read), not every optional panel. */
 async function refresh(force = false) {
   const navigation = pageNavigationVersion;
+  if (page === "overview") { cancelUsageLoad(); return loadOverview(navigation); }
+  cancelOverviewLoad();
   if (page !== "usage") cancelUsageLoad();
   else if (!$("#usage-content")) render();
   // Start the bounded read immediately, even if the general state read is slow.
@@ -1590,6 +1601,7 @@ async function navigatePage(value) {
   if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
   pageNavigationVersion++;
+  cancelOverviewLoad();
   cancelUsageLoad();
   page = next;
   if (!PANEL && location.hash !== `#${page}`) {
@@ -1604,6 +1616,8 @@ async function navigatePage(value) {
 // ---------------------------------------------------------------- events
 
 document.addEventListener("click", async e => {
+  const overviewSource = e.target.closest?.("[data-overview-source]");
+  if (overviewSource) { openProvider = overviewSource.dataset.overviewSource; await navigatePage("providers"); return; }
   if(e.target.closest?.("[data-skip-content]")){e.preventDefault();$("#page")?.focus?.();return;}
   const theme=e.target.closest?.("[data-theme-choice]");
   if(theme){globalThis.EasySwitchTheme?.set(theme.dataset.themeChoice);return;}

@@ -20,6 +20,7 @@ function ui() {
     clearTimeout() {},
     fetch() { throw new Error("UI tests must not make network calls"); },
   });
+  vm.runInContext(readFileSync(new URL("../../web/overview.js", import.meta.url), "utf8"), context);
   vm.runInContext(source.slice(0, source.lastIndexOf('fetch("icons/manifest.json")')), context);
   vm.runInContext(`
     state = { providers: [{id:'mock', name:'Mock', models:['echo']}], pools: [], bindings: {} };

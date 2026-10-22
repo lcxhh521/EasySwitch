@@ -1,3 +1,4 @@
+import { InferenceActivity } from "./inference-activity.ts";
 import { AutomaticPoolConsole, publicAutomaticPool } from "./automatic-console.ts";
 import { revisionedSecrets, validateApproval, automaticToolApprovalId } from "./automatic-approval.ts";
 import { automaticLocalStamp } from "./automatic-local-stamp.ts";
@@ -51,7 +52,7 @@ import { commandLine, effortsOf, hasLauncher, LAUNCHERS, materialize, newSession
 import { catalogModels } from "./catalog.ts";
 import { accessToken, apiBase, beginCodexSignIn, beginCopilotSignIn, beginSignIn, codexBase, copilotDefaultBase, copilotHeaders, listCopilotModels, listModels as listPlanModels, signOut, type SiwcAccount } from "./siwc.ts";
 import { setAntigravityToken, setCursorToken, setKimiToken, setPlanToken, setVertexToken } from "./keypool.ts";
-import { ProviderBudgetController, validateProviderBudget } from "./budget.ts";
+import { monthWindow, ProviderBudgetController, validateProviderBudget } from "./budget.ts";
 import { DEFAULT_VERTEX_MODELS, forgetServiceAccount, mintAccessToken, parseServiceAccount, storeServiceAccount, VertexError, vertexAccessToken, vertexBaseUrl } from "./vertex.ts";
 import { isNativeClaude, nativeModels } from "./claude-native.ts";
 import { capabilityMatrix, coverage, FEATURES } from "./capabilities.ts";
@@ -237,6 +238,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   const { store, port } = deps;
   const secrets = revisionedSecrets(store, deps.secrets);
   const automaticConsole = new AutomaticPoolConsole(store, secrets);
+  const activity = new InferenceActivity();
   const automaticFailures = new AutomaticFailureLedger();
   const automaticToolSessions = new AutomaticToolSessions();
   const ledger = deps.ledger ?? new Ledger(store.dir);
@@ -723,6 +725,29 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         catch (error) { json(res, 400, { error: String((error as Error).message) }); }
         return;
       }
+    }
+    if (method === "GET" && path === "/api/overview") {
+      if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "missing x-easyswitch header" }); return; }
+      const now = new Date(), { start, end } = monthWindow(now);
+      const month = ledger.budgetSummary(start, end, now);
+      const selectable = new Set(store.catalog().map(m => m.providerId));
+      const sources = store.providers().map(p => {
+        const sourceHealth = health.snapshotFor(p);
+        const budgetStatus = providerBudgets.budgetStatus(p);
+        const quota = quotaOf(p.id), until = exhaustedUntil(p.id);
+        const status = p.off ? "disabled" : budgetStatus?.blocked ? "budget" : until ? "quota"
+          : !selectable.has(p.id) ? "no_models" : sourceHealth.status === "unavailable" ? "unavailable"
+          : sourceHealth.status === "healthy" ? "ready" : "unknown";
+        return { id: p.id, name: p.name, icon: p.icon, modelCount: p.models.length, status,
+          selectable: selectable.has(p.id), sourceHealth, budget: budgetStatus ?? null,
+          monthly: month.byProvider[p.id] ?? null,
+          subscription: Boolean(p.plan || p.kiro || p.antigravity || p.cursor || p.kimi || p.billing === "subscription"),
+          quota: quota ? { text: describeQuota(quota) ?? null, exhaustedUntil: until ?? null } : null };
+      });
+      json(res, 200, { version: VERSION, snapshotAt: now.toISOString(), display: store.display(), activity: activity.snapshot(), sources,
+        month: { ...month, startsAt: start.toISOString(), resetsAt: end.toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+        budget: budget.status() });
+      return;
     }
     if (method === "GET" && path === "/api/state") {
       const bound = store.allBindings();
@@ -1843,7 +1868,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           catch (error) { if (error instanceof BudgetExceededError) { gatewayError(res, protocol, 429, error.message, error.code); return; } throw error; }
         }
         // The ChatGPT desktop app, pointed here through the launcher: merged models, native traffic forwarded.
-        await handleChatgpt(req, res, path, url.search, { store, secrets, log: requestLog(), session, fallback: fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+        await handleChatgpt(req, res, path, url.search, { store, secrets, log: requestLog(), session, activity, fallback: fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         return;
       }
       const automaticRuntime = (raw: string) => ({
@@ -1864,10 +1889,10 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         // before its name is replaced by a member or a rotate turn is consumed.
         // Automatic mode owns its compatibility error and rejects opaque history itself.
         if (hasResponsesContinuation(body) && poolOf(store, modelOfBody(raw) ?? "")?.strategy !== "automatic") {
-          await handleResponses(req, res, raw, { store, secrets, log: requestLog(), session, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+          await handleResponses(req, res, raw, { store, secrets, log: requestLog(), session, activity, qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
           return;
         }
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleResponses(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, activity, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }
       if (req.method === "GET" && (path === "/v1beta/models" || path === "/v1beta/openai/models")) {
@@ -1882,13 +1907,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
           // The model is in the address, not the body.
           const m = member ? Object.assign([...geminiMatch], { index: geminiMatch.index, input: geminiMatch.input }) as unknown as RegExpExecArray : geminiMatch;
           if (member) m[2] = `models/${encodeURIComponent(member)}`;
-          return handleGemini(req, r, m, raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
+          return handleGemini(req, r, m, raw, { store, secrets, log: requestLog(ctx), session, activity, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor });
         }, automaticRuntime(raw));
         return;
       }
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
         const raw = await readBody(req);
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleChatCompletions(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, activity, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }
       if (req.method === "POST" && (path === "/v1/messages/count_tokens" || path === "/messages/count_tokens")) {
@@ -1902,7 +1927,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
         const raw = await readBody(req);
         if (isDesktop && !desktopModelAllowed(raw, res)) return;
         if (!nativeRequestAllowed(raw, req, res, session)) return;
-        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
+        await runWithPool(store, modelOfBody(raw), res, (r, member, ctx) => handleMessages(req, r, member ? withModel(raw, member) : raw, { store, secrets, log: requestLog(ctx), session, activity, fallback: ctx ? undefined : fallbackFor(session), qoderExecutor: deps.qoderExecutor, codeBuddyExecutor: deps.codeBuddyExecutor }), automaticRuntime(raw));
         return;
       }
       if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {

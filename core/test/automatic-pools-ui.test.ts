@@ -151,6 +151,7 @@ function integrated() {
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame() {}, fetch() { assert.fail("No real fetch in synthetic UI"); },
   });
   for (const file of ["errors.js", "controls.js", "automatic-pools.js"]) vm.runInContext(web(file), c);
+  vm.runInContext(readFileSync(new URL("../../web/overview.js", import.meta.url), "utf8"), c);
   const app = web("app.js"); vm.runInContext(app.slice(0, app.lastIndexOf('fetch("icons/manifest.json")')), c);
   const run = (source: string): any => vm.runInContext(source, c);
   run(`state={providers:[{id:'source',name:'Source',models:['m'],icon:'letter:A'},{id:'backup',name:'Backup',models:['m']}],pools:[],bindings:{claude:{providerId:'source',model:'m'},aider:{providerId:'source',model:'m'}},prefs:{},profiles:[],sessionDetails:[],sessions:[],native:[],log:[],codexPath:'/fixture/codex',claudePath:'/fixture/claude'};agentList=[{id:'claude',name:'Claude Code',installed:true,can:{interactive:true,efforts:[],tiers:[]}},{id:'aider',name:'Aider',installed:true,can:{interactive:true,efforts:[],tiers:[]}}];globalThis.requests=[];globalThis.messages=[];render=()=>{};refresh=async()=>true;toast=m=>messages.push(m);globalThis.reply=${JSON.stringify(preview())};call=async(method,path,body)=>{requests.push({method,path,body});return reply};`);
