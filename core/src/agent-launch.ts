@@ -238,7 +238,10 @@ function opencodeConfig(i: LaunchInput): string {
         npm: "@ai-sdk/openai-compatible",
         name: "EasySwitch",
         options: { baseURL: `${gateway(i)}/v1`, apiKey: i.token },
-        models: Object.fromEntries(allModels(i).map(m => [m, { name: m.slice(m.indexOf("/") + 1), variants: Object.fromEntries([...new Set(["low", "medium", "high", ...(i.effort ? [i.effort] : [])])].map(l => [l, { reasoningEffort: l }])) }])),
+        models: Object.fromEntries(allModels(i).map(m => {
+          const levels = i.modelEfforts?.[m] ?? [];
+          return [m, { name: m.slice(m.indexOf("/") + 1), ...(levels.length ? { variants: Object.fromEntries(levels.map(l => [l, { reasoningEffort: l }])) } : {}) }];
+        })),
       },
     },
     ...(i.tiers?.small ? { small_model: `easyswitch/${i.tiers.small}` } : {}),

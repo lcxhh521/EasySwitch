@@ -10,6 +10,7 @@ import { createEasySwitchServer } from "../src/server.ts";
 import { GatewayTokenAuthority } from "../src/gateway-auth.ts";
 import { Ledger } from "../src/ledger.ts";
 import { mintAutomaticApproval } from "../src/automatic-approval.ts";
+import { poolEfforts } from "../src/pools.ts";
 
 type J = Record<string, any>;
 const listen = (server: Server) => new Promise<string>(r => server.listen(0,"127.0.0.1",()=>r(`http://127.0.0.1:${(server.address() as {port:number}).port}`)));
@@ -40,6 +41,53 @@ async function fixture(run:(f:{store:Store;secrets:ReturnType<typeof createSecre
   try{await run({store,secrets,auth,ledger,calls,hook,api,launch,confirm,request,restart:async()=>{await close(server);server=make();base=await listen(server);},terminalCalls:()=>terminalCalls});}finally{await close(server);await close(upstream);rmSync(dir,{recursive:true,force:true});}
 }
 function tokenOf(command:J):string{return JSON.parse(command.env.OPENCODE_CONFIG_CONTENT).provider.easyswitch.options.apiKey;}
+
+test("tool launch omits variants only for its exact main pool and preserves fixed sources, other pools and P0",async()=>fixture(async f=>{
+  f.store.upsertProvider({...f.store.provider("a")!,modelEfforts:{"mock-coder":["high","none","xhigh"]}});
+  f.store.upsertProvider({...f.store.provider("b")!,modelEfforts:{"mock-coder":["none","high"]}});
+  const other=await f.confirm();f.store.setBinding({harness:"opencode",providerId:"a",model:"mock-coder"});const model=await f.confirm();assert.notEqual(other,model);
+  f.store.upsertPool({id:"fixed-pool",name:"Fixed fixture",strategy:"order",members:["a/mock-coder","b/mock-coder"],createdAt:""});
+  f.store.setPrefs("opencode",{tiers:{small:"b/mock-coder",subagent:"a/mock-coder"}});
+  const before={providers:f.store.providers(),pools:f.store.pools(),prefs:f.store.prefs("opencode"),binding:f.store.binding("opencode")};
+  assert.deepEqual(poolEfforts(f.store,f.store.pool(model.slice(5))!),["high","none"],"the source intersection really is nonempty before per-launch suppression");
+  const made=await f.launch({model});assert.equal(made.status,200,JSON.stringify(made.body));
+  const config=JSON.parse(made.body.env.OPENCODE_CONFIG_CONTENT),models=config.provider.easyswitch.models;
+  assert.deepEqual(Object.keys(models),[model,"a/mock-coder","b/mock-coder",other,"pool/fixed-pool"]);
+  assert.deepEqual(Object.keys(models[model].variants??{}),[]);
+  assert.ok(!made.body.args.includes("--variant"));
+  assert.deepEqual(Object.keys(models["a/mock-coder"].variants),["high","none","xhigh"]);
+  assert.deepEqual(Object.keys(models["b/mock-coder"].variants),["none","high"]);
+  for(const name of [other,"pool/fixed-pool"])assert.deepEqual(Object.keys(models[name].variants),["high","none"]);
+  assert.equal(config.small_model,"easyswitch/b/mock-coder");assert.equal(config.agent.general.model,"easyswitch/a/mock-coder");assert.equal(config.agent.explore.model,"easyswitch/a/mock-coder");
+  // Pure simulation of OpenCode smallOptions selecting the first variant. No SDK,
+  // client execution or user-config merge is exercised by this regression.
+  const smallOptions=(entry:J)=>Object.values(entry.variants??{})[0]??{};
+  assert.deepEqual(smallOptions(models[model]),{},"a small task falling back to the main pool gets no injected reasoning effort");
+  assert.deepEqual(smallOptions(models["b/mock-coder"]),{reasoningEffort:"none"},"an explicitly fixed small model keeps its own first variant");
+  const ordinary=await f.launch({model,automaticTools:false});assert.equal(ordinary.status,200);
+  assert.deepEqual(Object.keys(JSON.parse(ordinary.body.env.OPENCODE_CONFIG_CONTENT).provider.easyswitch.models[model].variants),["high","none"],"do not silently change P0 effort policy");
+  assert.deepEqual({providers:f.store.providers(),pools:f.store.pools(),prefs:f.store.prefs("opencode"),binding:f.store.binding("opencode")},before);
+  assert.equal(f.calls.length,0);assert.equal(f.terminalCalls(),0);
+}));
+
+test("reviewed tool launch keeps out-of-catalog small and subagent capabilities",async()=>fixture(async f=>{
+  f.store.upsertProvider({...f.store.provider("a")!,modelEfforts:{"mock-coder":["high"],"manual-small":["off","low"]}});
+  f.store.upsertProvider({...f.store.provider("b")!,modelEfforts:{"mock-coder":["high"],"manual-child":["max","medium"]}});
+  const model=await f.confirm();f.store.setPrefs("opencode",{tiers:{small:"a/manual-small",subagent:"b/manual-child"}});
+  assert.ok(f.store.catalog().every(m=>!m.model.startsWith("manual-")));
+  const made=await f.launch({model});assert.equal(made.status,200,JSON.stringify(made.body));const config=JSON.parse(made.body.env.OPENCODE_CONFIG_CONTENT),models=config.provider.easyswitch.models;
+  assert.deepEqual(Object.keys(models["a/manual-small"].variants),["off","low"]);assert.deepEqual(Object.keys(models["b/manual-child"].variants),["max","medium"]);
+  assert.equal(config.small_model,"easyswitch/a/manual-small");assert.equal(config.agent.general.model,"easyswitch/b/manual-child");
+  assert.deepEqual(Object.keys(models[model].variants??{}),[]);assert.equal(f.calls.length,0);assert.equal(f.terminalCalls(),0);
+}));
+
+for(const source of ["request","preferences"])test(`tool launch still rejects a model-supported nondefault effort from ${source}`,async()=>fixture(async f=>{
+  for(const id of ["a","b"])f.store.upsertProvider({...f.store.provider(id)!,modelEfforts:{"mock-coder":["high"]}});
+  const model=await f.confirm();if(source==="preferences")f.store.setPrefs("opencode",{effort:"high"});
+  const made=await f.launch({model,...(source==="request"?{effort:"high"}:{})});assert.equal(made.status,400,JSON.stringify(made.body));assert.equal(made.body.code,"capability_unavailable","the existing public error facade normalizes unsupported-effort errors");
+  assert.equal(made.body.env,undefined);assert.equal(f.store.prefs("opencode").effort,source==="preferences"?"high":undefined);
+  assert.equal(f.auth.list().length,0);assert.equal(f.calls.length,0);assert.equal(f.terminalCalls(),0);
+}));
 
 test("explicit tool launch creates a marked scope without inference and preserves configured small models",async()=>fixture(async f=>{
   const model=await f.confirm();f.store.setPrefs("opencode",{tiers:{small:"b/mock-coder",subagent:"a/mock-coder"}});

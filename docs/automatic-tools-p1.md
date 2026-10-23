@@ -1,6 +1,6 @@
 # 自动来源的启动级工具会话 P1
 
-> 实验状态：已推 B124 `3c1f3830` 不应用于真实工具任务。官方 OpenCode v1.19.4 源码核对确认，下游可能在参数首次可解析时、响应完整性验证前执行工具。B125 独立候选修复工具字节提前暴露；这不是网关自动重放问题。默认后台标题还可能自动带 `reasoning_effort` 而被当前合同拒绝，此兼容缺口未修，真实客户端也未验收。
+> 实验状态：已推 B124 `3c1f3830` 不应用于真实工具任务。官方 OpenCode v1.19.4 源码核对确认，下游可能在参数首次可解析时、响应完整性验证前执行工具。B125 已在 dev 修复工具字节提前暴露；这不是网关自动重放问题。B129 云端候选仅修 EasySwitch 自己生成的模型档位，尚未推送；配置合并和标题并发仍待真实客户端验收，不能把生成配置测试视为工具任务已可用。
 
 ## 用户入口与范围
 
@@ -52,8 +52,10 @@ JSON/SSE 同协议透传，严格核对一个 choice、声明的函数、tool_ch
 
 ## 已知真实客户端兼容缺口
 
-官方 OpenCode `v1.19.4`（提交 `148842ef7cb1bc34192b3fff57d0f9721ab9c801`）使用 bundled `@ai-sdk/openai-compatible@2.0.41` 和 `ai@6.0.168`。源码显示其后台标题在缺少独立 small_model 时会回退主模型，`smallOptions` 采用 variants 第一项；当前 EasySwitch 无条件注入的第一项是 low，因此可能自动发送 P1 未允许的 reasoning_effort。标题与主请求还可能并行，遇到本作用域的 409 busy。这些是固定版本源码结论，不是客户端抓包。
+官方 OpenCode `v1.19.4`（提交 `148842ef7cb1bc34192b3fff57d0f9721ab9c801`）使用 bundled `@ai-sdk/openai-compatible@2.0.41` 和 `ai@6.0.168`。源码显示其后台标题在缺少独立 small_model 时会回退主模型，`smallOptions` 采用 variants 第一项；B129 之前 EasySwitch 无条件注入的第一项是 low，因此可能自动发送 P1 未允许的 reasoning_effort。标题与主请求还可能并行，遇到本作用域的 409 busy。这些是固定版本源码结论，不是客户端抓包。
 
-后续最小兼容方案是仅在 P1 启动的主自动模型上不注入未支持的 variants，保留原固定小模型和原生配置；尚未实施。不得为了让测试通过而直接放开 reasoning_effort 或未知字段。实际客户端安装/执行需要另行授权与严格 loopback 隔离，当前未安装、未执行。
+B129 独立云端候选按各模型自己的配置能力生成 variants，不再替未知/空能力制造 low/medium/high；能力表覆盖实际主模型、菜单和固定 small/subagent，包括合法目录外引用。仅在已核验 P1 启动的精确主自动模型上不注入 variants，固定小模型、子任务模型和普通固定来源保留各自能力，原生配置不改。P0 档位与严格请求白名单的冲突仍未作新决策，不能为通过测试放开 reasoning_effort 或未知字段。
 
-官方依据：[OpenCode v1.19.4](https://github.com/anomalyco/opencode/releases/tag/v1.19.4)、[标题回退与 small 请求](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/session/prompt.ts#L216-L235)、[smallOptions](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/provider/transform.ts#L1390-L1412)、[SDK 提前发 tool-call](https://github.com/vercel/ai/blob/99327b1d7b3d172ed0aae7230ae153f2d32b0ebb/packages/openai-compatible/src/chat/openai-compatible-chat-language-model.ts#L584-L607)、[收到事件后执行工具](https://github.com/vercel/ai/blob/c38119a2e3df201a95a9979580f2c7a3c1b319ab/packages/ai/src/generate-text/run-tools-transformation.ts#L266-L365)。
+这只证明 EasySwitch 不再主动注入。OpenCode 会合并既有 provider/model 配置，省略 variants 不保证清除原配置已有的同名 variants，也不证明运行时不会加入其他私有字段。后台标题并发的 409 busy 行为保持不变，不静默重试或排队。真实客户端仍须在明确授权且验证严格 loopback/空 HOME 隔离后验收，本轮未安装或执行客户端。
+
+官方依据：[OpenCode v1.19.4](https://github.com/anomalyco/opencode/releases/tag/v1.19.4)、[标题回退与 small 请求](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/session/prompt.ts#L216-L235)、[smallOptions](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/provider/transform.ts#L1390-L1412)、[模型配置合并](https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/provider/provider.ts#L1619-L1629)、[SDK 提前发 tool-call](https://github.com/vercel/ai/blob/99327b1d7b3d172ed0aae7230ae153f2d32b0ebb/packages/openai-compatible/src/chat/openai-compatible-chat-language-model.ts#L584-L607)、[收到事件后执行工具](https://github.com/vercel/ai/blob/c38119a2e3df201a95a9979580f2c7a3c1b319ab/packages/ai/src/generate-text/run-tools-transformation.ts#L266-L365)。

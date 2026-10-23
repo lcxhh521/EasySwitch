@@ -10,6 +10,36 @@ import { dshPatch } from "../src/dsh-launch.ts";
 const input = (extra: Partial<LaunchInput> = {}): LaunchInput => ({ bin: "/never-run-agent", port: 18765,
   model: "p/main", token: "test-session-token", sessionDir: "/tmp/es-config-only", task: "fake task", ...extra });
 
+test("OpenCode does not invent variants for unknown or explicitly empty model capabilities", () => {
+  for (const form of ["interactive", "headless"] as const) {
+    const spec = LAUNCHERS.opencode![form]!(input({ effort: "xhigh", models: ["p/empty", "p/unknown"], modelEfforts: { "p/empty": [] } }));
+    const config = JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT!);
+    for (const model of ["p/main", "p/empty", "p/unknown"]) {
+      assert.deepEqual(Object.keys(config.provider.easyswitch.models[model].variants ?? {}), [], model);
+    }
+  }
+});
+
+test("OpenCode variants preserve each exact model's vocabulary and order without leaking the main effort", () => {
+  const modelEfforts = { "p/main": ["xhigh", "none", "high"], "q/main": ["off", "medium"], "p/small": ["max", "low"], "p/child": ["ultra"] };
+  for (const form of ["interactive", "headless"] as const) {
+    const original = input({ effort: "xhigh", models: ["p/main", "q/main", "p/small", "q/main"], tiers: { small: "p/small", subagent: "p/child" }, modelEfforts });
+    const before = structuredClone(original), spec = LAUNCHERS.opencode![form]!(original);
+    const config = JSON.parse(spec.env.OPENCODE_CONFIG_CONTENT!), models = config.provider.easyswitch.models;
+    assert.deepEqual(Object.keys(models), Object.keys(modelEfforts), "main/menu/tier duplicates are registered once, not merged by upstream name");
+    for (const [model, levels] of Object.entries(modelEfforts)) {
+      assert.deepEqual(Object.keys(models[model].variants), levels);
+      assert.deepEqual(models[model].variants, Object.fromEntries(levels.map(level => [level, { reasoningEffort: level }])));
+    }
+    assert.equal(spec.args[spec.args.indexOf("--model") + 1], "easyswitch/p/main");
+    assert.equal(spec.args[spec.args.indexOf("--variant") + 1], "xhigh");
+    assert.equal(config.small_model, "easyswitch/p/small");
+    assert.deepEqual(config.agent, { general: { model: "easyswitch/p/child" }, explore: { model: "easyswitch/p/child" } });
+    assert.deepEqual(config.provider.easyswitch.options, { baseURL: "http://127.0.0.1:18765/v1", apiKey: original.token });
+    assert.deepEqual(original, before, "config generation never mutates the supplied model menu or capabilities");
+  }
+});
+
 test("dsh exposes only model-owned effort levels and applies the selected main level", () => {
   const yaml = dshPatch(input({ effort: "high", modelEfforts: { "p/main": ["none", "high"] } }));
   assert.match(yaml, /reasoningEfforts: \{"off":"none","high":"high"\}/);

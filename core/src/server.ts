@@ -375,7 +375,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (automaticTools) { toolSessionId = issued.id; automaticToolSessions.register(issued); }
     const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
     const modelContexts = Object.fromEntries(store.catalog().filter(m => m.context).map(m => [`${m.providerId}/${m.model}`, m.context!]));
-    const spec = launcher.interactive({ bin, port, model, models: modelsFor(model), token, sessionDir, stateDir: store.dir, tiers, modelContexts, modelEfforts: { ...Object.fromEntries(store.catalog().map(m => [`${m.providerId}/${m.model}`, m.efforts ?? []])), ...Object.fromEntries(store.pools().map(p => [`pool/${p.id}`, poolEfforts(store, p)])) }, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
+    const models = modelsFor(model);
+    // Explicit main/tier IDs may resolve without appearing in the bounded menu.
+    const exposedModelEfforts = Object.fromEntries([...new Set([model, ...models, ...Object.values(tiers)])].filter(Boolean).map(name => {
+      const pool = poolOf(store, name), resolved = resolveModel(store, name);
+      return [name, pool ? poolEfforts(store, pool) : resolved ? modelEfforts(resolved.provider, resolved.model) : []];
+    }));
+    // Only this validated P1 pool omits generated variants; fixed tier sources and P0 keep theirs.
+    if (automaticTools) exposedModelEfforts[`pool/${automaticTools.poolId}`] = [];
+    const spec = launcher.interactive({ bin, port, model, models, token, sessionDir, stateDir: store.dir, tiers, modelContexts, modelEfforts: exposedModelEfforts, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
     materialize(spec, sessionDir);
     return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
     } catch (error) { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
