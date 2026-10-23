@@ -121,7 +121,9 @@ test("menu-bar subscription rows preserve default-off state, quota and per-accou
   const html = app.run("panelSubscriptions()") as string;
   assert.match(html, /data-plan-switch="a" data-on="0"/);
   assert.match(html, /data-plan-switch="b" data-on="1"/);
-  assert.match(html, /50%/); assert.doesNotMatch(html, /Expired/);
+  assert.match(html, /50%/); assert.match(html, /Expired/);
+  assert.match(html, /需要重新登录/);
+  assert.match(html, /data-plan-switch="hidden"[^>]*disabled/);
   await app.dispatch("click", app.target("[data-plan-switch]", { planSwitch: "a", on: "0" }));
   assert.equal(app.run("requests[0].path"), "/api/plan/a/switch");
   assert.equal(app.run("JSON.stringify(requests[0].body)"), '{"on":true}');

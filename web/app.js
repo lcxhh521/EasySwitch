@@ -256,6 +256,13 @@ function renderHeader() {
   if($("#page-title"))$("#page-title").textContent=meta[0];
   if($("#page-caption"))$("#page-caption").textContent=meta[1];
   $("#ver").textContent = state ? `v${state.version}` : "";
+  if (PANEL) {
+    const chip = $("#guard-chip");
+    chip.title = "会话与来源来自只读总览，空闲窗口和原生请求不计入";
+    chip.className = `chip ${overviewError ? "warn" : overviewSnapshot ? "ok" : ""}`;
+    chip.innerHTML = `<span class="dot"></span>${overviewError ? "状态暂未更新" : overviewSnapshot ? "服务可达" : "正在连接"}`;
+    return;
+  }
   if (page === "overview") {
     $("#ver").textContent = overviewSnapshot ? `v${overviewSnapshot.version}` : "";
     const chip = $("#guard-chip");
@@ -273,6 +280,7 @@ function renderHeader() {
 }
 
 function openGuard(anchor) {
+  if (PANEL) { toast("会话与来源数据来自只读总览；连接状态不代表客户端仍在运行。"); return; }
   if (page === "overview") { toast("总览只读已有状态。原生配置检查可在自检页查看。"); return; }
   closePopover();
   const el = document.createElement("div");
@@ -542,17 +550,70 @@ function profileBar() {
     </div></div>`;
 }
 
-/** The menu-bar panel: each subscription with its switch, so one can be turned on or off without opening the console. */
+// The small panel reads recorded metadata only; native actions remain available during an outage.
+let panelFlight = null;
+let panelPlanError = "";
+let planSwitchPending = null;
+function cancelPanelLoad() {
+  if (!panelFlight) return;
+  panelFlight.controller.abort();
+  panelFlight = null;
+}
+async function refreshPanel() {
+  if (panelFlight) return panelFlight.promise;
+  if (planSwitchPending) return false;
+  const flight = { controller: new AbortController(), timer: null, promise: null };
+  panelFlight = flight;
+  flight.promise = (async () => {
+    const deadline = new Promise((_, reject) => { flight.timer = setTimeout(() => { flight.controller.abort(); reject(new Error("timeout")); }, 10000); });
+    try {
+      const [overview, plans] = await Promise.allSettled(["/api/overview", "/api/plan"].map(path => Promise.race([call("GET", path, undefined, { signal: flight.controller.signal }), deadline])));
+      if (panelFlight !== flight) return false;
+      if (overview.status === "fulfilled") { overviewSnapshot = overview.value; overviewError = ""; }
+      else overviewError = "状态暂未更新，请刷新或打开控制台。";
+      if (plans.status === "fulfilled") { planInfo = plans.value; panelPlanError = ""; }
+      else { planInfo = null; panelPlanError = "订阅状态暂不可用，请刷新后再操作。"; }
+      render();
+      return !overviewError && !panelPlanError;
+    } finally {
+      clearTimeout(flight.timer);
+      if (panelFlight === flight) panelFlight = null;
+    }
+  })();
+  return flight.promise;
+}
 function panelSubscriptions() {
-  const accounts = (planInfo?.accounts ?? []).filter(a => a.planUsage && !a.needsSignIn);
-  if (!accounts.length) return "";
-  const row = a => `
-    <div class="row">
-      ${icon(a.kind === "copilot" ? "github-copilot-color" : a.kind === "kiro" ? "kiro-color" : a.kind === "antigravity" ? "antigravity-color" : "openai", "sm")}
-      <div class="grow"><div class="title">${esc(a.label)}</div>${a.on && a.quota ? `<div class="sub ${a.quota.exhaustedUntil ? "quota-out" : "quota"}">${esc(a.quota.text)}</div>` : ""}</div>
-      <button class="switch ${a.on ? "on" : ""}" role="switch" aria-checked="${a.on ? "true" : "false"}" data-plan-switch="${esc(a.id)}" data-on="${a.on ? "1" : "0"}"><span class="knob"></span><span class="lbl">${a.on ? "已打开" : "已关闭"}</span></button>
+  if (!planInfo) return `<p class="hint" role="status">${panelPlanError || "正在读取订阅…"}</p>`;
+  const accounts = planInfo.accounts ?? [];
+  const icons = { copilot: "github-copilot-color", kiro: "kiro-color", antigravity: "antigravity-color", kimi: "kimi-color", cursor: "cursor" };
+  const row = a => {
+    const unavailable = a.needsSignIn || !a.planUsage;
+    return `<div class="row">
+      ${icon(icons[a.kind] ?? "openai", "sm")}
+      <div class="grow"><div class="title">${esc(a.label)}</div><div class="sub ${a.quota?.exhaustedUntil ? "quota-out" : ""}">${unavailable ? a.needsSignIn ? "需要重新登录，请到控制台处理" : "未授权订阅额度，请到控制台处理" : esc(a.quota?.text || "额度尚未记录")}</div></div>
+      <button class="switch ${a.on ? "on" : ""}" role="switch" aria-checked="${!!a.on}" data-plan-switch="${esc(a.id)}" data-on="${a.on ? "1" : "0"}" aria-label="${esc(a.label)}：${a.on ? "关闭订阅来源" : "打开订阅来源"}" ${planSwitchPending || (!a.on && unavailable) ? "disabled" : ""}><span class="knob"></span><span class="lbl">${planSwitchPending === a.id ? "保存中…" : a.on ? "已打开" : "已关闭"}</span></button>
     </div>`;
-  return `<div class="section-head"><h2>订阅</h2></div><div class="card">${accounts.map(row).join("")}</div>`;
+  };
+  return `<section aria-label="订阅来源"><div class="section-head"><h2>订阅</h2><span class="hint">${accounts.length} 个账号</span></div><div class="card">${accounts.length ? accounts.map(row).join("") : '<div class="empty">还没有订阅来源，可在控制台添加。</div>'}</div><p class="hint">开关影响后续请求；关闭来源不会结束正在进行的请求。</p></section>`;
+}
+function renderMenuPanel() {
+  const data = overviewSnapshot;
+  const fresh = data && !overviewError;
+  const attention = fresh ? data.sources.filter(s => ["budget", "quota", "no_models", "unavailable"].includes(s.status)).length : null;
+  const unknown = fresh ? data.sources.filter(s => s.status === "unknown").length : null;
+  return `<div class="panel-scroll">
+    <section class="card panel-summary" aria-label="服务摘要">
+      <div class="section-head"><h2>此刻的连接</h2><button class="btn secondary" data-panel-refresh ${planSwitchPending ? "disabled" : ""}>刷新</button></div>
+      <div class="panel-metrics"><div><strong>${fresh ? data.activity.sessions.length : "—"}</strong><span>正在请求的增强会话</span></div><div><strong>${fresh ? attention : "—"}</strong><span>待处理来源</span></div></div>
+      <p class="hint" role="status">${fresh ? `${data.activity.activeRequests} 个在途请求 · ${unknown} 个来源尚未验证<br>空闲窗口和原生请求不计入` : overviewError || "正在读取服务状态…"}</p>
+      ${data ? `<p class="hint">${fresh ? "更新于" : "上次读取于"} ${esc(overviewTime(data.snapshotAt))}</p>` : ""}
+    </section>
+    ${panelSubscriptions()}
+    <p class="hint panel-native-note">退回原生会先核对自有服务；增强客户端窗口需自行关闭。</p>
+    </div><div class="panel-foot">
+      <button data-bridge="openConsole">打开控制台</button>
+      ${BRIDGE ? '<span><button data-bridge="backToNative">退回原生…</button><button data-bridge="quit">退出</button></span>' : ""}
+    </div>`;
 }
 
 let selectedAgent = null;
@@ -603,18 +664,6 @@ function selectClient(id, segment = agentSegment) {
 }
 
 function renderAgents() {
-  if (PANEL) {
-    const rows = Object.keys(HARNESS).map(id => agentRow(id)).join("");
-    return `
-      <div class="card">${rows}</div>
-      ${panelSubscriptions()}
-      <div class="panel-foot">
-        <button data-bridge="openConsole">打开控制台</button>
-        <span>
-          ${BRIDGE ? `<button data-bridge="backToNative">全部退回原生</button><button data-bridge="quit">退出</button>` : ""}
-        </span>
-      </div>`;
-  }
   if (typeof firstRunVisible === "function" && firstRunVisible()) return firstRunCard();
   const all = agentList ?? [];
   const installed = all.filter(a => a.installed && a.id !== "claude-desktop");
@@ -1619,6 +1668,12 @@ function render() {
   const restoreFocus = preserveActionFocus(main);
   renderedPage = page;
   try {
+    if (PANEL) {
+      const scrollTop = main.querySelector(".panel-scroll")?.scrollTop ?? 0;
+      main.innerHTML = renderMenuPanel();
+      main.querySelector(".panel-scroll").scrollTop = scrollTop;
+      return;
+    }
     if (page === "overview") { main.innerHTML = renderOverview(); return; }
     if (page === "doctor" && typeof renderDoctor === "function") {main.innerHTML=(typeof firstRunResumeCard === "function" ? firstRunResumeCard() : "") + renderDoctor();return;}
     if (!state && page !== "usage") {
@@ -1661,6 +1716,7 @@ let importFormOpen = false;
 
 /** Result covers the core snapshot (or the dedicated doctor/usage read), not every optional panel. */
 async function refresh(force = false) {
+  if (PANEL) return refreshPanel();
   const navigation = pageNavigationVersion;
   if (page === "overview") { cancelUsageLoad(); return loadOverview(navigation); }
   cancelOverviewLoad();
@@ -1686,7 +1742,7 @@ async function refresh(force = false) {
   if (state && !PANEL && !state.providers.length && !presets.length) presets = await call("GET", "/api/presets").catch(() => []);
   if (navigation !== pageNavigationVersion) return false;
   if (typeof firstRunSync === "function" && state) firstRunSync();
-  if (page === "providers" || PANEL) planInfo = await call("GET", "/api/plan").catch(() => planInfo);
+  if (page === "providers") planInfo = await call("GET", "/api/plan").catch(() => planInfo);
   if (page === "providers" && !PANEL) providerOverview = await call("GET", "/api/overview").catch(() => null);
   if (page === "agents" && !PANEL) {
     chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
@@ -1746,6 +1802,7 @@ document.addEventListener("click", async e => {
   if(healthCheck){e.stopImmediatePropagation();if(healthCheck.disabled)return;healthCheck.disabled=true;try{await call("POST",`/api/providers/${encodeURIComponent(healthCheck.dataset.sourceHealthCheck)}/health/check`,{});await refresh(true);}catch(error){showError(error);}finally{healthCheck.disabled=false;}return;}
 
   const t = e.target;
+  if (t.closest("[data-panel-refresh]")) { await refresh(true); return; }
   if (popover && !popover.contains(t) && !t.closest("[data-pick], #guard-chip")) closePopover();
 
   const nav = t.closest("#nav button, [data-go]");
@@ -1764,7 +1821,7 @@ document.addEventListener("click", async e => {
     }
     return;
   }
-  if (t.closest("#guard-chip")) { if (popover) closePopover(); else if (state) openGuard($("#guard-chip")); return; }
+  if (t.closest("#guard-chip")) { if (popover) closePopover(); else if (state || PANEL) openGuard($("#guard-chip")); return; }
 
   if (t.closest("[data-source-add-open]")) { sourceAddOpen = true; render(); return; }
   if (t.closest("[data-source-add-close]")) {
@@ -2012,8 +2069,14 @@ document.addEventListener("click", async e => {
   }
   const planSwitch = t.closest("[data-plan-switch]");
   if (planSwitch) {
-    const turnOn = planSwitch.dataset.on !== "1";
-    try { await call("PUT", `/api/plan/${planSwitch.dataset.planSwitch}/switch`, { on: turnOn }); toast(turnOn ? "已打开：它的模型现在可以选了" : "已关闭：哪里都不会再用它"); } catch (error) { showError(error); }
+    if (planSwitch.disabled || planSwitchPending) return;
+    const id = planSwitch.dataset.planSwitch, turnOn = planSwitch.dataset.on !== "1";
+    planSwitchPending = id;
+    planSwitch.disabled = true;
+    if (PANEL) { cancelPanelLoad(); render(); }
+    try { await call("PUT", `/api/plan/${encodeURIComponent(id)}/switch`, { on: turnOn }); toast(turnOn ? "订阅来源已打开，后续请求可使用它" : "订阅来源已关闭，已在途的请求不受影响"); }
+    catch (error) { showError(error); }
+    finally { planSwitchPending = null; planSwitch.disabled = false; }
     await refresh(true);
     return;
   }
@@ -2374,6 +2437,6 @@ if (PANEL) {
   $("#nav").remove();
   $("#refresh").remove();
 }
-fetch("icons/manifest.json").then(r => r.json()).then(m => { monoIcons = new Set(m.mono); if (state) render(); }).catch(() => {});
+fetch("icons/manifest.json").then(r => r.json()).then(m => { monoIcons = new Set(m.mono); if (state || PANEL) render(); }).catch(() => {});
 refresh(true);
 setInterval(() => refresh(), 3000);

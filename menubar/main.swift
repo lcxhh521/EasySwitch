@@ -13,6 +13,17 @@ func isCoreHealth(_ data: Data?, _ response: URLResponse?) -> Bool {
   return (value["service"] as? String) == "easyswitch" && (value["ok"] as? Bool) == true
 }
 
+func menuOverview(_ data: Data?, _ response: URLResponse?) -> (sessions: Int, requests: Int, sources: String)? {
+  guard (response as? HTTPURLResponse)?.statusCode == 200, let data, data.count <= 524288,
+        let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+        let activity = value["activity"] as? [String: Any],
+        let sessions = activity["sessions"] as? [[String: Any]], let requests = activity["activeRequests"] as? Int,
+        let sources = value["sources"] as? [[String: Any]] else { return nil }
+  let attention = sources.filter { ["budget", "quota", "no_models", "unavailable"].contains($0["status"] as? String ?? "") }.count
+  let unknown = sources.filter { $0["status"] as? String == "unknown" }.count
+  return (sessions.count, requests, "来源：\(attention) 个待处理 · \(unknown) 个尚未验证")
+}
+
 func infoString(_ key: String) -> String? {
   Bundle.main.object(forInfoDictionaryKey: key) as? String
 }
@@ -24,9 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   private var startingCore = false
   private var quitting = false
   private var cliInstallProcess: Process?
-  private var activeConnections: Int?
+  private var activeSessions: Int?
+  private var activeRequests: Int?
   private var sourceWarning: String?
-  private var sourceHealthLoading = false
+  private var healthLoading = false
   private var returnToNativeRequested = false
   private var healthy = false
   private var window: NSWindow?
@@ -47,49 +59,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   // MARK: Health
 
   private func refreshHealth() {
+    guard !healthLoading, !quitting else { return }
+    healthLoading = true
     var request = URLRequest(url: coreURL.appendingPathComponent("health"))
     request.timeoutInterval = 1.5
     URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
       let ok = isCoreHealth(data, response)
       DispatchQueue.main.async {
-        self?.healthy = ok
-        if ok { self?.refreshConnections(); self?.refreshSourceHealth() } else { self?.activeConnections = nil }
-        self?.rebuildMenu()
+        guard let self else { return }
+        self.healthy = ok
+        if ok { self.refreshOverview() }
+        else {
+          self.healthLoading = false
+          self.activeSessions = nil
+          self.activeRequests = nil
+          self.sourceWarning = nil
+          self.rebuildMenu()
+        }
       }
     }.resume()
   }
 
-  private func refreshConnections() {
-    var request = URLRequest(url: coreURL.appendingPathComponent("api/gateway/sessions"))
+  private func refreshOverview() {
+    // Same read-only snapshot as the console; no token inventory or drained health notifications.
+    var request = URLRequest(url: coreURL.appendingPathComponent("api/overview"))
     request.setValue("1", forHTTPHeaderField: "x-easyswitch")
     request.timeoutInterval = 1.5
     URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-      let payload = data.flatMap { $0.count <= 524288 ? (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] : nil }
-      let sessions = payload?["sessions"] as? [[String: Any]]
-      DispatchQueue.main.async {
-        guard let self, self.healthy else { return }
-        self.activeConnections = (response as? HTTPURLResponse)?.statusCode == 200 ? sessions?.count : nil
-        self.rebuildMenu()
-      }
-    }.resume()
-  }
-
-  private func refreshSourceHealth() {
-    guard !sourceHealthLoading else { return }
-    sourceHealthLoading = true
-    var request = URLRequest(url: coreURL.appendingPathComponent("api/source-health"))
-    request.setValue("1", forHTTPHeaderField: "x-easyswitch")
-    request.timeoutInterval = 1.5
-    URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-      let payload = data.flatMap { $0.count <= 524288 ? (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] : nil }
+      let summary = menuOverview(data, response)
       DispatchQueue.main.async {
         guard let self else { return }
-        self.sourceHealthLoading = false
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let sources = payload?["sources"] as? [[String: Any]] ?? []
-        let failed = sources.filter { $0["status"] as? String == "unavailable" }.count
-        // The server drains each outage transition once; no repeated alert or sound.
-        self.sourceWarning = failed > 0 ? "有 \(failed) 个来源的轻量检查不可用，请在控制台查看" : nil
+        self.healthLoading = false
+        self.activeSessions = summary?.sessions
+        self.activeRequests = summary?.requests
+        self.sourceWarning = summary?.sources
         self.rebuildMenu()
       }
     }.resume()
@@ -116,27 +119,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     } else {
       statusItem.button?.title = healthy ? "⇄ ●" : "⇄ ○"
     }
-    statusItem.button?.toolTip = healthy ? "EasySwitch 运行中" : "EasySwitch 核心服务未运行"
+    statusItem.button?.toolTip = healthy ? "EasySwitch 运行中" : "EasySwitch 核心服务暂不可达"
     let menu = NSMenu()
-    let status = NSMenuItem(title: healthy ? "核心服务：运行中（端口 \(corePort)）" : "核心服务：未运行", action: nil, keyEquivalent: "")
+    let status = NSMenuItem(title: healthy ? "核心服务：运行中（端口 \(corePort)）" : "核心服务：暂不可达", action: nil, keyEquivalent: "")
     status.isEnabled = false
     menu.addItem(status)
-    let sessionsItem = NSMenuItem(title: activeConnections.map { "有效连接：\($0) 个" } ?? "有效连接：未读取", action: nil, keyEquivalent: "")
-    sessionsItem.toolTip = "按网关签发记录统计，不代表客户端程序仍在运行。"
+    let sessionsItem = NSMenuItem(title: activeSessions.map { "正在请求的增强会话：\($0) 个" } ?? "增强会话状态：暂未读取", action: nil, keyEquivalent: "")
+    sessionsItem.toolTip = activeRequests.map { "\($0) 个在途请求；空闲窗口、原生请求和模型列表查询不计入。" } ?? "统计暂不可用；不代表没有会话。"
     sessionsItem.isEnabled = false
     menu.addItem(sessionsItem)
-    if let warning = sourceWarning { let row = NSMenuItem(title: warning, action: nil, keyEquivalent: ""); row.isEnabled = false; menu.addItem(row) }
+    let sourcesItem = NSMenuItem(title: sourceWarning ?? "来源状态：暂未读取", action: nil, keyEquivalent: "")
+    sourcesItem.isEnabled = false
+    menu.addItem(sourcesItem)
     menu.addItem(.separator())
+    menu.addItem(item("打开控制台", #selector(openConsole), "o"))
     if healthy {
-      menu.addItem(item("打开控制台", #selector(openConsole), "o"))
       menu.addItem(item("启动 ChatGPT增强会话", #selector(launchCodex), "l"))
       menu.addItem(item("启动 Claude Code 增强会话", #selector(launchClaude), "k"))
-      menu.addItem(item("停止核心服务", #selector(stopCore), ""))
+      if coreProcess?.isRunning == true { menu.addItem(item("停止自有核心服务", #selector(stopCore), "")) }
     } else {
       menu.addItem(item("启动核心服务", #selector(startCore), "s"))
     }
     menu.addItem(.separator())
-    menu.addItem(item("全部退回原生", #selector(backToNative), "r"))
+    menu.addItem(item("退回原生…", #selector(backToNative), "r"))
     menu.addItem(item("检查原生配置", #selector(checkNative), ""))
     menu.addItem(.separator())
     let settings = NSMenu()
@@ -180,20 +185,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   private func makePopover() -> NSPopover {
     let config = WKWebViewConfiguration()
     config.userContentController.add(self, name: "easyswitch")
-    let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 460, height: 300), configuration: config)
+    let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 420, height: 480), configuration: config)
     web.setValue(false, forKey: "drawsBackground")
     let controller = NSViewController()
     controller.view = web
     let panel = NSPopover()
     panel.contentViewController = controller
-    panel.contentSize = NSSize(width: 460, height: 300)
+    panel.contentSize = NSSize(width: 420, height: 480)
     panel.behavior = .transient
     return panel
   }
 
   /// Messages from the panel page; the actions themselves stay native.
   func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-    guard let action = message.body as? String else { return }
+    let origin = message.frameInfo.securityOrigin
+    guard message.frameInfo.isMainFrame, origin.protocol == "http", origin.host == "127.0.0.1", origin.port == corePort,
+          let action = message.body as? String else { return }
     popover?.performClose(nil)
     switch action {
     case "openConsole": openConsole()

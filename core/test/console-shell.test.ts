@@ -13,7 +13,7 @@ function attributes(source: string) {
   return Object.fromEntries([...source.matchAll(/([\w-]+)(?:="([^"]*)")?/g)].map(m => [m[1]!, m[2] ?? ""]));
 }
 
-function shell(options: { hash?: string; panel?: boolean; stored?: string; storage?: "getter" | "methods" | "write" } = {}) {
+function shell(options: { hash?: string; panel?: boolean; bridge?: boolean; stored?: string; storage?: "getter" | "methods" | "write" } = {}) {
   const documentHandlers: Record<string, Handler[]> = {}, windowHandlers: Record<string, Handler[]> = {};
   const requests: Array<{ method: string; path: string; body?: any }> = [];
   const writes: Array<[string, string]> = [];
@@ -23,6 +23,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
   const visits = [location.hash];
   let visit = 0;
   const messages: string[] = [];
+  const bridgeMessages: string[] = [];
   let activeElement: Element | null = null;
   class Element {
     tag: string;
@@ -122,7 +123,9 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
       replaceState(_state: unknown, _title: string, hash: string) { location.hash = hash; history.push(hash); visits[visit] = hash; },
       pushState(_state: unknown, _title: string, hash: string) { location.hash = hash; history.push(hash); visits.splice(++visit, Infinity, hash); },
     },
-    window: { addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); } },
+    window: { addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); },
+      ...(options.bridge ? { webkit: { messageHandlers: { easyswitch: { postMessage(message: string) { bridgeMessages.push(message); } } } } } : {}),
+    },
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: () => 0,
     FormData: class { form: Element; constructor(form: Element) { this.form = form; } get(name: string) { return this.form.values[name] ?? null; } [Symbol.iterator]() { return Object.entries(this.form.values)[Symbol.iterator](); } },
     fetch: async (path: string, init: { method: string; body?: string }) => {
@@ -160,7 +163,7 @@ function shell(options: { hash?: string; panel?: boolean; stored?: string; stora
     await new Promise(resolve => setImmediate(resolve));
   };
   const node = (selector: string) => { const found = document.querySelector(selector); assert.ok(found, `Rendered control must exist: ${selector}`); return found; };
-  return { run, requests, writes, storage, root, body, page, document, history, location, fixtureState, fixtureAgents,
+  return { run, requests, writes, storage, root, body, page, document, history, location, fixtureState, fixtureAgents, bridgeMessages,
     node, html: () => page.innerHTML,
     refresh: () => run("refresh(true)"),
     click: (selector: string) => dispatch(documentHandlers, "click", node(selector)),
@@ -397,17 +400,108 @@ test("narrow shell keeps both navigation groups scrollable and content free of a
   assert.match(css, /\.theme-choice button\s*\{[^}]*flex:\s*1/);
 });
 
-test("menu-bar panel still opens on agents and keeps its native launch and subscription controls", async () => {
+test("menu-bar panel reads only overview and subscription metadata and keeps native actions separate", async () => {
   const app = shell({ panel: true, hash: "#settings", stored: "dark" }); await app.refresh();
   assert.equal(app.run("page"), "agents"); assert.ok(app.body.classes.has("panel"));
   assert.equal(app.document.querySelector("#nav"), null); assert.equal(app.document.querySelector("#refresh"), null);
-  assert.match(app.html(), /data-launch="codex"/); assert.match(app.html(), /data-launch="claude"/);
+  assert.doesNotMatch(app.html(), /data-launch|data-pick|原生配置未被改动/);
   assert.match(app.html(), /data-bridge="openConsole"/); assert.match(app.html(), /data-plan-switch="plan-fixture"/);
+  assert.deepEqual(app.requests.map(r => r.path).sort(), ["/api/overview", "/api/plan"]);
+  assert.ok(app.requests.every(r => r.method === "GET"));
+  assert.doesNotMatch(app.html(), /data-bridge="backToNative"|data-bridge="quit"/);
   assert.doesNotMatch(app.html(), /data-theme-choice|data-add-account/);
   await app.hash("#accounts"); assert.equal(app.run("page"), "agents"); assert.equal(app.history.length, 0);
   assert.equal(app.root.getAttribute("data-theme"), "dark");
   assert.match(css, /body\.panel \.sidebar[^{}]*\{[^}]*display:\s*none/);
   assert.match(css, /body\.panel main\s*\{[^}]*margin:\s*0/);
+});
+
+test("menu-bar summary counts inference sessions and treats unknown sources separately", async () => {
+  const app = shell({ panel: true }); await app.refresh();
+  app.run(`overviewSnapshot.activity={activeRequests:7,sessions:[{id:'one'},{id:'two'}]}; overviewSnapshot.sources=[{status:'disabled'},{status:'unknown'},{status:'budget'},{status:'quota'},{status:'no_models'},{status:'unavailable'},{status:'ready'}]; render()`);
+  assert.match(app.html(), /<strong>2<\/strong><span>正在请求的增强会话/);
+  assert.match(app.html(), /<strong>4<\/strong><span>待处理来源/);
+  assert.match(app.html(), /7 个在途请求 · 1 个来源尚未验证/);
+  assert.match(app.html(), /空闲窗口和原生请求不计入/);
+});
+
+test("menu-bar polling keeps the subscription list at the user's scroll position", async () => {
+  const app = shell({ panel: true }); await app.refresh();
+  app.run(`document.querySelector('.panel-scroll').scrollTop=180`);
+  await app.refresh();
+  assert.equal(app.run(`document.querySelector('.panel-scroll').scrollTop`), 180);
+});
+
+test("menu-bar read failure hides stale counts and switches but preserves native recovery actions", async () => {
+  const app = shell({ panel: true, bridge: true }); await app.refresh();
+  app.run(`overviewSnapshot.activity={activeRequests:9,sessions:[{id:'one'}]}; call=async()=>{throw new Error('fixture-offline')}`);
+  assert.equal(await app.refresh(), false);
+  assert.match(app.html(), /状态暂未更新|上次读取于/);
+  assert.match(app.html(), /<strong>—<\/strong>/);
+  assert.doesNotMatch(app.html(), /9 个在途请求|data-plan-switch/);
+  assert.match(app.html(), /订阅状态暂不可用/);
+  await app.click('[data-bridge="backToNative"]');
+  await app.click('[data-bridge="openConsole"]');
+  await app.click('[data-bridge="quit"]');
+  assert.deepEqual(app.bridgeMessages, ["backToNative", "openConsole", "quit"]);
+  assert.equal(app.requests.length, 2, "Recovery bridge actions never call the unavailable gateway");
+});
+
+test("menu-bar initial failure and stalled reads settle without overlapping polling", async () => {
+  const app = shell({ panel: true, bridge: true });
+  app.run(`globalThis.reads=[];setTimeout=fn=>{globalThis.expirePanel=fn;return 1};call=(m,p,b,o)=>{reads.push({p,signal:o.signal});return new Promise(()=>{})}`);
+  const first = app.refresh(), second = app.refresh();
+  assert.equal(app.run("reads.length"), 2);
+  app.run("expirePanel()");
+  assert.deepEqual(await Promise.all([first, second]), [false, false]);
+  assert.equal(app.run("reads.every(r=>r.signal.aborted)"), true);
+  assert.match(app.html(), /状态暂未更新/);
+  assert.doesNotMatch(app.html(), /<strong>0<\/strong>|data-plan-switch/);
+  assert.match(app.html(), /data-bridge="backToNative"/);
+});
+
+test("menu-bar subscription failure does not discard a fresh overview or reuse stale switches", async () => {
+  const app = shell({ panel: true }); await app.refresh();
+  app.run(`call=async(m,p)=>{if(p==='/api/plan')throw new Error('fixture');return {...overviewSnapshot,activity:{activeRequests:3,sessions:[{id:'one'}]}}}`);
+  assert.equal(await app.refresh(), false);
+  assert.match(app.html(), /3 个在途请求/);
+  assert.doesNotMatch(app.html(), /data-plan-switch/);
+  assert.match(app.html(), /订阅状态暂不可用/);
+});
+
+test("menu-bar subscription save blocks duplicates and ignores a pre-save read arriving late", async () => {
+  const app = shell({ panel: true }); await app.refresh();
+  app.run(`globalThis.reads=[];globalThis.writes=[];globalThis.oldPlan=JSON.parse(JSON.stringify(planInfo));globalThis.oldOverview=overviewSnapshot;
+    call=(m,p,b,o)=>{if(m==='GET')return new Promise(resolve=>reads.push({p,resolve,signal:o.signal}));writes.push({p,b});return new Promise(resolve=>globalThis.finishSave=resolve)}`);
+  const oldRead = app.refresh();
+  const save = app.click('[data-plan-switch="plan-fixture"]');
+  await new Promise(resolve => setImmediate(resolve));
+  await app.click('[data-plan-switch="plan-fixture"]');
+  await app.refresh();
+  assert.equal(app.run("writes.length"), 1);
+  assert.equal(app.run("writes[0].b.on"), true);
+  assert.equal(app.run("reads.length"), 2);
+  assert.equal(app.run("reads.every(r=>r.signal.aborted)"), true);
+  assert.match(app.html(), /保存中/);
+  app.run(`call=async(m,p)=>p==='/api/plan'?{accounts:oldPlan.accounts.map(a=>({...a,on:true}))}:oldOverview;finishSave({ok:true})`);
+  await save;
+  app.run(`reads.forEach(r=>r.resolve(r.p==='/api/plan'?oldPlan:oldOverview))`);
+  await oldRead;
+  assert.equal(app.node('[data-plan-switch="plan-fixture"]').dataset.on, "1");
+  assert.equal(app.node('[data-plan-switch="plan-fixture"]').disabled, false);
+});
+
+test("menu-bar failed switch restores recorded state and expired enabled accounts can still be turned off", async () => {
+  const app = shell({ panel: true }); await app.refresh();
+  app.run(`planInfo.accounts[0].needsSignIn=true; planInfo.accounts[0].on=true;render();globalThis.puts=[];
+    call=async(m,p,b)=>{if(m==='PUT'){puts.push(b);throw new Error('fixture-save-failed')}return p==='/api/plan'?planInfo:overviewSnapshot}`);
+  assert.equal(app.node('[data-plan-switch="plan-fixture"]').disabled, false);
+  await app.click('[data-plan-switch="plan-fixture"]');
+  assert.equal(app.run("puts[0].on"), false);
+  assert.equal(app.node('[data-plan-switch="plan-fixture"]').dataset.on, "1");
+  assert.equal(app.node('[data-plan-switch="plan-fixture"]').disabled, false);
+  app.run("planInfo.accounts[0].on=false;render()");
+  assert.equal(app.node('[data-plan-switch="plan-fixture"]').disabled, true);
 });
 
 
