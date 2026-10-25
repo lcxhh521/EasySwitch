@@ -872,3 +872,31 @@ test("pool membership eligibility remains readable beside long source names", ()
   assert.match(rendered, /class="row pool-row"/);
   assert.match(rendered, /预算暂停，请检查预算和记账状态/);
 });
+
+test("B130 rendered-reference page rhythm preserves detail scope and coarse-pointer targets", () => {
+  assert.match(css, /\.client-toolbar\s*\{[^}]*margin-bottom:\s*0/);
+  assert.match(css, /\.client-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)/);
+  assert.match(css, /\.client-detail \.row\.agent\s*\{[^}]*gap:\s*12px/);
+  assert.match(css, /\.client-detail-section\s*\{[^}]*padding:\s*12px 14px/);
+  assert.match(css, /\.appearance-card\s*\{[^}]*padding:\s*12px 14px/);
+  assert.match(css, /\.detail\[data-provider\]\s*\{[^}]*padding:\s*16px 18px 14px;[^}]*border-top:\s*1px solid/);
+  assert.match(css, /body:not\(\.panel\) \.seg button\s*\{[^}]*min-height:\s*var\(--control-height\)/);
+  assert.match(css, /@media\s*\(pointer:\s*coarse\)[^]*--control-height:\s*40px/);
+  // Styling the appearance row must not remove the explanation or persistence states.
+  const app = shell({ hash: "#settings", storage: "write" });
+  app.run("EasySwitchTheme.set('dark');state={accounts:[{id:'fixture',label:'Fixture',harness:'codex',enabled:true}],accountSettings:{autoPick:true}};render()");
+  assert.match(app.html(), /当前选择仅对本页面生效/);
+  assert.match(app.html(), /实际登录和额度未核实/);
+  assert.match(app.html(), /不会改动你平时用的/);
+});
+
+test("narrow account settings reserve readable identity and a full-width label field", () => {
+  assert.match(css, /\.row\[data-account\] > \.grow\s*\{\s*flex:\s*1 1 calc\(100% - 40px\)/);
+  assert.match(css, /\.row\[data-account\] \.title, \.row\[data-account\] \.sub\s*\{\s*white-space:\s*normal;\s*overflow-wrap:\s*anywhere/);
+  assert.match(css, /form\[data-add-account\] input\[name="label"\]\s*\{\s*min-width:\s*100%/);
+  const app = shell({ hash: "#settings" });
+  app.run(`state={accounts:[{id:'long',label:'Very-long-account-label-for-narrow-screen',harness:'codex',enabled:false}],accountSettings:{autoPick:false}};render()`);
+  assert.match(app.html(), /Very-long-account-label-for-narrow-screen/);
+  assert.match(app.html(), /第一次启动要在终端里登录一次/);
+  for (const key of ["data-acc-launch", "data-acc-rest", "data-acc-toggle", "data-acc-del"]) assert.match(app.html(), new RegExp(key));
+});

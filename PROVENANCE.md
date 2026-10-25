@@ -94,3 +94,5 @@ B21 的 `protocol.ts`、`inbound.ts`、`outbound-format.ts`、`outbound.ts`、`u
 | File | Source | Current use | Status |
 |---|---|---|---|
 | `web/style.css` | yetone/magpie `internal/gui/assets/app.css`, commit `4b3bdbe28c682ef178672883a4c9d6495dd4e7eb`, MIT, Copyright (c) 2026 yetone | Adapted neutral light/dark tokens, 212px navigation rail, compact list/control and usage KPI geometry. EasySwitch structure and branding retained. | Private candidate; public-release rewrite review required. |
+
+The continued B130 page-rhythm pass also references the original renderer at `cec54c1d01f64cc0dd846d8561ab6dd92877b300` (MIT, Copyright (c) 2026 yetone): `web/style.css` adapts preference/editor spacing and segmented tracks after actual synthetic-data rendering. Its existing private/public-rewrite-review status remains unchanged. No upstream renderer code is copied into EasySwitch JavaScript. See `research/magpie-rendered-comparison-2026-10-25.md`.
