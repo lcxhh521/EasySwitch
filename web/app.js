@@ -99,6 +99,7 @@ function coverageCard() {
 }
 let presets = [];
 let popover = null;
+let pickerReturnFocus = null;
 
 // ---------------------------------------------------------------- helpers
 
@@ -233,9 +234,14 @@ function savedModelOption(name, names) {
   return name && !names.includes(name) ? `<option value="${esc(name)}" selected disabled>${esc(name)}（已保留：${esc(modelSelectionReason(name) || "此处不能选择该模型")}）</option>` : "";
 }
 
-function closePopover() {
+function closePopover(restorePickerFocus = false) {
+  const anchor = pickerReturnFocus;
+  pickerReturnFocus = null;
   popover?.remove();
   popover = null;
+  // Escape cancels the picker without losing the keyboard user's place.
+  // Other dismissals (outside clicks, navigation, selection) keep their focus.
+  if (restorePickerFocus && anchor?.isConnected && !anchor.disabled) anchor.focus({ preventScroll: true });
 }
 
 function placePopover(el, anchor) {
@@ -783,6 +789,7 @@ function openPicker(anchor, target) {
     <div class="body"><div class="rail"></div><div class="list"></div></div>`;
   document.body.append(el);
   popover = el;
+  pickerReturnFocus = anchor;
   let filter = "";
   let only = null;
   let kb = 0;
@@ -866,7 +873,7 @@ function openPicker(anchor, target) {
     if (e.key === "ArrowDown") { kb = Math.min(kb + 1, opts.length - 1); opts = draw(); e.preventDefault(); }
     else if (e.key === "ArrowUp") { kb = Math.max(kb - 1, 0); opts = draw(); e.preventDefault(); }
     else if (e.key === "Enter" && opts[kb]) choose(opts[kb]);
-    else if (e.key === "Escape") closePopover();
+    else if (e.key === "Escape") closePopover(true);
   });
   rail.addEventListener("click", e => {
     const b = e.target.closest("button");
@@ -1202,7 +1209,7 @@ function poolsCard({ catalog = true, tools = true, suggestions = true } = {}) {
     return `${esc(nameOf(member))} · ${reason}`;
   };
   const row = p => `
-    <div class="row">
+    <div class="row pool-row">
       <span class="ic lg" style="display:grid;place-items:center;background:var(--pill);border-radius:10px;width:34px;height:34px">▦</span>
       <div class="grow"><div class="title">${esc(p.name)} <span class="hint">pool/${esc(p.id)}</span> <span class="chip">${p.strategy === "automatic" ? "已确认名单内自动选择" : p.strategy === "rotate" ? "轮流优先尝试" : "按顺序尝试"}</span></div>
         <div class="sub">${p.members.map(m => memberText(p, m)).join(" → ")}</div>${poolSignalsDetails(p, nameOf)}${poolContextDetails(p)}</div>
@@ -2421,7 +2428,7 @@ document.addEventListener("submit", async e => {
   } catch (error) { showError(error); }
   await refresh(true);
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") { closePopover(); if (claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); } } });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closePopover(true); if (claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); } } });
 // "toggle" does not bubble, so listen in the capture phase.
 document.addEventListener("toggle", e => {
   const id = e.target?.dataset?.keep;

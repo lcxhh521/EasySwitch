@@ -801,3 +801,74 @@ test("API source submission cannot duplicate a pending create and keeps saved so
   assert.equal(app.run('addForm'),null);
   assert.equal(app.run('sourceAddBusy'),false);
 });
+
+test("B130 compact visual contract keeps explicit theme parity and accessible contrast", () => {
+  assert.match(css, /--bg:\s*#f4f4f6/);
+  assert.equal((css.match(/--bg:\s*#1a1a1e/g) ?? []).length, 2, "auto and explicit dark use the same surface");
+  assert.match(css, /font:\s*13px\/1\.4 var\(--font\)/);
+  assert.match(css, /--sidebar-width:\s*212px/);
+  assert.match(css, /--control-height:\s*28px/);
+  assert.match(css, /--row-height:\s*48px/);
+  assert.match(css, /\.shell-nav button\.on::before\s*\{\s*content:\s*none/);
+  assert.match(css, /@media\s*\(pointer:\s*coarse\)\s*\{[^]*--control-height:\s*40px/);
+  assert.match(css, /body:not\(\.panel\) \.ctl \.popbtn/);
+  assert.match(css, /100vw - var\(--sidebar-width\) - 1200px/);
+  const luminance = (hex: string) => {
+    const c = hex.match(/[0-9a-f]{2}/gi)!.map(v => parseInt(v, 16) / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+    return c[0]! * .2126 + c[1]! * .7152 + c[2]! * .0722;
+  };
+  const contrast = (a: string, b: string) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
+  const themeValues = (selector: RegExp) => {
+    const block = css.match(selector)?.[1]; assert.ok(block, "theme block exists");
+    const values = Object.fromEntries([...block.matchAll(/--([a-z-]+):\s*#([0-9a-f]{6})\b/gi)].map(m => [m[1]!, m[2]!]));
+    for (const key of ["muted", "bg", "card", "pill"]) assert.ok(values[key], `theme has ${key}`);
+    return values;
+  };
+  for (const values of [themeValues(/:root\s*\{([^]*?)\n\}/), themeValues(/:root\[data-theme="dark"\]\s*\{([^]*?)\n\}/)]) {
+    for (const key of ["bg", "card", "pill"]) assert.ok(contrast(values.muted!, values[key]!) >= 4.5, `CSS secondary text on ${key}`);
+  }
+  assert.match(css, /Magpie internal\/gui\/assets\/app\.css, MIT, Copyright \(c\) 2026 yetone/);
+  assert.match(web("favicon.svg"), /svg/); // Brand asset is retained, not replaced by upstream's bird.
+});
+
+test("B130 usage metrics keep inner spacing and long accounting evidence readable", () => {
+  // Usage is a section inside main: main's grid gap does not space its children.
+  assert.match(css, /#usage-content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*14px/);
+  assert.match(css, /#usage-content details:has\(> \.tbl\)\s*\{\s*overflow-x:\s*auto/);
+  assert.match(css, /#usage-content \.tiles\s*\{[^}]*repeat\(5, minmax\(0, 1fr\)\)[^}]*gap:\s*1px/);
+  assert.match(css, /#usage-content \.tile\s*\{[^}]*min-width:\s*0[^}]*padding:\s*12px 14px 11px[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(css, /#usage-content \.tile \.v\s*\{[^}]*font-size:\s*20px[^}]*font-variant-numeric:\s*tabular-nums/);
+  assert.match(css, /#usage-content \.tile\s*\{[^}]*border-left:\s*0/);
+  assert.match(css, /#usage-content \.tiles > \.tile:last-child:nth-child\(odd\)\s*\{\s*grid-column:\s*1 \/ -1/);
+  const app = shell({ hash: "#usage" });
+  app.run(`state={display:{currency:'USD'}};usage={totals:{calls:2,inputTokens:100,outputTokens:20,cachedTokens:0,errors:0,recordedCostCalls:1,missingCostCalls:1,costUsd:0.2,pricingSources:{user:1}},byProvider:{},byHarness:{},days:[]};render()`);
+  assert.match(app.page.innerHTML, /另有 1 次费用缺失/);
+  assert.match(app.page.innerHTML, /用户自填价 1 次/);
+  assert.match(app.page.innerHTML, /非供应商账单/);
+});
+
+test("picker Escape restores only a live enabled trigger, ordinary dismissal does not steal focus", () => {
+  const app = shell();
+  app.run(`globalThis.focusReturns=0;globalThis.removals=0;globalThis.anchor={isConnected:true,disabled:false,focus(){focusReturns++}};
+    pickerReturnFocus=anchor;popover={remove(){removals++}};closePopover(true)`);
+  assert.equal(app.run("focusReturns"), 1);
+  assert.equal(app.run("removals"), 1);
+  app.run("closePopover(true)");
+  assert.equal(app.run("focusReturns"), 1, "bubbled Escape does not refocus twice");
+  app.run("pickerReturnFocus=anchor;closePopover()");
+  assert.equal(app.run("focusReturns"), 1, "outside click or navigation keeps its new focus");
+  app.run("anchor.isConnected=false;pickerReturnFocus=anchor;closePopover(true)");
+  app.run("anchor.isConnected=true;anchor.disabled=true;pickerReturnFocus=anchor;closePopover(true)");
+  assert.equal(app.run("focusReturns"), 1);
+  assert.match(web("app.js"), /pickerReturnFocus = anchor/);
+  assert.match(web("app.js"), /e.key === "Escape"\) closePopover\(true\)/);
+});
+
+test("pool membership eligibility remains readable beside long source names", () => {
+  assert.match(css, /\.pool-row \.sub\s*\{\s*white-space:\s*normal;\s*overflow-wrap:\s*anywhere/);
+  const app = shell();
+  app.run(`state={providers:[{id:'p',name:'Very-long-synthetic-source-name',models:['m']}],pools:[{id:'pool',name:'Pool',members:['p/m'],strategy:'order',memberStates:[{member:'p/m',reason:'budget_blocked'}]}]}`);
+  const rendered = app.run("poolsCard({tools:false,suggestions:false})");
+  assert.match(rendered, /class="row pool-row"/);
+  assert.match(rendered, /预算暂停，请检查预算和记账状态/);
+});

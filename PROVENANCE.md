@@ -87,3 +87,10 @@ B21 的 `protocol.ts`、`inbound.ts`、`outbound-format.ts`、`outbound.ts`、`u
 ### 独立官方价格输入与并行生成表（2026-10-07）
 
 `core/src/pricing/official-facts.json`由官方公开定价文档独立整理，逐条链接和核查日期见该文件与`research/official-pricing-facts.md`。新`official-table.ts`、`official-estimate.ts`及`build-prices.mjs`按自定义事实合同编写，不读取第三方模型元数据补价；`official-prices.json`的SHA-256只绑定输入事实字节，不声称保存官网原始页面。当前事实覆盖10个精确模型ID的17种价目，只有2条普通文本条件可被纯估算器匹配。新表未切生产默认，旧表/旧运行时方法的历史归属与许可证继续保留，不能把这一批写成价格公开前重写全部完成。迁移影响和后续条件见`docs/pricing-migration.md`。
+
+
+### B130 visual-system reference (2026-10-25)
+
+| File | Source | Current use | Status |
+|---|---|---|---|
+| `web/style.css` | yetone/magpie `internal/gui/assets/app.css`, commit `4b3bdbe28c682ef178672883a4c9d6495dd4e7eb`, MIT, Copyright (c) 2026 yetone | Adapted neutral light/dark tokens, 212px navigation rail, compact list/control and usage KPI geometry. EasySwitch structure and branding retained. | Private candidate; public-release rewrite review required. |
