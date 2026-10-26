@@ -6,8 +6,9 @@ import { test } from "node:test";
 type Handler = (event: any) => unknown;
 function ui() {
   const handlers: Record<string, Handler[]> = {};
+  const windowHandlers: Record<string, Handler[]> = {};
   class Node {
-    innerHTML = ""; value = ""; removed = false; className = ""; style = {}; offsetWidth = 400; offsetHeight = 200;
+    innerHTML = ""; value = ""; removed = false; className = ""; style: Record<string, string> = {}; offsetWidth = 400; offsetHeight = 200;
     dataset: Record<string, string> = {}; children: Node[] = []; listeners: Record<string, Handler[]> = {};
     parts: Record<string, Node> = {};
     classList = { toggle() {} }; focus() {} scrollIntoView() {} remove() { this.removed = true; }
@@ -17,7 +18,7 @@ function ui() {
   }
   let current: Node;
   const context = vm.createContext({ URLSearchParams, location: { search: "", hash: "#agents" }, history: { replaceState() {} }, console,
-    window: { innerWidth: 1200, innerHeight: 800, addEventListener() {} },
+    window: { innerWidth: 1200, innerHeight: 800, addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); } },
     document: { activeElement: null, querySelector: () => null, querySelectorAll: () => [], addEventListener(name: string, h: Handler) { (handlers[name] ??= []).push(h); },
       body: { append(node: Node) { current = node; } }, createElement() { const node = new Node(); node.parts = { input: new Node(), ".rail": new Node(), ".list": new Node() }; return node; } },
     localStorage: { getItem: () => null, setItem() { assert.fail("Rendering selections must not write storage"); } },
@@ -39,13 +40,14 @@ function ui() {
     agentList=[{id:'claude',name:'Claude Code',installed:true,can:{headless:true,interactive:true,efforts:[],tiers:[{id:'small',label:'后台小任务',hint:'Fixture'}]}},{id:'aider',name:'Aider',installed:true,can:{headless:true,interactive:true,efforts:[],tiers:[]}}];
     globalThis.requests=[];globalThis.messages=[];render=()=>{};refresh=async()=>{};toast=m=>messages.push(m);call=async(method,path,body)=>{requests.push({method,path,body});return {}};
     globalThis.anchor={getBoundingClientRect:()=>({right:450,bottom:50,top:20})};`);
-  const dispatch = async (name: string, target: any) => { for (const h of handlers[name] ?? []) await h({ target, preventDefault() {}, stopImmediatePropagation() {} }); };
+  const dispatch = async (name: string, target: any, extra: Record<string, unknown> = {}) => { for (const h of handlers[name] ?? []) await h({ target, preventDefault() {}, stopImmediatePropagation() {}, ...extra }); };
   const target = (selector: string, extra: Record<string, unknown> = {}) => { const node: any = { ...extra, matches: (s: string) => s === selector, closest: (s: string) => s === selector ? node : null }; return node; };
   const open = (name = "claude") => { run(`openPicker(anchor,${JSON.stringify(name)})`); return current!; };
   const click = async (picker: Node, index: number) => { await picker.parts[".list"]!.emit("click", { target: target(".opt", { dataset: { i: String(index) } }) }); };
   const search = async (picker: Node, text: string) => { picker.parts.input!.value = text; await picker.parts.input!.emit("input"); };
-  const key = (picker: Node, key: string) => picker.parts.input!.emit("keydown", { key });
-  return { run, open, click, search, key, dispatch, target };
+  const key = (picker: Node, key: string, extra: Record<string, unknown> = {}) => picker.parts.input!.emit("keydown", { key, ...extra });
+  const windowEvent = async (name: string) => { for (const handler of windowHandlers[name] ?? []) await handler({}); };
+  return { run, open, click, search, key, dispatch, target, windowEvent };
 }
 
 test("all existing model selectors use catalog eligibility, including unknown health and usable pools", () => {
@@ -170,4 +172,118 @@ test("saved profile warning is visible only when both profiles and an automatic 
   assert.match(app.run("profileBar()"), /方案可能恢复纯文字自动模式，工具请求会被拒绝；切换后请核对主模型和小模型/);
   assert.equal(app.run("requests.length"), 0);
   app.run("state.profiles=[]"); assert.doesNotMatch(app.run("profileBar()"), /方案可能恢复纯文字自动模式/);
+});
+
+
+test("picker remains readable and inert when a background refresh loses core state", async () => {
+  const app = ui();
+  app.run("state.bindings.claude={providerId:'on',model:'m'};globalThis.savedState=state");
+  const picker = app.open();
+  app.run("state=null");
+  await assert.doesNotReject(() => app.search(picker, "vendor/model"));
+  assert.match(picker.parts[".list"]!.innerHTML, /连不上|不可用|离线|连接|重新读取|刷新/);
+  assert.doesNotMatch(picker.parts[".list"]!.innerHTML, /class="opt/);
+  await app.key(picker, "Enter");
+  assert.equal(app.run("requests.length"), 0);
+  assert.equal(app.run("savedState.bindings.claude.model"), "m");
+});
+
+for (const choice of ["native", "external"]) {
+  test(`stale ${choice} picker choice cannot write after core state becomes unavailable`, async () => {
+    const app = ui();
+    app.run("state.bindings.claude={providerId:'on',model:'m'};globalThis.savedState=state");
+    const picker = app.open();
+    await app.search(picker, choice === "native" ? "native" : "vendor/model");
+    app.run("state=null");
+    await app.click(picker, 0);
+    assert.equal(app.run("requests.length"), 0, "offline includes the native DELETE path");
+    assert.equal(app.run("savedState.bindings.claude.model"), "m");
+  });
+}
+
+test("closed or replaced picker ignores queued selection events without dismissing its successor", async () => {
+  const app = ui();
+  const old = app.open();
+  await app.search(old, "vendor/model");
+  await app.key(old, "Escape");
+  const next = app.open("claude@small");
+  await app.click(old, 0);
+  assert.equal(app.run("requests.length"), 0);
+  assert.equal(next.removed, false, "obsolete callback must not close the current picker");
+  await app.click(next, 0);
+  assert.equal(app.run("requests.length"), 1);
+  assert.equal(app.run("requests[0].path"), "/api/bindings/claude/tiers/small");
+});
+
+test("repeated queued picker submission sends only one mutation while the first save awaits", async () => {
+  const app = ui();
+  app.run("globalThis.finishSave=null;call=(method,path,body)=>{requests.push({method,path,body});return new Promise(resolve=>{finishSave=resolve})}");
+  const picker = app.open();
+  await app.search(picker, "vendor/model");
+  await app.click(picker, 0);
+  await app.click(picker, 0);
+  await app.key(picker, "Enter");
+  assert.equal(app.run("requests.length"), 1);
+  app.run("finishSave({})");
+  await new Promise(resolve => setImmediate(resolve));
+});
+
+for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+  test(`IME confirmation and cancellation leave picker and global confirmation intact (${JSON.stringify(composition)})`, async () => {
+    const app = ui();
+    const picker = app.open();
+    await app.search(picker, "vendor/model");
+    await app.key(picker, "ArrowDown", composition);
+    await app.key(picker, "Enter", composition);
+    assert.equal(app.run("requests.length"), 0, "IME Enter confirms text, not model selection");
+    await app.key(picker, "Escape", composition);
+    assert.equal(picker.removed, false, "IME Escape cancels composition, not picker");
+    app.run("claudeDesktopConfirm=true");
+    await app.dispatch("keydown", picker.parts.input, { key: "Escape", ...composition });
+    assert.equal(picker.removed, false);
+    assert.equal(app.run("claudeDesktopConfirm"), true, "global Escape must also ignore composition");
+    await app.key(picker, "Enter");
+    assert.equal(app.run("requests.length"), 1, "normal Enter still selects after composition");
+  });
+}
+
+for (const crossPage of [false, true]) {
+  for (const failed of [false, true]) {
+    test(`picker save completion preserves navigation ownership (crossPage=${crossPage}, failed=${failed})`, async () => {
+      const app = ui();
+      app.run("globalThis.refreshes=[];refresh=async(force)=>{refreshes.push(force)};globalThis.finishSave=null;globalThis.failSave=null;call=(method,path,body)=>{requests.push({method,path,body});return new Promise((resolve,reject)=>{finishSave=resolve;failSave=reject})}");
+      const picker = app.open();
+      await app.search(picker, "vendor/model");
+      await app.click(picker, 0);
+      if (crossPage) app.run("pageNavigationVersion++;page='providers';globalThis.draftText='Unsaved provider draft'");
+      app.run(failed ? "failSave({code:'provider_disabled'})" : "finishSave({})");
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(app.run("JSON.stringify(refreshes)"), crossPage ? "[]" : "[true]");
+      assert.equal(app.run("requests.length"), 1);
+      if (crossPage) {
+        assert.equal(app.run("page"), "providers");
+        assert.equal(app.run("draftText"), "Unsaved provider draft");
+      }
+    });
+  }
+}
+
+
+test("live picker follows viewport resize while detached or dismissed anchors are ignored", async () => {
+  const app = ui();
+  app.run("window.innerWidth=1440;anchor.isConnected=true;anchor.getBoundingClientRect=()=>({right:1337,bottom:50,top:20})");
+  const picker = app.open();
+  assert.equal(picker.style.left, "937px");
+  picker.offsetWidth = 366; // CSS max-width responds to the new narrow viewport.
+  app.run("window.innerWidth=390;anchor.getBoundingClientRect=()=>({right:378,bottom:90,top:60})");
+  await app.windowEvent("resize");
+  assert.equal(picker.style.left, "12px");
+  assert.equal(picker.style.top, "96px");
+  assert.ok(Number.parseFloat(picker.style.left) + picker.offsetWidth <= 390);
+  app.run("anchor.isConnected=false;anchor.getBoundingClientRect=()=>{throw new Error('Detached anchor must not be measured')}");
+  await assert.doesNotReject(() => app.windowEvent("resize"));
+  await app.key(picker, "Escape");
+  app.run("anchor.isConnected=true");
+  await assert.doesNotReject(() => app.windowEvent("resize"));
+  assert.equal(app.run("requests.length"), 0);
 });

@@ -890,7 +890,8 @@ test("B130 rendered-reference page rhythm preserves detail scope and coarse-poin
   assert.match(app.html(), /不会改动你平时用的/);
 });
 
-test("narrow account settings reserve readable identity and a full-width label field", () => {
+test("account identity wraps at sidebar widths and narrow layouts reserve a full label field", () => {
+  assert.ok(css.lastIndexOf(".row[data-account] .title,") < css.lastIndexOf("@media (max-width: 600px)"), "Long identity tokens and login notes wrap outside the mobile-only rule too");
   assert.match(css, /\.row\[data-account\] > \.grow\s*\{\s*flex:\s*1 1 calc\(100% - 40px\)/);
   assert.match(css, /\.row\[data-account\] \.title, \.row\[data-account\] \.sub\s*\{\s*white-space:\s*normal;\s*overflow-wrap:\s*anywhere/);
   assert.match(css, /form\[data-add-account\] input\[name="label"\]\s*\{\s*min-width:\s*100%/);
@@ -899,4 +900,150 @@ test("narrow account settings reserve readable identity and a full-width label f
   assert.match(app.html(), /Very-long-account-label-for-narrow-screen/);
   assert.match(app.html(), /第一次启动要在终端里登录一次/);
   for (const key of ["data-acc-launch", "data-acc-rest", "data-acc-toggle", "data-acc-del"]) assert.match(app.html(), new RegExp(key));
+});
+
+test("slow navigation immediately replaces old actions and late reads cannot restore them", async () => {
+  const app = shell(); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.snapshot=state;globalThis.pendingReads=[];
+    call=(method,path,...rest)=>path==='/api/state'?new Promise(resolve=>pendingReads.push(resolve)):originalCall(method,path,...rest)`);
+  const first = app.run("navigatePage('settings')");
+  assert.equal(app.location.hash, "#settings");
+  assert.equal(app.node("#page-title").textContent, "设置");
+  assert.match(app.html(), /role="status".*正在读取设置/);
+  assert.doesNotMatch(app.html(), /data-agent-launch|data-pick|data-acc-launch/);
+  const second = app.run("navigatePage('providers')");
+  app.run("pendingReads[0](snapshot)"); await first;
+  assert.equal(app.location.hash, "#providers");
+  assert.equal(app.node("#page-title").textContent, "模型");
+  assert.match(app.html(), /正在读取模型/);
+  app.run("pendingReads[1](snapshot)"); await second;
+  assert.match(app.html(), /data-source-add-open/);
+  assert.doesNotMatch(app.html(), /正在读取模型/);
+  assert.equal(app.requests.every(r => r.method === "GET"), true);
+});
+
+test("Back/Forward replaces stale controls before its state read resolves", async () => {
+  const app = shell(); await app.refresh(); await app.run("navigatePage('settings')");
+  app.run(`globalThis.originalCall=call;globalThis.snapshot=state;globalThis.finishRead=null;
+    call=(method,path,...rest)=>path==='/api/state'?new Promise(resolve=>finishRead=resolve):originalCall(method,path,...rest)`);
+  await app.traverse(-1);
+  assert.equal(app.location.hash, "#agents");
+  assert.equal(app.node("#page-title").textContent, "Agent");
+  assert.match(app.html(), /正在读取Agent/);
+  assert.doesNotMatch(app.html(), /data-acc-launch/);
+  app.run("finishRead(snapshot)"); await new Promise(resolve=>setImmediate(resolve));
+  assert.match(app.html(), /data-agent-launch/);
+});
+
+test("navigation loading is distinct from a failed core read and recovers on retry", async () => {
+  const app = shell(); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.failRead=null;
+    call=(method,path,...rest)=>path==='/api/state'?new Promise((_,reject)=>failRead=reject):originalCall(method,path,...rest)`);
+  const navigation = app.run("navigatePage('settings')");
+  assert.match(app.html(), /正在读取设置/);
+  assert.doesNotMatch(app.html(), /连不上/);
+  app.run("failRead(new Error('fixture offline'))"); await navigation;
+  assert.match(app.html(), /连不上 EasySwitch/);
+  assert.match(app.html(), /data-theme-choice/);
+  app.run("call=originalCall"); await app.refresh();
+  assert.match(app.html(), /data-acc-launch/);
+  assert.doesNotMatch(app.html(), /连不上|正在读取设置/);
+  assert.match(web("app.js"), /renderPageTransition\(\);\nrefresh\(true\);\nsetInterval/);
+});
+
+test("first core read is pending rather than disconnected until a failure is known", async () => {
+  const app = shell();
+  app.run(`globalThis.originalCall=call;globalThis.rejectCore=null;
+    call=(method,path,...rest)=>path==='/api/state'?new Promise((_,reject)=>rejectCore=reject):originalCall(method,path,...rest);
+    renderPageTransition()`);
+  assert.doesNotMatch(app.node('#guard-chip').innerHTML, /连不上/);
+  const pending = app.refresh();
+  assert.match(app.node('#guard-chip').innerHTML, /正在读取核心状态/);
+  assert.doesNotMatch(app.node('#guard-chip').className, /bad/);
+  app.run("rejectCore(new Error('fixture offline'))"); await pending;
+  assert.match(app.node('#guard-chip').innerHTML, /连不上核心服务/);
+  app.run("call=originalCall"); await app.refresh();
+  assert.match(app.node('#guard-chip').innerHTML, /原生配置未被改动/);
+});
+
+test("an icon redraw and an older refresh cannot restore prior-page controls during navigation", async () => {
+  const app = shell(); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.snapshot=state;globalThis.reads=[];
+    call=(method,path,...rest)=>path==='/api/state'?new Promise(resolve=>reads.push(resolve)):originalCall(method,path,...rest)`);
+  const olderRefresh = app.run("refresh()");
+  const navigation = app.run("navigatePage('settings')");
+  assert.match(app.html(), /正在读取设置/);
+  // The asynchronously loaded icon manifest invokes render with the current page.
+  app.run("monoIcons=new Set();render()");
+  assert.equal(app.node('#page-title').textContent, '设置');
+  assert.match(app.html(), /正在读取设置/);
+  assert.doesNotMatch(app.html(), /data-add-account|data-agent-launch|data-pick=/);
+  app.run("reads[1](snapshot)"); await navigation;
+  app.run("reads[0](snapshot)"); await olderRefresh;
+  assert.equal(app.location.hash, '#settings');
+  assert.match(app.html(), /data-add-account/);
+  assert.doesNotMatch(app.html(), /data-agent-launch|data-pick=/);
+});
+
+for (const staleFails of [false, true]) test(`newer same-page core snapshot wins over an older completion (failure=${staleFails})`, async () => {
+  const app = shell({ hash: '#settings' }); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.snapshot=state;globalThis.reads=[];
+    call=(method,path,...rest)=>path==='/api/state'?new Promise((resolve,reject)=>reads.push({resolve,reject})):originalCall(method,path,...rest)`);
+  const older = app.refresh();
+  await app.run('refresh()');
+  assert.equal(app.run('reads.length'), 1, 'polling does not starve a slow foreground read');
+  const newer = app.refresh();
+  app.run(`reads[1].resolve({...snapshot,version:'latest',accounts:[{id:'latest',label:'LATEST_CONFIRMED',harness:'codex'}]})`);
+  await newer;
+  assert.match(app.html(), /LATEST_CONFIRMED/);
+  app.run(staleFails ? "reads[0].reject(new Error('old failure'))" : "reads[0].resolve({...snapshot,version:'old'})");
+  await older;
+  assert.equal(app.run('state.version'), 'latest');
+  assert.equal(app.run('coreStateStatus'), 'ready');
+  assert.equal(app.run('coreRefreshPending'), 0);
+  assert.match(app.html(), /LATEST_CONFIRMED/);
+  assert.doesNotMatch(app.html(), /Codex fixture/);
+});
+
+test('a superseded auxiliary provider read cannot overwrite the newer page snapshot', async () => {
+  const app = shell({ hash: '#providers' }); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.plans=[];
+    call=(method,path,...rest)=>path==='/api/plan'?new Promise(resolve=>plans.push(resolve)):originalCall(method,path,...rest)`);
+  const first=app.refresh(); await new Promise(resolve=>setImmediate(resolve));
+  const second=app.refresh(); await new Promise(resolve=>setImmediate(resolve));
+  app.run("plans[1]({accounts:[],marker:'latest'})"); await second;
+  app.run("plans[0]({accounts:[],marker:'old'})"); await first;
+  assert.equal(app.run('planInfo.marker'), 'latest');
+});
+
+test('manual Agent refresh cannot overwrite a newer page or its draft after agent metadata arrives', async () => {
+  const app=shell(); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.finishAgents=null;
+    call=(method,path,...rest)=>path==='/api/agents'?new Promise(resolve=>finishAgents=resolve):originalCall(method,path,...rest)`);
+  const click=app.click('#refresh'); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(app.run('typeof finishAgents'), 'function');
+  await app.run("navigatePage('providers')");
+  app.run("sourceAddOpen=true;render()");
+  const destination=app.html();
+  app.run("finishAgents({agents:[{id:'stale'}],coverage:[{id:'stale'}],features:[]})"); await click;
+  assert.equal(app.location.hash,'#providers');
+  assert.equal(app.html(),destination);
+  assert.notEqual(app.run('agentList[0].id'),'stale');
+  assert.doesNotMatch(app.run('JSON.stringify(agentCoverage)'),/stale/);
+});
+
+test('a stalled core read times out, releases polling, and cannot replace recovery', async () => {
+  const app=shell({hash:'#settings'}); await app.refresh();
+  app.run(`globalThis.originalCall=call;globalThis.deadlines=[];globalThis.lateRead=null;
+    setTimeout=fn=>{deadlines.push(fn);return deadlines.length};
+    call=(method,path,...rest)=>path==='/api/state'?new Promise(resolve=>lateRead=resolve):originalCall(method,path,...rest)`);
+  const stuck=app.click('#refresh'); await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(app.run('coreRefreshPending')>0);
+  app.run('deadlines[0]()'); await stuck;
+  assert.equal(app.run('coreRefreshPending'),0);
+  assert.equal(app.run('coreStateStatus'),'error');
+  app.run('call=originalCall'); await app.run('refresh()');
+  assert.equal(app.run('coreStateStatus'),'ready');
+  app.run("lateRead({version:'stale',providers:[]})"); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(app.run('state.version'),'shell-fixture');
 });

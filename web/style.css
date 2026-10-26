@@ -474,9 +474,10 @@ body:not(.panel) .row > .ic.lg { width: 22px; height: 22px; }
 .detail[data-provider] { padding: 16px 18px 14px; border-top: 1px solid var(--line-2); gap: 10px; }
 body:not(.panel) .seg { padding: 2px; gap: 1px; border: 0; border-radius: 7px; background: var(--pill); }
 body:not(.panel) .seg button { min-height: var(--control-height); padding: 3px 10px; border-radius: 5px; font-size: 12px; }
+/* Long identity tokens and login caveats must also fit beside the desktop sidebar. */
+.row[data-account] .title, .row[data-account] .sub { white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
   /* Account identity and readiness must not collapse between action buttons. */
   .row[data-account] > .grow { flex: 1 1 calc(100% - 40px); min-width: 0; }
-  .row[data-account] .title, .row[data-account] .sub { white-space: normal; overflow-wrap: anywhere; }
   form[data-add-account] input[name="label"] { min-width: 100%; }
 }

@@ -26,7 +26,9 @@ function ui() {
     state = { providers: [{id:'mock', name:'Mock', models:['echo']}], pools: [], bindings: {} };
     claudeDesktopInfo = {installed:true, launchBlocked:false, sessions:[]};
     claudeDesktopModel = 'mock/echo';
+    // This behavior fixture intentionally has no page/header DOM.
     render = () => {};
+    renderPageTransition = () => {};
     refresh = async () => {};
     toast = () => {};
     globalThis.requests = [];

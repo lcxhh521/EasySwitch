@@ -16,6 +16,10 @@ const ROUTE = { "responses-native": "原样转发", "anthropic-native": "原样�
 const TOOL_NAMES = { "tool:web_search": "网页搜索", "tool:namespace:multi_agent_v1": "子 agent 工具" };
 
 let state = null;
+let coreRefreshVersion = 0;
+let coreRefreshPending = 0;
+let pageTransitionPending = false;
+let coreStateStatus = "unread"; // No failure is known before the first core read settles.
 const PAGE_META = {overview:["总览","会话、来源与费用，一眼看清"],agents:["Agent","为每个工具选择合适的模型"],providers:["模型","管理来源、订阅与模型池"],usage:["用量","查看已记录用量与估算费用"],sessions:["会话记录","查看连接与实际模型线路"],doctor:["自检","检查运行状态，找到下一步"],settings:["设置","外观与本机订阅账号"]};
 function pageOf(value) { return value === "accounts" ? "settings" : Object.hasOwn(PAGE_META,value) ? value : "agents"; }
 // Bookmarks for removed or renamed pages always resolve to a supported route.
@@ -53,9 +57,9 @@ const keepOpen = id => (openDetails.has(id) ? "open" : "");
 let pageNavigationVersion = 0; // A response must not override newer user navigation.
 let agentList = null; // every agent we know of, from /api/agents
 let agentCoverage = null; // { coverage, features } from the same call: what is done for which agent
-async function loadAgents() {
-  const r = await call("GET", "/api/agents").catch(() => null);
-  if (!r) return null;
+async function loadAgents(current = () => true, read = path => call("GET", path)) {
+  const r = await read("/api/agents").catch(() => null);
+  if (!r || !current()) return null;
   agentCoverage = { coverage: r.coverage ?? [], features: r.features ?? [] };
   return r.agents;
 }
@@ -279,10 +283,10 @@ function renderHeader() {
   const files = state?.native?.filter(f => f.exists) ?? [];
   const clean = files.every(f => !f.mentionsEasySwitch);
   const chip = $("#guard-chip");
-  chip.className = `chip ${state ? (clean ? "ok" : "bad") : "bad"}`;
+  chip.className = `chip ${state ? (clean ? "ok" : "bad") : coreStateStatus === "error" ? "bad" : ""}`;
   chip.innerHTML = state
     ? `<span class="dot"></span>${clean ? "原生配置未被改动" : "原生配置出现了 EasySwitch 痕迹"}`
-    : page === "doctor" && typeof doctorReport !== "undefined" && doctorReport ? `<span class="dot"></span>只读自检` : `<span class="dot"></span>连不上核心服务`;
+    : page === "doctor" && typeof doctorReport !== "undefined" && doctorReport ? `<span class="dot"></span>只读自检` : `<span class="dot"></span>${coreStateStatus === "error" ? "连不上核心服务" : coreStateStatus === "loading" ? "正在读取核心状态" : "核心状态尚未读取"}`;
 }
 
 function openGuard(anchor) {
@@ -774,6 +778,7 @@ function onboarding() {
 }
 
 function openPicker(anchor, target) {
+  if (!state) { toast("核心状态暂时不可用，请刷新后再选择模型；原设置已保留"); return; }
   if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   closePopover();
   const [harness, tier] = target.split("@");
@@ -798,6 +803,9 @@ function openPicker(anchor, target) {
     state.providers.map(p => `<button data-only="${esc(p.id)}" title="${esc(p.name)}">${icon(p.icon)}</button>`).join("");
 
   const options = () => {
+    // A background read can fail while this picker is open. Never offer a
+    // native reset or stale model selection without a current core snapshot.
+    if (!state) return [];
     const q = filter.trim().toLowerCase();
     const allowed = new Set(selectableModelNames());
     const out = [];
@@ -835,16 +843,22 @@ function openPicker(anchor, target) {
       const on = binding && binding.providerId === o.provider.id && binding.model === o.model;
       return `${head}<button class="opt ${i === kb ? "kb" : ""}" data-i="${i}">${icon(o.provider.icon)}
         <span class="name">${esc(o.model)}</span><span class="meta">${harness === "opencode" && o.route === "pool-automatic" ? "普通启动仅纯文字；可另行确认新开普通函数工具试用" : ROUTE[o.route]}</span><span class="tick">${on ? "✓" : ""}</span></button>`;
-    }).join("") || `<div class="empty">没有匹配的模型</div>`;
+    }).join("") || `<div class="empty" role="status">${state ? "没有匹配的模型" : "核心状态暂时不可用，请刷新后再选择模型；原设置已保留"}</div>`;
     el.querySelector(".opt.kb")?.scrollIntoView({ block: "nearest" });
     return opts;
   };
 
   const choose = async o => {
-    if (!o) return;
+    // Queued clicks/key repeats on an already dismissed picker are not a new choice.
+    if (!o || popover !== el) return;
+    if (!state) {
+      toast("核心状态暂时不可用，请刷新后再选择模型；原设置已保留");
+      closePopover(true); return;
+    }
     if (!o.native && !selectableModelNames().includes(`${o.provider.id}/${o.model}`)) {
       toast("模型状态已改变，请重新选择；原设置已保留"); closePopover(); await refresh(true); return;
     }
+    const selectionNavigation = pageNavigationVersion;
     closePopover();
     try {
       if (tier) {
@@ -861,7 +875,8 @@ function openPicker(anchor, target) {
     } catch (error) {
       showError(error);
     }
-    await refresh(true);
+    // A completed choice must not redraw a newer page's in-progress form.
+    if (selectionNavigation === pageNavigationVersion) await refresh(true);
   };
 
   let opts = draw();
@@ -870,6 +885,8 @@ function openPicker(anchor, target) {
   input.focus();
   input.addEventListener("input", () => { filter = input.value; kb = 0; opts = draw(); });
   input.addEventListener("keydown", e => {
+    // IME confirmation/cancellation belongs to the composition, not model selection.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") { kb = Math.min(kb + 1, opts.length - 1); opts = draw(); e.preventDefault(); }
     else if (e.key === "ArrowUp") { kb = Math.max(kb - 1, 0); opts = draw(); e.preventDefault(); }
     else if (e.key === "Enter" && opts[kb]) choose(opts[kb]);
@@ -1669,7 +1686,18 @@ function preserveActionFocus(main) {
   };
 }
 
+// Navigation owns the visible controls immediately, not when its read finishes.
+// Keep the old page's launch/edit actions out of a destination still loading.
+function renderPageTransition() {
+  if (PANEL) return;
+  pageTransitionPending = !["overview", "usage", "doctor"].includes(page);
+  renderHeader();
+  renderedPage = page;
+  $("#page").innerHTML = `<div class="card empty" role="status" aria-live="polite">正在读取${esc(PAGE_META[page][0])}…</div>`;
+}
+
 function render() {
+  if (pageTransitionPending) { renderPageTransition(); return; }
   renderHeader();
   const main = $("#page");
   const restoreFocus = preserveActionFocus(main);
@@ -1737,40 +1765,75 @@ async function refresh(force = false) {
     if (navigation !== pageNavigationVersion) return false;
     render(); return !!doctorReport && !doctorError;
   }
-  let nextState;
+  // Background polling must not continually supersede a slow foreground read.
+  if (!force && coreRefreshPending) return false;
+  const readVersion = ++coreRefreshVersion;
+  coreRefreshPending = readVersion;
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new Error("Core snapshot read timed out")); }, 10_000);
+  });
+  const read = path => controller.signal.aborted
+    ? Promise.reject(new Error("Core snapshot read timed out"))
+    : Promise.race([call("GET", path, undefined, {signal:controller.signal}), deadline]);
   try {
-    nextState = await call("GET", "/api/state");
-  } catch {
-    nextState = null;
-  }
-  if (navigation !== pageNavigationVersion) return false;
-  state = nextState;
-  if (typeof automaticToolSync === "function") automaticToolSync();
-  if (state && !PANEL && !state.providers.length && !presets.length) presets = await call("GET", "/api/presets").catch(() => []);
-  if (navigation !== pageNavigationVersion) return false;
-  if (typeof firstRunSync === "function" && state) firstRunSync();
-  if (page === "providers") planInfo = await call("GET", "/api/plan").catch(() => planInfo);
-  if (page === "providers" && !PANEL) providerOverview = await call("GET", "/api/overview").catch(() => null);
-  if (page === "agents" && !PANEL) {
-    chatgptInfo = await call("GET", "/api/chatgpt").catch(() => chatgptInfo);
-    claudeDesktopInfo = await call("GET", "/api/claude-desktop").catch(() => null);
-  }
-  if (page === "agents" && !PANEL && !agentList) {
-    agentList = await loadAgents();
-    if (agentList) force = true;
-  }
-  if (page === "doctor" && typeof loadDoctor === "function" && !doctorBusy && (force || !doctorReport)) await loadDoctor();
-  if (navigation !== pageNavigationVersion) return false;
-  if (page === "usage") {
-    const host = $("#usage-content");
-    if (!host || (!busy() && !host.contains?.(document.activeElement))) render();
-    else { renderHeader(); updateUsageView(); }
-    await usageRefresh;
-    return navigation === pageNavigationVersion && !!usage && !usageError;
-  }
-  if (force || !busy()) render();
-  else renderHeader();
-  return !!nextState;
+    const current = () => navigation === pageNavigationVersion && readVersion === coreRefreshVersion;
+    let nextState;
+    if (!state) { coreStateStatus = "loading"; renderHeader(); }
+    try {
+      nextState = await read("/api/state");
+    } catch {
+      nextState = null;
+    }
+    if (!current()) return false;
+    state = nextState;
+    if (typeof automaticToolSync === "function") automaticToolSync();
+    coreStateStatus = state ? "ready" : "error";
+    if (state && !state.providers.length && !presets.length) {
+      const next = await read("/api/presets").catch(() => []);
+      if (!current()) return false;
+      presets = next;
+    }
+    if (typeof firstRunSync === "function" && state) firstRunSync();
+    if (page === "providers") {
+      const nextPlan = await read("/api/plan").catch(() => planInfo);
+      if (!current()) return false;
+      planInfo = nextPlan;
+      const nextOverview = await read("/api/overview").catch(() => null);
+      if (!current()) return false;
+      providerOverview = nextOverview;
+    }
+    if (page === "agents") {
+      const nextChatgpt = await read("/api/chatgpt").catch(() => chatgptInfo);
+      if (!current()) return false;
+      chatgptInfo = nextChatgpt;
+      const nextDesktop = await read("/api/claude-desktop").catch(() => null);
+      if (!current()) return false;
+      claudeDesktopInfo = nextDesktop;
+      if (force || !agentList) {
+        const nextAgents = await loadAgents(current, read);
+        if (!current()) return false;
+        agentList = nextAgents ?? agentList;
+        if (nextAgents) force = true;
+      }
+    }
+    if (!current()) return false;
+    pageTransitionPending = false;
+    // The independent usage request has its own deadline; core reads are done.
+    clearTimeout(timer);
+    if (coreRefreshPending === readVersion) coreRefreshPending = 0;
+    if (page === "usage") {
+      const host = $("#usage-content");
+      if (!host || (!busy() && !host.contains?.(document.activeElement))) render();
+      else { renderHeader(); updateUsageView(); }
+      await usageRefresh;
+      return navigation === pageNavigationVersion && !!usage && !usageError;
+    }
+    if (force || !busy()) render();
+    else renderHeader();
+    return !!nextState;
+  } finally { clearTimeout(timer); if (coreRefreshPending === readVersion) coreRefreshPending = 0; }
 }
 
 // Explicit navigation adds one visit; hashchange handles Back/Forward without adding another.
@@ -1789,7 +1852,7 @@ async function navigatePage(value) {
     writeHistory.call(history, null, "", `#${page}`);
   }
   closePopover();
-  if (page === "usage") render();
+  renderPageTransition();
   await refresh(true);
 }
 
@@ -1820,7 +1883,6 @@ document.addEventListener("click", async e => {
   }
   if (t.closest("#refresh")) {
     const navigation = pageNavigationVersion;
-    if (page === "agents" && !PANEL) agentList = await loadAgents() ?? agentList;
     const refreshed = await refresh(true);
     if (navigation === pageNavigationVersion && page !== "usage") {
       const subject = page === "doctor" ? "自检状态" : "核心状态";
@@ -2428,7 +2490,7 @@ document.addEventListener("submit", async e => {
   } catch (error) { showError(error); }
   await refresh(true);
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") { closePopover(true); if (claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); } } });
+document.addEventListener("keydown", e => { if (e.isComposing || e.keyCode === 229) return; if (e.key === "Escape") { closePopover(true); if (claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); } } });
 // "toggle" does not bubble, so listen in the capture phase.
 document.addEventListener("toggle", e => {
   const id = e.target?.dataset?.keep;
@@ -2436,8 +2498,8 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();if(page==="usage")render();void refresh(true);});
-window.addEventListener("resize", () => { if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
+window.addEventListener("resize", () => { if (popover && pickerReturnFocus?.isConnected) placePopover(popover, pickerReturnFocus); if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");
 if (PANEL) {
@@ -2445,5 +2507,6 @@ if (PANEL) {
   $("#refresh").remove();
 }
 fetch("icons/manifest.json").then(r => r.json()).then(m => { monoIcons = new Set(m.mono); if (state || PANEL) render(); }).catch(() => {});
+renderPageTransition();
 refresh(true);
 setInterval(() => refresh(), 3000);

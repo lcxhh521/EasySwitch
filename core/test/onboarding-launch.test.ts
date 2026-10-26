@@ -29,7 +29,7 @@ function ui() {
       if(path==='/api/providers'){const p={id:'p',name:'Example',models:['m']};state.providers.push(p);return p;}
       if(path.endsWith('/probe'))return {probe:{checks:[{id:'chat',status:'pass'}]}};
       if(path.startsWith('/api/bindings/'))state.bindings[path.split('/').at(-1)]={...body};return {ok:true};};
-    refresh=async()=>{render();return true};loadAgents=async()=>agentList;
+    refresh=async()=>{pageTransitionPending=false;render();return true};loadAgents=async()=>agentList;
     renderDoctor=()=>'<p>Fixture doctor</p>';render();`);
   const button = (action: string) => { const b: any = { disabled: false, dataset: { firstAction: action }, closest: (s: string) => s === "[data-first-action]" ? b : null }; return b; };
   const form = (kind: string, values: Record<string, string>) => ({ values, matches: (s: string) => s === `[data-first-${kind}]`, reset() { values.apiKey = ""; } });

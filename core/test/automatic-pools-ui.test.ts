@@ -142,6 +142,7 @@ test("preview and confirm errors never echo arbitrary upstream prose or hidden s
   assert.equal(f.run("Object.keys(automaticPoolReview.preview.members[0]).sort().join(',')"), "billing,keyLabel,modelId,providerName");
 });
 
+// Navigation semantics are tested below; this fixture intentionally omits page/header DOM.
 function integrated() {
   const handlers: Record<string, any[]> = {};
   const windowHandlers: Record<string, any> = {};
@@ -154,7 +155,7 @@ function integrated() {
   vm.runInContext(readFileSync(new URL("../../web/overview.js", import.meta.url), "utf8"), c);
   const app = web("app.js"); vm.runInContext(app.slice(0, app.lastIndexOf('fetch("icons/manifest.json")')), c);
   const run = (source: string): any => vm.runInContext(source, c);
-  run(`state={providers:[{id:'source',name:'Source',models:['m'],icon:'letter:A'},{id:'backup',name:'Backup',models:['m']}],pools:[],bindings:{claude:{providerId:'source',model:'m'},aider:{providerId:'source',model:'m'}},prefs:{},profiles:[],sessionDetails:[],sessions:[],native:[],log:[],codexPath:'/fixture/codex',claudePath:'/fixture/claude'};agentList=[{id:'claude',name:'Claude Code',installed:true,can:{interactive:true,efforts:[],tiers:[]}},{id:'aider',name:'Aider',installed:true,can:{interactive:true,efforts:[],tiers:[]}}];globalThis.requests=[];globalThis.messages=[];render=()=>{};refresh=async()=>true;toast=m=>messages.push(m);globalThis.reply=${JSON.stringify(preview())};call=async(method,path,body)=>{requests.push({method,path,body});return reply};`);
+  run(`state={providers:[{id:'source',name:'Source',models:['m'],icon:'letter:A'},{id:'backup',name:'Backup',models:['m']}],pools:[],bindings:{claude:{providerId:'source',model:'m'},aider:{providerId:'source',model:'m'}},prefs:{},profiles:[],sessionDetails:[],sessions:[],native:[],log:[],codexPath:'/fixture/codex',claudePath:'/fixture/claude'};agentList=[{id:'claude',name:'Claude Code',installed:true,can:{interactive:true,efforts:[],tiers:[]}},{id:'aider',name:'Aider',installed:true,can:{interactive:true,efforts:[],tiers:[]}}];globalThis.requests=[];globalThis.messages=[];render=()=>{};renderPageTransition=()=>{};refresh=async()=>true;toast=m=>messages.push(m);globalThis.reply=${JSON.stringify(preview())};call=async(method,path,body)=>{requests.push({method,path,body});return reply};`);
   const target = (selector: string, data: any = {}) => { const node: any = { dataset: data, disabled: false, matches: (value: string) => value === selector, hasAttribute: (key: string) => selector === `[${key}]`, closest: (value: string) => value.split(",").map(x => x.trim()).includes(selector) ? node : null }; return node; };
   const dispatch = async (name: string, node: any) => { let stopped = false; const event = { target: node, preventDefault() {}, stopImmediatePropagation() { stopped = true; } }; for (const handler of handlers[name] ?? []) { await handler(event); if (stopped) break; } };
   return { run, target, dispatch, windowHandlers, c };

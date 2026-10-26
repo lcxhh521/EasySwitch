@@ -25,7 +25,7 @@ function ui() {
     agentList=[{id:'aider',name:'Aider',icon:'letter:A',kind:'cli',installed:true,can:{interactive:true}},{id:'uninstalled',name:'Missing',icon:'letter:M',kind:'cli',installed:false,can:{interactive:true}}];
     call=async(method,path,body)=>{requests.push({method,path,body});if(path==='/api/providers'){const p={id:'p',name:'Example',models:['m']};state.providers.push(p);return p;}
     if(path.endsWith('/probe')) return {probe:{checks:[{id:'chat',status:'pass'}]}};return {};};
-    refresh=async()=>render();loadAgents=async()=>agentList;`);
+    refresh=async()=>{pageTransitionPending=false;render()};loadAgents=async()=>agentList;`);
   const dispatch = async (name: string, target: any) => {
     let stop = false;
     for (const f of handlers[name] ?? []) { await f({target,preventDefault(){},stopImmediatePropagation(){stop=true;}}); if(stop) break; }
