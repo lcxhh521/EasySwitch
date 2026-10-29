@@ -79,6 +79,7 @@ import { hasPlanUsage, refreshPlanUsage } from "./plan-usage.ts";
 import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
+import { ProfilePreviewError } from "./profile-preview.ts";
 import { slugify, type Store } from "./store.ts";
 import { expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "./upstream.ts";
 import { officialThinkingProfile, upstreamModelId } from "./quirks.ts";
@@ -800,10 +801,21 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { id: p.id, name: p.name });
       return;
     }
-    const profileMatch = /^\/api\/profiles\/(f-[a-f0-9]+)(?:\/(apply))?$/.exec(path);
+    const profileMatch = /^\/api\/profiles\/(f-[a-f0-9]+)(?:\/(apply|preview))?$/.exec(path);
     if (profileMatch) {
+      if (method === "GET" && profileMatch[2] === "preview") {
+        if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "missing x-easyswitch header" }); return; }
+        const preview = store.previewProfile(profileMatch[1] ?? "");
+        if (!preview) { json(res, 404, { error: "没有这套设置" }); return; }
+        json(res, 200, preview); return;
+      }
       if (method === "POST" && profileMatch[2] === "apply") {
-        const p = store.applyProfile(profileMatch[1] ?? "");
+        if (!body || typeof body !== "object" || Array.isArray(body)) { json(res, 400, { error: "无效的预览确认，请重新预览" }); return; }
+        const guarded = Object.hasOwn(body, "expectedPreview");
+        if (guarded && (typeof body.expectedPreview !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedPreview) || Object.keys(body).some(k => k !== "expectedPreview"))) {
+          json(res, 400, { error: "无效的预览确认，请重新预览" }); return;
+        }
+        const p = store.applyProfile(profileMatch[1] ?? "", guarded ? body.expectedPreview as string : undefined);
         if (!p) { json(res, 404, { error: "没有这套设置" }); return; }
         json(res, 200, { ok: true, name: p.name });
         return;
@@ -1965,7 +1977,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 404, { error: "not found" });
     } catch (error) {
       if (!res.headersSent) {
-        const authError = error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError;
+        const authError = error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError || error instanceof ProfilePreviewError;
         json(res, authError ? error.status : 500, { error: String((error as Error).message ?? error), ...(authError ? { code: error.code } : {}) });
       }
       else res.end();

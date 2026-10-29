@@ -2,6 +2,8 @@
 (function (root) {
   "use strict";
   const rows = [
+    ["profile_preview_conflict", "设置已变化，尚未应用", "当前设置、保存的方案或相关来源已变化；旧预览不能用于覆盖新设置", "重新预览后确认", "current"],
+    ["profile_preview_invalid", "这套设置无法安全预览", "保存的方案或当前设置不完整，或含有不能确认的设置字段", "检查并重新保存方案", "current"],
     ["service_unavailable", "暂时连不上服务", "本地服务或模型来源暂时没有响应，可能是服务未启动或网络连接中断", "检查服务和连接", "doctor"],
     ["request_timeout", "这次请求等得太久了", "连接或处理超过了等待时间，还没有收到完整结果", "检查连接后重试", "doctor"],
     ["invalid_input", "这次操作没有完成", "填写的内容缺少必要信息，或当前功能不支持这些选项", "返回当前表单检查", "current"],
@@ -28,6 +30,7 @@
   const dictionary = new Map(entries.map(entry => [entry.code, entry]));
   const fallback = Object.freeze({ code: "unknown_error", title: "这次操作没有完成", reason: "暂时无法判断具体原因，需要先检查连接和配置", action: Object.freeze({ label: "打开问题检查", target: "doctor" }) });
   const aliases = new Map(Object.entries({
+    PROFILE_PREVIEW_CONFLICT: "profile_preview_conflict", PROFILE_PREVIEW_INVALID: "profile_preview_invalid",
     ECONNREFUSED: "service_unavailable", ECONNRESET: "service_unavailable", ENOTFOUND: "service_unavailable", EAI_AGAIN: "service_unavailable", ERR_NETWORK: "service_unavailable", provider_unavailable: "service_unavailable",
     ETIMEDOUT: "request_timeout", UND_ERR_CONNECT_TIMEOUT: "request_timeout", UND_ERR_HEADERS_TIMEOUT: "request_timeout", UND_ERR_BODY_TIMEOUT: "request_timeout",
     invalid_request_error: "invalid_input", invalid_subscription_source: "invalid_input", bad_request: "invalid_input",

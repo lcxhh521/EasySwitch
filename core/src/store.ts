@@ -7,6 +7,7 @@ import { catalogModels, type CatalogModel } from "./catalog.ts";
 import { poolContext, providerContext } from "./model-context.ts";
 import type { Profile } from "./types.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
+import { buildProfilePreview, profileBindings, ProfilePreviewError } from "./profile-preview.ts";
 import { automaticProviderConfiguration } from "./automatic-approval.ts";
 
 interface StateFile {
@@ -226,14 +227,21 @@ export class Store {
     return structuredClone(profile);
   }
 
-  /** Puts every agent's settings back as they were when the profile was saved. Providers and pools are not touched. */
-  applyProfile(id: string): Profile | undefined {
+  previewProfile(id: string) {
     const profile = (this.state.profiles ?? []).find(p => p.id === id);
     if (!profile) return undefined;
-    // A binding whose provider or pool has since gone is left out, so applying never points an agent at nothing.
-    const exists = (b: HarnessBinding) => b.providerId === "pool" ? (this.state.pools ?? []).some(p => p.id === b.model) : this.state.providers.some(p => p.id === b.providerId);
+    return buildProfilePreview(profile, { bindings: this.state.bindings, prefs: this.state.prefs ?? {}, revision: this.state.bindingProfileRevision, budgetBlocked: this.state.providers.filter(p => this.providerBudgetStopped(p)).map(p => p.id), bindingRevisions: this.state.bindingRevisions, providerRevisions: this.state.providerConfigurationRevisions }, this.state.providers, this.state.pools ?? []);
+  }
+
+  /** Puts every agent's settings back as they were when the profile was saved. Providers and pools are not touched. */
+  applyProfile(id: string, expectedPreview?: string): Profile | undefined {
+    const profile = (this.state.profiles ?? []).find(p => p.id === id);
+    if (!profile) return undefined;
+    if (expectedPreview !== undefined && this.previewProfile(id)?.fingerprint !== expectedPreview) {
+      throw new ProfilePreviewError("设置已变化，请重新预览后确认", 409, "PROFILE_PREVIEW_CONFLICT");
+    }
     const bindings = this.state.bindings, prefs = this.state.prefs, revision = this.state.bindingProfileRevision;
-    this.state.bindings = structuredClone(profile.bindings).filter(exists);
+    this.state.bindings = profileBindings(profile, this.state.providers, this.state.pools ?? []);
     this.state.prefs = structuredClone(profile.prefs);
     this.state.bindingProfileRevision = randomUUID();
     try { this.save(); } catch(error) { this.state.bindings=bindings; this.state.prefs=prefs; this.state.bindingProfileRevision=revision; throw error; }

@@ -547,18 +547,117 @@ function levelLabel(level, levels) {
 const EFFORT_LABEL = { "": "默认", none: "不思考", minimal: "最少", low: "快", medium: "均衡", high: "深", xhigh: "更深", max: "最深", ultra: "极限" };
 let profileNaming = false;
 
+// Profile review is ephemeral. Only the explicit confirm sends a guarded write.
+let profileReview = null;
+let profileReviewFlight = null;
+let profileApplyFlight = null;
+let profileSelectedId = "";
+function cancelProfileReview() {
+  profileReviewFlight?.controller.abort();
+  profileReviewFlight = null;
+  profileReview = null;
+}
+function profileSettingsText(value) {
+  const binding = value?.binding;
+  const prefs = value?.prefs ?? {};
+  const lines = [`主模型：${binding ? binding.providerId + "/" + binding.model : "无外接主模型（原生/默认）"}`,
+    `思考档位：${prefs.effort || "默认"}`, `备用模型：${prefs.fallbackModel || "无"}`];
+  const tiers = Object.entries(prefs.tiers ?? {});
+  lines.push(tiers.length ? "辅助模型：" + tiers.map(([key, model]) => `${key} = ${model || "跟随/默认"}`).join("；") : "辅助模型：无覆盖（跟随/默认）");
+  return lines.map(line => `<div>${esc(line)}</div>`).join("");
+}
+function profileReviewHtml() {
+  if (!profileReview) return "";
+  const review = profileReview;
+  if (review.loading) return '<section class="profile-review" aria-live="polite"><p>正在读取方案的实际影响…</p><button class="btn secondary" data-profile-preview-cancel>取消</button></section>';
+  if (review.error) return `<section class="profile-review" role="status"><p>${esc(review.error)}</p><button class="btn" data-profile-preview-retry>重新预览</button> <button class="btn secondary" data-profile-preview-cancel>取消</button></section>`;
+  const data = review.data;
+  return `<section class="profile-review" aria-label="方案应用预览">
+    <h3 tabindex="-1" data-profile-preview-heading>确认切换到「${esc(data.name)}」？</h3>
+    <p class="hint">将完整替换所有客户端的主模型、思考档位、备用与辅助模型设置；方案未包含的现有设置会清空。只影响后续增强会话，不修改原生配置，不启动客户端，不改来源或模型池。</p>
+    <p>${data.summary.clients} 个客户端 · ${data.summary.changed} 个有变化 · ${data.summary.clearedBindings} 个外接主模型将清空</p>
+    ${(data.warnings ?? []).map(w => `<p class="hint">${esc(w)}</p>`).join("")}
+    <div class="profile-review-changes">${data.changes.map(change => `<article class="profile-review-client"><h4>${esc(change.harness)} · ${change.changed ? "将变更" : "保持不变"}</h4><div class="profile-review-columns"><div><strong>现在</strong>${profileSettingsText(change.before)}</div><div><strong>应用后</strong>${profileSettingsText(change.after)}</div></div>${change.warnings.map(w => `<p class="hint">${esc(w)}</p>`).join("")}</article>`).join("") || '<p>当前与方案均无客户端设置。</p>'}</div>
+    <p class="hint">不可用模型不会自动替换为别的模型；请阅读每项提示。预览后设置若有变化，需要重新核对。</p>
+    <button class="btn" data-profile-preview-confirm ${profileApplyFlight ? "disabled" : ""}>${profileApplyFlight ? "正在应用…" : "确认应用以上全部设置"}</button>
+    <button class="btn secondary" data-profile-preview-cancel ${profileApplyFlight ? "disabled" : ""}>取消</button>
+  </section>`;
+}
+function validProfilePreview(data, id) {
+  const object = value => !!value && typeof value === "object" && !Array.isArray(value);
+  const strings = value => Array.isArray(value) && value.every(item => typeof item === "string");
+  const settings = value => object(value) && (value.binding === null || object(value.binding) && typeof value.binding.providerId === "string" && typeof value.binding.model === "string") &&
+    object(value.prefs) && Object.keys(value.prefs).every(key => ["effort", "fallbackModel", "tiers"].includes(key)) &&
+    [value.prefs.effort, value.prefs.fallbackModel].every(item => item === undefined || typeof item === "string") &&
+    (value.prefs.tiers === undefined || object(value.prefs.tiers) && Object.values(value.prefs.tiers).every(item => typeof item === "string"));
+  return object(data) && data.profileId === id && typeof data.name === "string" && typeof data.fingerprint === "string" && /^[a-f0-9]{64}$/.test(data.fingerprint) &&
+    object(data.summary) && ["clients", "changed", "clearedBindings"].every(key => Number.isSafeInteger(data.summary[key]) && data.summary[key] >= 0) &&
+    strings(data.warnings) && Array.isArray(data.changes) && data.changes.every(change => object(change) && typeof change.harness === "string" && typeof change.changed === "boolean" && settings(change.before) && settings(change.after) && strings(change.warnings)) &&
+    new Set(data.changes.map(change => change.harness)).size === data.changes.length &&
+    data.summary.clients === data.changes.length && data.summary.changed === data.changes.filter(change => change.changed).length &&
+    data.summary.clearedBindings === data.changes.filter(change => change.before.binding && !change.after.binding).length;
+}
+async function loadProfileReview(id) {
+  if (profileApplyFlight || !/^f-[a-f0-9]+$/.test(id ?? "")) return;
+  cancelProfileReview();
+  profileSelectedId = id;
+  const flight = { controller: new AbortController(), navigation: pageNavigationVersion };
+  profileReviewFlight = flight;
+  profileReview = { id, loading: true };
+  render();
+  let timer;
+  const current = () => profileReviewFlight === flight && flight.navigation === pageNavigationVersion && page === "agents";
+  try {
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => { flight.controller.abort(); reject(new Error("timeout")); }, 10000); });
+    const data = await Promise.race([call("GET", `/api/profiles/${id}/preview`, undefined, {signal:flight.controller.signal}), timeout]);
+    if (!current()) return;
+    if (!validProfilePreview(data, id)) throw new Error("invalid preview");
+    profileReview = { id, data };
+  } catch (error) {
+    if (!current()) return;
+    profileReview = { id, error: "无法读取方案预览，尚未应用任何设置。请重新预览。" };
+  } finally {
+    clearTimeout(timer);
+    if (current()) { profileReviewFlight = null; render(); document.querySelector("[data-profile-preview-heading]")?.focus(); }
+  }
+}
+async function confirmProfileReview() {
+  if (profileApplyFlight || !profileReview?.data || profileReview.loading || profileReview.error || page !== "agents") return;
+  if (!validProfilePreview(profileReview.data, profileReview.id)) { profileReview = {id:profileReview.id, error:"预览不完整或已失效，请重新预览。尚未发送应用请求。"}; render(); return; }
+  const review = profileReview, navigation = pageNavigationVersion;
+  const flight = {};
+  profileApplyFlight = flight;
+  render();
+  try {
+    if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
+    const result = await call("POST", `/api/profiles/${review.id}/apply`, {expectedPreview:review.data.fingerprint});
+    if (navigation === pageNavigationVersion && profileReview === review) {
+      profileReview = null;
+      toast(`已切换到「${result.name}」：后续增强会话使用这套设置`);
+    }
+  } catch (error) {
+    if (navigation === pageNavigationVersion && profileReview === review) {
+      profileReview = { id:review.id, error:error.status === 409 ? "设置或方案已变化，尚未应用。请重新预览并确认，不能沿用刚才的结果。" : "应用未获确认。请重新读取当前设置与方案预览后再决定；不会自动重试。" };
+    }
+  } finally {
+    if (profileApplyFlight === flight) profileApplyFlight = null;
+    if (navigation === pageNavigationVersion && page === "agents") { render(); await refresh(true); }
+  }
+}
+
+
 /** Profiles: every agent's settings saved under a name, to come back to in one click. */
 function profileBar() {
   const list = state.profiles ?? [];
   return `
     <div class="card"><div class="row" style="gap:10px;flex-wrap:wrap">
       <div class="grow"><div class="title">方案</div><div class="sub">${list.length ? "把所有 agent 现在的设置存成一个名字，之后一键切回" : "还没有方案：设好各个 agent 的主模型、档位和小模型后，存成一个方案"}</div>${list.length && state.pools?.some(pool => pool.strategy === "automatic") ? `<p class="hint">方案可能恢复纯文字自动模式，工具请求会被拒绝；切换后请核对主模型和小模型。此限制指普通启动；OpenCode 工具试用仍需另行确认新开会话。</p>` : ""}</div>
-      ${list.length ? `<select data-profile-pick>${list.map(p => `<option value="${esc(p.id)}">${esc(p.name)}（${p.agents} 个 agent）</option>`).join("")}</select>
-        <button class="btn" data-profile-apply>切换到它</button><button class="btn secondary" data-profile-del>删除</button>` : ""}
+      ${list.length ? `<select data-profile-pick ${profileApplyFlight ? "disabled" : ""}>${list.map(p => `<option value="${esc(p.id)}" ${p.id === profileSelectedId ? "selected" : ""}>${esc(p.name)}（${p.agents} 个 agent）</option>`).join("")}</select>
+        <button class="btn" data-profile-apply ${profileApplyFlight ? "disabled" : ""}>预览并切换</button><button class="btn secondary" data-profile-del ${profileApplyFlight ? "disabled" : ""}>删除</button>` : ""}
       ${profileNaming
         ? `<form data-profile-form style="display:flex;gap:8px"><input type="text" name="name" placeholder="比如 省钱 / 专注" required autofocus><button class="btn" type="submit">保存</button><button class="btn secondary" type="button" data-profile-cancel>取消</button></form>`
-        : `<button class="btn secondary" data-profile-new>把现在的设置存成方案</button>`}
-    </div></div>`;
+        : `<button class="btn secondary" data-profile-new ${profileApplyFlight ? "disabled" : ""}>把现在的设置存成方案</button>`}
+    </div>${profileReviewHtml()}</div>`;
 }
 
 // The small panel reads recorded metadata only; native actions remain available during an outage.
@@ -780,26 +879,45 @@ function onboarding() {
     </div>`;
 }
 
+function configuredPickerModels(harness) {
+  const configured = new Map();
+  const add = (name, label) => {
+    if (typeof name !== "string" || !name) return;
+    if (!configured.has(name)) configured.set(name, []);
+    if (!configured.get(name).includes(label)) configured.get(name).push(label);
+  };
+  const main = state?.bindings?.[harness], prefs = state?.prefs?.[harness] ?? {};
+  if (main) add(`${main.providerId}/${main.model}`, "主模型");
+  add(prefs.fallbackModel, "备用模型");
+  const tiers = agentList?.find(agent => agent.id === harness)?.can?.tiers ?? [];
+  for (const [id, name] of Object.entries(prefs.tiers ?? {})) add(name, tiers.find(tier => tier.id === id)?.label || `辅助配置 ${id}`);
+  return configured;
+}
+
 function openPicker(anchor, target) {
   if (!state) { toast("核心状态暂时不可用，请刷新后再选择模型；原设置已保留"); return; }
   if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   closePopover();
   const [harness, tier] = target.split("@");
-  const main = state.bindings?.[harness];
-  const tierName = tier ? state.prefs?.[harness]?.tiers?.[tier] : undefined;
-  const binding = tier ? (tierName ? { providerId: tierName.slice(0, tierName.indexOf("/")), model: tierName.slice(tierName.indexOf("/") + 1) } : undefined) : main;
-  const savedName = binding ? `${binding.providerId}/${binding.model}` : "";
+  const readBinding = () => {
+    const tierName = tier ? state?.prefs?.[harness]?.tiers?.[tier] : undefined;
+    return tier ? (tierName ? { providerId: tierName.slice(0, tierName.indexOf("/")), model: tierName.slice(tierName.indexOf("/") + 1) } : undefined) : state?.bindings?.[harness];
+  };
+  let binding = readBinding();
+  let savedName = binding ? `${binding.providerId}/${binding.model}` : "";
   const el = document.createElement("div");
   el.className = "popover";
   el.innerHTML = `
     <div class="search"><span>🔍</span><input placeholder="搜索模型或来源…" autocomplete="off"></div>
-    ${modelSelectionReason(savedName) ? `<div class="hint" role="status">已保留 ${esc(savedName)}：${esc(modelSelectionReason(savedName))}。可重新选择或保留原设置。</div>` : ""}
+    <div class="picker-shortcuts"><button class="btn secondary" data-picker-scope="all" aria-pressed="true">全部模型</button><button class="btn secondary" data-picker-scope="configured" aria-pressed="false">本客户端已配置</button><button class="btn secondary" data-picker-current>定位当前配置</button></div>
+    <div class="hint picker-current" role="status" tabindex="0">${modelSelectionReason(savedName) ? `已保留 ${esc(savedName)}：${esc(modelSelectionReason(savedName))}。可重新选择或保留原设置。` : ""}</div>
     <div class="body"><div class="rail"></div><div class="list"></div></div>`;
   document.body.append(el);
   popover = el;
   pickerReturnFocus = anchor;
   let filter = "";
   let only = null;
+  let configuredOnly = false;
   let kb = 0;
   const rail = el.querySelector(".rail");
   rail.innerHTML = `<button data-only="" class="on" title="全部">▦</button>` +
@@ -811,6 +929,7 @@ function openPicker(anchor, target) {
     if (!state) return [];
     const q = filter.trim().toLowerCase();
     const allowed = new Set(selectableModelNames());
+    const configured = configuredPickerModels(harness);
     const out = [];
     if (!only && (!q || "原生 native".includes(q))) out.push({ native: true });
     for (const p of state.providers) {
@@ -818,6 +937,7 @@ function openPicker(anchor, target) {
       const route = harness === "codex" ? p.route : harness === "claude" ? p.messagesRoute ?? "chat-translate" : "chat-translate";
       for (const m of modelsOf(p)) {
         if (!allowed.has(`${p.id}/${m}`)) continue;
+        if (configuredOnly && !configured.has(`${p.id}/${m}`)) continue;
         if (q && !m.toLowerCase().includes(q) && !p.name.toLowerCase().includes(q)) continue;
         out.push({ provider: p, model: m, route });
       }
@@ -825,6 +945,7 @@ function openPicker(anchor, target) {
     // Pools are models too: they sit at the end of the list.
     if (!only) for (const pool of state.pools ?? []) {
       if (!allowed.has(`pool/${pool.id}`)) continue;
+      if (configuredOnly && !configured.has(`pool/${pool.id}`)) continue;
       if (q && !pool.name.toLowerCase().includes(q) && !"模型池 pool".includes(q)) continue;
       out.push({ provider: POOL_PROVIDER, model: pool.id, route: pool.strategy === "automatic" ? "pool-automatic" : "pool" });
     }
@@ -832,6 +953,8 @@ function openPicker(anchor, target) {
   };
 
   const draw = () => {
+    binding = readBinding(); savedName = binding ? `${binding.providerId}/${binding.model}` : "";
+    const configured = configuredPickerModels(harness);
     const opts = options();
     kb = Math.min(kb, Math.max(0, opts.length - 1));
     let lastGroup = null;
@@ -844,9 +967,18 @@ function openPicker(anchor, target) {
       const head = o.provider.id !== lastGroup ? `<div class="group">${esc(o.provider.name)}</div>` : "";
       lastGroup = o.provider.id;
       const on = binding && binding.providerId === o.provider.id && binding.model === o.model;
+      const roles = configured.get(`${o.provider.id}/${o.model}`) ?? [];
       return `${head}<button class="opt ${i === kb ? "kb" : ""}" data-i="${i}">${icon(o.provider.icon)}
-        <span class="name">${esc(o.model)}</span><span class="meta">${harness === "opencode" && o.route === "pool-automatic" ? "普通启动仅纯文字；可另行确认新开普通函数工具试用" : ROUTE[o.route]}</span><span class="tick">${on ? "✓" : ""}</span></button>`;
+        <span class="name">${esc(o.model)}${roles.length ? `<small class="picker-roles">已配置：${esc(roles.join(" / "))}</small>` : ""}</span><span class="meta">${harness === "opencode" && o.route === "pool-automatic" ? "普通启动仅纯文字；可另行确认新开普通函数工具试用" : ROUTE[o.route]}</span><span class="tick">${on ? "✓" : ""}</span></button>`;
     }).join("") || `<div class="empty" role="status">${state ? "没有匹配的模型" : "核心状态暂时不可用，请刷新后再选择模型；原设置已保留"}</div>`;
+    const current = el.querySelector(".picker-current");
+    const currentText = !state ? "核心状态暂时不可用；原设置已保留" : `当前配置：${savedName || (tier ? "跟随主模型" : "原生")}。${modelSelectionReason(savedName) || "配置不代表正在运行或模型已验证可用"}`;
+    if (current && current.textContent !== currentText) current.textContent = currentText;
+    if (configuredOnly && state) {
+      const q = filter.trim().toLowerCase();
+      const unavailable = [...configured].filter(([name]) => modelSelectionReason(name) && (!only || name.startsWith(`${only}/`)) && (!q || name.toLowerCase().includes(q) || (providerById(name.slice(0, name.indexOf("/")))?.name ?? "").toLowerCase().includes(q))).map(([name, roles]) => `<div class="picker-unavailable"><b>${esc(name)}</b><small>${esc(roles.join(" / "))} · 已保留：${esc(modelSelectionReason(name))}</small></div>`).join("");
+      el.querySelector(".list").innerHTML += `<p class="hint picker-explanation">仅列本客户端主模型、备用与辅助配置，不是收藏或最近使用。清除搜索与来源筛选后可选原生/跟随；全部模型仍可选择。</p>${unavailable}${configured.size ? "" : '<p class="hint picker-explanation">本客户端尚未配置外接模型，可切回全部模型。</p>'}`;
+    }
     el.querySelector(".opt.kb")?.scrollIntoView({ block: "nearest" });
     return opts;
   };
@@ -885,6 +1017,24 @@ function openPicker(anchor, target) {
   let opts = draw();
   placePopover(el, anchor);
   const input = el.querySelector("input");
+  const shortcuts = el.querySelector(".picker-shortcuts");
+  shortcuts?.addEventListener("click", e => {
+    const scope = e.target.closest("[data-picker-scope]");
+    const current = e.target.closest("[data-picker-current]");
+    if (!scope && !current) return;
+    if (popover !== el) return;
+    if (scope) { configuredOnly = scope.dataset.pickerScope === "configured"; kb = 0; }
+    else {
+      configuredOnly = false; only = null; filter = ""; input.value = "";
+      for (const button of rail.children) button.classList.toggle("on", !button.dataset.only);
+      binding = readBinding(); savedName = binding ? `${binding.providerId}/${binding.model}` : "";
+      kb = options().findIndex(option => savedName ? !option.native && `${option.provider.id}/${option.model}` === savedName : option.native);
+    }
+    shortcuts.querySelector?.('[data-picker-scope="all"]')?.setAttribute("aria-pressed", String(!configuredOnly));
+    shortcuts.querySelector?.('[data-picker-scope="configured"]')?.setAttribute("aria-pressed", String(configuredOnly));
+    opts = draw();
+    if (current) { input.focus(); if (kb < 0) el.querySelector(".picker-current")?.scrollIntoView({block:"nearest"}); }
+  });
   input.focus();
   input.addEventListener("input", () => { filter = input.value; kb = 0; opts = draw(); });
   input.addEventListener("keydown", e => {
@@ -1788,9 +1938,10 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return profileReview || profileApplyFlight || sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
+  if (e.target.matches?.("[data-profile-pick]")) { if (profileApplyFlight) return; profileSelectedId = e.target.value; cancelProfileReview(); render(); return; }
   const fallback=e.target.closest?.("[data-fallback-select]");
   if(fallback){fallback.disabled=true;try{await call("PUT",`/api/bindings/${encodeURIComponent(fallback.dataset.fallbackSelect)}/fallback`,{model:fallback.value});toast(fallback.value?"已保存备用模型":"已取消备用模型");}catch(error){showError(error);}finally{fallback.disabled=false;await refresh(true);}return;}
   const health=e.target.closest?.("[data-source-health]");
@@ -1903,6 +2054,7 @@ async function navigatePage(value) {
   claudeDesktopConfirm = false;
   if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
+  cancelProfileReview();
   pageNavigationVersion++;
   cancelOverviewLoad();
   cancelUsageLoad();
@@ -1972,7 +2124,7 @@ document.addEventListener("click", async e => {
   if (client) { selectClient(client.dataset.agentSelect); return; }
   const segment = t.closest("[data-agent-segment]");
   if (segment) { selectClient(null, segment.dataset.agentSegment); return; }
-  if (t.closest("[data-profiles-toggle]")) { profilesOpen = !profilesOpen; profileNaming = false; render(); return; }
+  if (t.closest("[data-profiles-toggle]")) { if (profileApplyFlight) return; cancelProfileReview(); profilesOpen = !profilesOpen; profileNaming = false; render(); return; }
   const effort = t.closest("[data-effort-choice]");
   if (effort) {
     if (effortSaving) return;
@@ -2218,16 +2370,15 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
-  if (t.closest("[data-profile-new]")) { profileNaming = true; render(); return; }
+  if (t.closest("[data-profile-new]")) { if(profileApplyFlight)return; cancelProfileReview(); profileNaming = true; render(); return; }
   if (t.closest("[data-profile-cancel]")) { profileNaming = false; render(); return; }
-  if (t.closest("[data-profile-apply]")) {
-    if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
-    const id = document.querySelector("[data-profile-pick]")?.value;
-    try { const r = await call("POST", `/api/profiles/${id}/apply`); toast(`已切换到「${r.name}」：下次启动的会话就用这套设置`); } catch (error) { showError(error); }
-    await refresh(true);
-    return;
-  }
+  if (t.closest("[data-profile-preview-cancel]")) { if (!profileApplyFlight) { cancelProfileReview(); render(); document.querySelector("[data-profile-apply]")?.focus(); } return; }
+  if (t.closest("[data-profile-preview-retry]")) { await loadProfileReview(profileReview?.id); return; }
+  if (t.closest("[data-profile-preview-confirm]")) { await confirmProfileReview(); return; }
+  if (t.closest("[data-profile-apply]")) { await loadProfileReview(document.querySelector("[data-profile-pick]")?.value); return; }
   if (t.closest("[data-profile-del]")) {
+    if (profileApplyFlight) return;
+    cancelProfileReview();
     const id = document.querySelector("[data-profile-pick]")?.value;
     try { await call("DELETE", `/api/profiles/${id}`); toast("已删除这个方案"); } catch (error) { showError(error); }
     await refresh(true);
@@ -2366,6 +2517,7 @@ document.addEventListener("click", async e => {
 });
 
 document.addEventListener("change", async e => {
+
   if (e.target.matches("[data-context-model]")) {
     const form = e.target.closest("[data-context-form]");
     const id = form?.closest(".detail")?.dataset.provider;
@@ -2558,7 +2710,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
 window.addEventListener("resize", () => { if (popover && pickerReturnFocus?.isConnected) placePopover(popover, pickerReturnFocus); if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

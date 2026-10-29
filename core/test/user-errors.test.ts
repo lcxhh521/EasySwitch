@@ -32,6 +32,8 @@ test("every dictionary entry contains plain-language explanation and a fixed cor
 
 test("existing error paths map to useful fixed categories", () => {
   const cases: Array<[unknown, string]> = [
+    [{ status: 409, code: "PROFILE_PREVIEW_CONFLICT", message: "private snapshot" }, "profile_preview_conflict"],
+    [{ status: 422, code: "PROFILE_PREVIEW_INVALID", message: "private profile" }, "profile_preview_invalid"],
     [new TypeError("Failed to fetch"), "service_unavailable"],
     [{ status: 504, message: "Qoder 请求超时。" }, "request_timeout"],
     [{ status: 400, error: "请填写至少一个有效的 Vertex 模型 ID。" }, "invalid_input"],

@@ -10,6 +10,8 @@
 
 | 规范代码 | 发生了什么 | 原因 | 操作按钮 | 导航目标 | 已有路径依据 |
 |---|---|---|---|---|---|
+| profile_preview_conflict | 设置已变化，尚未应用 | 当前设置、保存的方案或相关来源已变化；旧预览不能用于覆盖新设置 | 重新预览后确认 | current | store.ts 方案预览指纹冲突，尚未应用 |
+| profile_preview_invalid | 这套设置无法安全预览 | 保存的方案或当前设置不完整，或含有不能确认的设置字段 | 检查并重新保存方案 | current | profile-preview.ts 结构检查，拒绝不完整的恢复预览 |
 | service_unavailable | 暂时连不上服务 | 本地服务或模型来源暂时没有响应，可能是服务未启动或网络连接中断 | 检查服务和连接 | doctor | 网页连接请求；gateway-route.ts 上游连接失败 |
 | request_timeout | 这次请求等得太久了 | 连接或处理超过了等待时间，还没有收到完整结果 | 检查连接后重试 | doctor | cli-text-process.ts 请求超时；上游等待超时 |
 | invalid_input | 这次操作没有完成 | 填写的内容缺少必要信息，或当前功能不支持这些选项 | 返回当前表单检查 | current | server.ts 表单验证与协议字段拒绝 |

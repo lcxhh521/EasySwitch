@@ -20,7 +20,7 @@ function ui() {
   const context = vm.createContext({ URLSearchParams, location: { search: "", hash: "#agents" }, history: { replaceState() {} }, console,
     window: { innerWidth: 1200, innerHeight: 800, addEventListener(name: string, handler: Handler) { (windowHandlers[name] ??= []).push(handler); } },
     document: { activeElement: null, querySelector: () => null, querySelectorAll: () => [], addEventListener(name: string, h: Handler) { (handlers[name] ??= []).push(h); },
-      body: { append(node: Node) { current = node; } }, createElement() { const node = new Node(); node.parts = { input: new Node(), ".rail": new Node(), ".list": new Node() }; return node; } },
+      body: { append(node: Node) { current = node; } }, createElement() { const node = new Node(); node.parts = { input: new Node(), ".rail": new Node(), ".list": new Node(), ".picker-shortcuts": new Node(), ".picker-current": new Node() }; return node; } },
     localStorage: { getItem: () => null, setItem() { assert.fail("Rendering selections must not write storage"); } },
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: () => 0, fetch() { assert.fail("Synthetic UI must not fetch"); },
     FormData: class { form: any; constructor(form: any) { this.form = form; } get(name: string) { return this.form.values[name] ?? null; } },
@@ -46,8 +46,9 @@ function ui() {
   const click = async (picker: Node, index: number) => { await picker.parts[".list"]!.emit("click", { target: target(".opt", { dataset: { i: String(index) } }) }); };
   const search = async (picker: Node, text: string) => { picker.parts.input!.value = text; await picker.parts.input!.emit("input"); };
   const key = (picker: Node, key: string, extra: Record<string, unknown> = {}) => picker.parts.input!.emit("keydown", { key, ...extra });
+  const shortcut = async (picker: Node, scope: string) => picker.parts[".picker-shortcuts"]!.emit("click", {target:target(scope === "current" ? "[data-picker-current]" : "[data-picker-scope]", {dataset:{pickerScope:scope}})});
   const windowEvent = async (name: string) => { for (const handler of windowHandlers[name] ?? []) await handler({}); };
-  return { run, open, click, search, key, dispatch, target, windowEvent };
+  return { run, open, click, search, key, dispatch, target, windowEvent, shortcut };
 }
 
 test("all existing model selectors use catalog eligibility, including unknown health and usable pools", () => {
@@ -89,7 +90,7 @@ test("saved main, tier and fallback values remain visible with reasons and are n
 test("independent tiers read prefs with native main and retain the correct checkmark", () => {
   const app = ui(); app.run("state.prefs.claude={tiers:{small:'on/vendor/model'}}");
   const list = app.open("claude@small").parts[".list"]!.innerHTML;
-  assert.match(list, /vendor\/model<\/span><span class="meta">[^<]*<\/span><span class="tick">✓/);
+  assert.match(list, /vendor\/model<small class="picker-roles">已配置：后台小任务<\/small><\/span><span class="meta">[^<]*<\/span><span class="tick">✓/);
   assert.match(list, /跟随主模型/); assert.doesNotMatch(list.slice(0, list.indexOf("</button>")), /class="tick">✓/);
 });
 
@@ -286,4 +287,55 @@ test("live picker follows viewport resize while detached or dismissed anchors ar
   app.run("anchor.isConnected=true");
   await assert.doesNotReject(() => app.windowEvent("resize"));
   assert.equal(app.run("requests.length"), 0);
+});
+
+test('configured shortcut derives only this client main, fallback and tiers and deduplicates full model identities', async () => {
+ const app=ui();app.run("state.bindings.claude={providerId:'on',model:'m'};state.bindings.aider={providerId:'qoder',model:'text'};state.prefs.claude={fallbackModel:'on/m',tiers:{small:'on/vendor/model',other:'pool/mixed'}};globalThis.before=JSON.stringify(state)");
+ const picker=app.open();await app.shortcut(picker,'configured');const html=picker.parts['.list']!.innerHTML;
+ assert.equal((html.match(/class="name">m</g)??[]).length,1);assert.match(html,/主模型 \/ 备用模型/);assert.match(html,/后台小任务/);assert.match(html,/辅助配置 other/);assert.match(html,/>mixed</);assert.doesNotMatch(html,/>text<|default-only/);
+ assert.equal(app.run('requests.length'),0);assert.equal(app.run('JSON.stringify(state)===before'),true);
+ await app.shortcut(picker,'all');assert.match(picker.parts['.list']!.innerHTML,/>text<|default-only/);
+});
+test('configured shortcut preserves search and source restrictions and escapes roles', async () => {
+ const app=ui();app.run("state.bindings.claude={providerId:'on',model:'m'};state.prefs.claude={tiers:{'<img>':'qoder/text'}}");
+ const picker=app.open();await app.search(picker,'text');await app.shortcut(picker,'configured');assert.match(picker.parts['.list']!.innerHTML,/>text</);assert.match(picker.parts['.list']!.innerHTML,/&lt;img&gt;/);assert.doesNotMatch(picker.parts['.list']!.innerHTML,/<img>/);
+ await picker.parts['.rail']!.emit('click',{target:app.target('button',{dataset:{only:'on'}})});assert.doesNotMatch(picker.parts['.list']!.innerHTML,/class="name">text/);assert.match(picker.parts['.list']!.innerHTML,/没有匹配的模型/);assert.equal(app.run('requests.length'),0);
+});
+test('unavailable configured models remain read-only with reasons and cannot be selected by stale indices', async () => {
+ const app=ui();app.run("state.bindings.claude={providerId:'off',model:'closed'};state.prefs.claude={fallbackModel:'removed/m',tiers:{small:'budget/blocked'}}");
+ const picker=app.open();await app.shortcut(picker,'configured');const html=picker.parts['.list']!.innerHTML;
+ assert.match(html,/off\/closed/);assert.match(html,/来源已关闭/);assert.match(html,/模型来源已不存在/);assert.match(html,/来源预算阻断/);
+ assert.doesNotMatch(html,/class="name">closed|class="name">blocked/);
+ await app.click(picker,2);assert.equal(app.run('requests.length'),0);
+ await app.shortcut(picker,'current');await app.key(picker,'Enter');assert.equal(app.run('requests.length'),0);assert.equal(picker.removed,false);
+});
+test('locate current clears view filters and targets exact selected main or tier without writing', async () => {
+ for(const target of ['claude','claude@small']){
+  const app=ui();app.run("state.bindings.claude={providerId:'on',model:'vendor/model'};state.prefs.claude={tiers:{small:'pool/mixed'}}");
+  const picker=app.open(target);await app.search(picker,'no-match');await app.shortcut(picker,'configured');await app.shortcut(picker,'current');
+  assert.equal(picker.parts.input!.value,'');assert.equal(app.run('requests.length'),0);
+  const html=picker.parts['.list']!.innerHTML;const highlighted=/<button class="opt kb"[^>]*>([\s\S]*?)<\/button>/.exec(html)?.[1];assert.match(highlighted??'',target==='claude'?/vendor\/model/:/>mixed</);
+  await app.key(picker,'Enter');assert.equal(app.run('requests.length'),1);assert.equal(app.run('requests[0].method'),'PUT');
+  assert.equal(app.run('requests[0].body.model'),target==='claude'?'vendor/model':'mixed');
+ }
+});
+test('empty configured shortcut retains explicit native action and all models remain accessible on reopen', async () => {
+ const app=ui();const picker=app.open();await app.shortcut(picker,'configured');assert.match(picker.parts['.list']!.innerHTML,/尚未配置外接模型/);assert.match(picker.parts['.list']!.innerHTML,/class="opt native/);assert.doesNotMatch(picker.parts['.list']!.innerHTML,/class="name">m/);
+ await app.key(picker,'Escape');const reopened=app.open();assert.match(reopened.parts['.list']!.innerHTML,/>default-only</);assert.equal(app.run('requests.length'),0);
+});
+test('configured choices recheck eligibility and newer binding snapshots update the current marker', async () => {
+ const app=ui();app.run("state.bindings.claude={providerId:'on',model:'m'}");const picker=app.open();await app.shortcut(picker,'configured');app.run("state.selectableModels=[]");await app.click(picker,1);assert.equal(app.run('requests.length'),0);
+ app.run("delete state.selectableModels");const next=app.open();app.run("state.bindings.claude={providerId:'on',model:'vendor/model'}");await app.shortcut(next,'current');assert.match((next.parts['.picker-current'] as any).textContent,/on\/vendor\/model/);assert.equal(app.run('requests.length'),0);
+});
+test('current configuration status is keyboard reachable and only announces changed content', async () => {
+ const app=ui();app.run("state.bindings.claude={providerId:'on',model:'m'}");const picker=app.open();assert.match(picker.innerHTML,/picker-current" role="status" tabindex="0"/);
+ const status=picker.parts['.picker-current'] as any;let value=status.textContent,writes=0;Object.defineProperty(status,'textContent',{get:()=>value,set:next=>{value=next;writes++}});
+ await app.search(picker,'m');await app.key(picker,'ArrowDown');assert.equal(writes,0);
+ app.run("state.bindings.claude={providerId:'on',model:'vendor/model'}");await app.shortcut(picker,'current');assert.equal(writes,1);assert.match(value,/on\/vendor\/model/);assert.equal(app.run('requests.length'),0);
+});
+test('native or follow-main location is read-only and core loss never offers a writable configured fallback', async () => {
+ for(const name of ['claude','claude@small']){
+  const app=ui();const picker=app.open(name);await app.shortcut(picker,'configured');await app.shortcut(picker,'current');assert.match(picker.parts['.list']!.innerHTML,/class="opt native kb"/);assert.equal(app.run('requests.length'),0);
+  app.run('state=null');await app.shortcut(picker,'configured');assert.match(picker.parts['.list']!.innerHTML,/核心状态暂时不可用/);await app.key(picker,'Enter');assert.equal(app.run('requests.length'),0);
+ }
 });
