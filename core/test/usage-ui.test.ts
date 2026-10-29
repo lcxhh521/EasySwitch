@@ -15,10 +15,12 @@ function ui(rows: GatewayLogEntry[]) {
   const handlers: Record<string, Array<(event: any) => unknown>> = {}, windowHandlers: Record<string, Array<() => unknown>> = {}, chartHandlers: Record<string, (event: any) => unknown> = {};
   const timers = new Map<number, { callback: () => void; delay: number }>(); let timerId = 0;
   let tip: any, usageMounted = false, pageWrites = 0, usageWrites = 0, html = "", usageHtml = "";
-  let usageButtons: any[] = [], usageSummary: any = null;
+  let usageButtons: any[] = [], usageSummaries: any[] = [];
+  let usageKeyRegion: any = null;
   const replaceUsage = (value: string) => {
-    if (usageButtons.includes(document.activeElement) || document.activeElement === usageSummary) document.activeElement = null;
+    if (document.activeElement === usageKeyRegion || usageButtons.includes(document.activeElement) || usageSummaries.includes(document.activeElement)) document.activeElement = null;
     usageHtml = value;
+    usageKeyRegion = value.includes('data-usage-key-scroll') ? {dataset:{usageKeyScroll:''},scrollLeft:0,matches:()=>false,focus(){document.activeElement=usageKeyRegion}} : null;
     usageButtons = [...value.matchAll(/<button([^>]*)>/g)].map(match => {
       const attr = /data-([a-z-]+)(?:="([^"]*)")?/.exec(match[1]!);
       const key = attr?.[1]?.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
@@ -26,13 +28,16 @@ function ui(rows: GatewayLogEntry[]) {
         matches: () => false, focus() { if (!node.disabled) document.activeElement = node; } };
       return node;
     });
-    usageSummary = value.includes('data-keep="usage-days"') ? { tagName: "SUMMARY", matches: () => false,
-      parentElement: { dataset: { keep: "usage-days" }, querySelector: () => usageSummary }, focus() { document.activeElement = usageSummary; } } : null;
+    usageSummaries = [...value.matchAll(/<details[^>]*data-keep="([^"]+)"/g)].map(match => {
+      const summary: any = { tagName: 'SUMMARY', matches: () => false, parentElement: { dataset: { keep: match[1] }, querySelector: () => summary }, focus() { document.activeElement = summary; } };
+      return summary;
+    });
   };
   const usageNode = { get innerHTML() { return usageHtml; }, set innerHTML(value: string) { replaceUsage(value); usageWrites++; },
-    contains: (node: unknown) => usageButtons.includes(node) || !!usageSummary && node === usageSummary,
-    querySelectorAll: (selector: string) => selector.startsWith("details") ? usageSummary ? [usageSummary.parentElement] : [] : usageButtons };
-  const main = { get innerHTML() { return html; }, set innerHTML(value: string) {
+    contains: (node: unknown) => usageButtons.includes(node) || usageSummaries.includes(node) || !!usageKeyRegion && node === usageKeyRegion,
+    querySelector: (selector: string) => selector === "[data-usage-key-scroll]" ? usageKeyRegion : null,
+    querySelectorAll: (selector: string) => selector.startsWith("details") ? usageSummaries.map(summary => summary.parentElement) : usageButtons };
+  const main = { querySelector: (selector: string) => usageMounted && selector === "[data-usage-key-scroll]" ? usageKeyRegion : null, get innerHTML() { return html; }, set innerHTML(value: string) {
     html = value; pageWrites++; usageMounted = value.includes('id="usage-content"');
     if (usageMounted) replaceUsage(value.split('<section id="usage-content">')[1]!.split('</section>')[0]!);
   } };
@@ -79,7 +84,8 @@ function ui(rows: GatewayLogEntry[]) {
     writes: () => ({ page: pageWrites, usage: usageWrites }),
     expire: async () => { const entry = [...timers.entries()].find(([, timer]) => timer.delay === 10_000); assert.ok(entry); timers.delete(entry[0]); entry[1].callback(); await turn(); },
     timerCount: () => timers.size,
-    focusSummary: () => { assert.ok(usageSummary); usageSummary.focus(); },
+    keyRegion: () => usageKeyRegion,
+    focusSummary: (key = "usage-days") => { const summary = usageSummaries.find(summary => summary.parentElement.dataset.keep === key); assert.ok(summary); summary.focus(); },
     focusUsage: (key: string, value: string) => { const button = usageButtons.find(button => Object.hasOwn(button.dataset, key) && button.dataset[key] === value); assert.ok(button); button.focus(); },
     hover: (index = 0) => { chartHandlers.mousemove?.({ target: { closest: () => ({ dataset: { i: String(index) } }) }, clientX: 50, clientY: 60 }); return tip?.innerHTML as string; },
   };
@@ -372,4 +378,69 @@ test("no calls do not claim a zero bill or a complete history", () => {
   assert.match(app.html(), /50,000 行；无法解析的行会跳过，不代表完整历史/);
   assert.doesNotMatch(app.html(), /\$0\.00|全部已计量/);
   app.run("chartMetric='cost';drawChart()"); assert.match(app.chart.innerHTML, /无调用/);
+});
+
+test('per-key usage is collapsed by default, read-only and distinguishes duplicate names using complete identities', () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:1}),row({providerId:'second',keyId:'k-1234abcd',costUsd:2})]);
+ app.run("state.providers=[{id:'fixture',name:'Same',keys:[{id:'k-1234abcd',label:'Main',apiKey:'sk-do-not-render'}]},{id:'second',name:'Same',keys:[{id:'k-1234abcd',label:'Main'}]}];render()");
+ const html=app.run('usageKeyDetails()');assert.match(html,/data-keep="usage-keys" >/);assert.match(html,/Main/);assert.match(html,/Same · fixture/);assert.match(html,/Same · second/);
+ assert.match(html,/\$1\.00/);assert.match(html,/\$2\.00/);assert.match(html,/其中 2 次有 Key 归属，0 次未记录/);assert.doesNotMatch(html,/sk-do-not-render/);
+ assert.equal(app.run('otherRequests.length+requests.length'),0);
+});
+test('per-key history preserves unknown, partial, subscription and recorded zero semantics without allocating unkeyed calls', () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:0}),row({keyId:'k-1234abcd'}),row({keyId:'k-1234abcd',costUsd:2,usageComplete:false}),row({keyId:'k-abcdef12',costNote:'subscription'}),row({costUsd:5})]);
+ const html=app.run('usageKeyDetails()');assert.match(html,/本范围共 5 次调用，其中 4 次有 Key 归属，1 次未记录/);assert.match(html,/另有 1 次费用缺失/);assert.match(html,/不完整/);assert.match(html,/1 次订阅调用/);assert.doesNotMatch(html,/\$5\.00/);
+ const zero=ui([row({keyId:'k-1234abcd',costUsd:0})]);assert.match(zero.run('usageKeyDetails()'),/已记录估算 \$0\.00/);
+ const unknown=ui([row({keyId:'k-1234abcd'})]);assert.match(unknown.run('usageKeyDetails()'),/费用未知/);assert.doesNotMatch(unknown.run('usageKeyDetails()'),/\$0\.00/);
+});
+test('per-key rendering never reveals unknown raw group strings or unrelated metadata, and survives deleted or ambiguous identities', () => {
+ const app=ui([row({keyId:'sk-hidden-secret',costUsd:1})]);
+ app.run("state.providers[0].keys=[{id:'k-unused',label:'Unrelated',apiKey:'private-value'}]");
+ let html=app.run('usageKeyDetails()');assert.match(html,/历史 Key（名称不可用）/);assert.doesNotMatch(html,/sk-hidden-secret|private-value|Unrelated/);
+ app.run("state.providers=[]");html=app.run('usageKeyDetails()');assert.match(html,/历史来源（名称不可用）/);assert.match(html,/\$1\.00/);assert.doesNotMatch(html,/sk-hidden-secret/);
+ app.run("state.providers=[{id:'fixture',name:'Same',keys:[{id:'sk-hidden-secret',label:'Wrong 1'},{id:'sk-hidden-secret',label:'Wrong 2'}]}]");
+ assert.doesNotMatch(app.run('usageKeyDetails()'),/Wrong 1|Wrong 2|sk-hidden-secret/);
+});
+test('per-key display escapes names, keeps CNY conversion historical, and never exposes unrecognized payload fields', () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:1.25})]);
+ app.run("state.providers[0].keys=[{id:'k-1234abcd',label:'<img src=x>',secret:'secret-metadata'}];usage.byKey['fixture#k-1234abcd'].errors='sk-private-error';usage.byKey['fixture#k-1234abcd'].apiKey='private-api-key';state.display.currency='CNY'");
+ const before=app.run('JSON.stringify(usage)');const html=app.run('usageKeyDetails()');assert.match(html,/&lt;img src=x&gt;/);assert.match(html,/¥10\.00/);assert.doesNotMatch(html,/<img|sk-private|secret-metadata|private-api-key/);assert.equal(app.run('JSON.stringify(usage)'),before);
+});
+test('per-key absent, empty and malformed data remain distinct from zero usage', () => {
+ const app=ui([row({costUsd:1})]);assert.match(app.run('usageKeyDetails()'),/1 次未记录 Key 归属/);
+ app.run('delete usage.byKey');assert.match(app.run('usageKeyDetails()'),/没有 Key 明细，不能据此判断各 Key 用量为零/);
+ app.run("usage.byKey={broken:null}");assert.match(app.run('usageKeyDetails()'),/部分 Key 明细格式不可用/);assert.match(app.run('usageKeyDetails()'),/无法核对覆盖次数/);
+ const empty=ui([]);assert.match(empty.run('usageKeyDetails()'),/本范围共 0 次调用/);assert.match(empty.run('usageKeyDetails()'),/尚无可按 Key 归属的调用记录/);assert.doesNotMatch(empty.run('usageKeyDetails()'),/\$0\.00/);
+});
+test('per-key expanded state and keyboard summary focus survive same-range refresh without configuration writes', async () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:1})]);app.run("openDetails.add('usage-keys');render()");app.focusSummary('usage-keys');
+ const pending=app.retry();app.run("requests[0].resolve({...fixtureUsage})");await pending;
+ assert.match(app.html(),/data-keep="usage-keys" open/);assert.equal(app.document.activeElement?.parentElement.dataset.keep,'usage-keys');assert.equal(app.run("requests.every(r=>r.method==='GET') && otherRequests.length===0"),true);
+});
+test('latest date range owns per-key detail; stale successful or failed response cannot replace it', async () => {
+ for(const fail of [false,true]){
+  const app=ui([row({keyId:'k-1234abcd',costUsd:1})]);const first=app.clickRange('7d'),second=app.clickRange('30d');
+  app.run("requests[1].resolve({...fixtureUsage,range:'30d',byKey:{'fixture#k-1234abcd':{...fixtureUsage.totals,costUsd:9}}})");await second;
+  app.run(fail?"requests[0].reject(new Error('private stale failure'))":"requests[0].resolve({...fixtureUsage,range:'7d'})");await first;
+  assert.match(app.run('usageKeyDetails()'),/\$9\.00/);assert.doesNotMatch(app.run('usageKeyDetails()'),/\$1\.00|private stale/);assert.equal(app.run('usage.range'),'30d');
+ }
+});
+test('deleted key and provider retain validated historical IDs and estimates, not borrowed labels', () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:1,pricingProvenance:{source:'user',schemaVersion:1,basis:'log-time-config',tariffVerification:'not-established',wholeBillCoverage:'not-established',estimator:'ratesFor-costOf-v1',currency:'USD',cacheCounterAtEstimator:'present',selectedRatesSha256:null}})]);app.run('state.providers=[]');
+ const html=app.run('usageKeyDetails()');assert.match(html,/历史来源（名称不可用） · fixture/);assert.match(html,/k-1234abcd/);assert.match(html,/\$1\.00/);assert.match(html,/用户自填价 1 次/);
+});
+test('per-key horizontal region retains keyboard focus and scroll during loading, response and full redraw', async () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:1})]);app.run("openDetails.add('usage-keys');render()");
+ app.keyRegion().scrollLeft=120;app.keyRegion().focus();
+ const pending=app.retry();assert.equal(app.document.activeElement,app.keyRegion());assert.equal(app.keyRegion().scrollLeft,120);
+ app.run('requests[0].resolve({...fixtureUsage})');await pending;assert.equal(app.document.activeElement,app.keyRegion());assert.equal(app.keyRegion().scrollLeft,120);
+ app.run('render()');assert.equal(app.document.activeElement,app.keyRegion());assert.equal(app.keyRegion().scrollLeft,120);
+});
+test('per-key scroll restoration never takes focus back after navigation or a new date range', async () => {
+ const app=ui([row({keyId:'k-1234abcd',costUsd:1})]);app.keyRegion().scrollLeft=120;app.keyRegion().focus();
+ const pending=app.retry();await app.nav('settings');const settingsFocus={matches:()=>false};app.document.activeElement=settingsFocus;
+ app.run('requests[0].resolve({...fixtureUsage})');await pending;assert.equal(app.document.activeElement,settingsFocus);assert.match(app.html(),/Settings draft/);
+ const rangeApp=ui([row({keyId:'k-1234abcd',costUsd:1})]);rangeApp.keyRegion().scrollLeft=120;rangeApp.keyRegion().focus();
+ const change=rangeApp.clickRange('30d');rangeApp.run("requests[0].resolve({...fixtureUsage,range:'30d'})");await change;
+ assert.equal(rangeApp.keyRegion().scrollLeft,0);assert.notEqual(rangeApp.document.activeElement,rangeApp.keyRegion());
 });

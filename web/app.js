@@ -56,6 +56,7 @@ const keepOpen = id => (openDetails.has(id) ? "open" : "");
 
 let pageNavigationVersion = 0; // A response must not override newer user navigation.
 let agentList = null; // every agent we know of, from /api/agents
+let agentListNavigationVersion = -1; // Diagnostic targeting must not use an older cached list.
 let agentCoverage = null; // { coverage, features } from the same call: what is done for which agent
 async function loadAgents(current = () => true, read = path => call("GET", path)) {
   const r = await read("/api/agents").catch(() => null);
@@ -667,6 +668,7 @@ function clientDetail(a) {
 
 function selectClient(id, segment = agentSegment) {
   closePopover();
+  if (typeof doctorDestination !== "undefined") doctorDestination = null;
   selectedAgent = id; agentSegment = segment;
   chatgptConfirm = null; claudeDesktopConfirm = false;
   levelsEditor = null; guideOpen = null; guideData = null; guideReveal = false;
@@ -674,13 +676,14 @@ function selectClient(id, segment = agentSegment) {
 }
 
 function renderAgents() {
-  if (typeof firstRunVisible === "function" && firstRunVisible()) return firstRunCard();
+  const diagnosticTarget = typeof currentDoctorDestination === "function" && currentDoctorDestination();
+  if (!diagnosticTarget && typeof firstRunVisible === "function" && firstRunVisible()) return firstRunCard();
   const all = agentList ?? [];
   const installed = all.filter(a => a.installed && a.id !== "claude-desktop");
   const available = all.filter(a => !a.installed && a.id !== "claude-desktop");
   if (!agentSegment) agentSegment = installed.length ? "installed" : "available";
   const list = agentSegment === "installed" ? installed : available;
-  if (!list.some(a => a.id === selectedAgent)) selectedAgent = list[0]?.id ?? null;
+  if (!list.some(a => a.id === selectedAgent)) selectedAgent = diagnosticTarget?.message || diagnosticTarget?.experimental ? null : list[0]?.id ?? null;
   const chosen = list.find(a => a.id === selectedAgent);
   return `<div class="client-toolbar">
       <div class="seg" role="group" aria-label="客户端范围"><button data-agent-segment="installed" aria-pressed="${agentSegment === "installed"}">已安装 ${installed.length}</button><button data-agent-segment="available" aria-pressed="${agentSegment === "available"}">可以接入 ${available.length}</button></div>
@@ -1534,6 +1537,40 @@ function costCell(v) {
   return `<span title="${esc(evidence)}">${esc(price.headline)}${price.details.map(detail => `<br><span class="hint">${esc(detail)}</span>`).join("")}</span>`;
 }
 
+function usageKeyDetails() {
+  const groups = usage?.byKey;
+  const available = groups && typeof groups === "object" && !Array.isArray(groups);
+  let invalid = false;
+  const entries = available ? Object.entries(groups).filter(([, value]) => {
+    const valid = value && typeof value === "object" && Number.isSafeInteger(value.calls) && value.calls >= 0;
+    if (!valid) invalid = true;
+    return valid;
+  }).sort((a,b) => b[1].calls - a[1].calls || a[0].localeCompare(b[0])) : [];
+  // Match whole metadata identities, not labels or split positions. Never
+  // expose an unknown raw grouping string: historical rows can be untrusted.
+  const providers = state?.providers ?? [];
+  const metric = value => Number.isFinite(value) && value >= 0 ? compact(value) : "—";
+  const rows = entries.map(([group, value], index) => {
+    const matches = providers.flatMap(provider => (provider.keys ?? []).filter(key => `${provider.id}#${key.id}` === group).map(key => ({provider,key})));
+    const match = matches.length === 1 ? matches[0] : null;
+    const prefixes = providers.filter(provider => group.startsWith(`${provider.id}#`));
+    const provider = match?.provider ?? (prefixes.length === 1 ? prefixes[0] : null);
+    const safeId = id => typeof id === "string" && /^(?!sk-|es-session-)[a-z][a-z0-9-]{0,79}$/.test(id) ? id : "";
+    const historical = /^(?!sk-|es-session-)([a-z][a-z0-9-]{0,79})#(k-[a-f0-9]{8})$/.exec(group);
+    const providerId = safeId(provider?.id) || historical?.[1] || "";
+    const keyId = typeof match?.key.id === "string" && /^k-[a-f0-9]{8}$/.test(match.key.id) ? match.key.id : historical?.[2] || "";
+    const name = match?.key.label || (match ? "未命名 Key" : "历史 Key（名称不可用）");
+    return `<tr><td><strong>${esc(name)}</strong><div class="hint">${esc(provider?.name || "历史来源（名称不可用）")}${providerId ? ` · ${esc(providerId)}` : ""}</div><div class="hint">${esc(keyId || `记录 ${index + 1}`)}${!match ? " · 当前元数据无法匹配，记录仍保留" : ""}</div></td><td class="num">${thousands(value.calls)}</td><td class="num">${metric(value.inputTokens)}</td><td class="num">${metric(value.outputTokens)}</td><td class="num">${metric(value.errors)}</td><td class="num">${costCell(value)}</td></tr>`;
+  }).join("");
+  const attributed = entries.reduce((total, [, value]) => total + value.calls, 0);
+  const total = usage?.totals?.calls;
+  const consistent = available && !invalid && Number.isSafeInteger(attributed) && Number.isSafeInteger(total) && attributed <= total;
+  const coverage = consistent ? `本范围共 ${thousands(total)} 次调用，其中 ${thousands(attributed)} 次有 Key 归属，${thousands(total - attributed)} 次未记录 Key 归属。` : "Key 归属信息不完整，无法核对覆盖次数。";
+  return `<details class="card usage-key-detail" data-keep="usage-keys" ${keepOpen("usage-keys")}><summary>按 Key 查看已记录估算</summary><p class="hint">${esc(coverage)}只展示日志已有分组，不分摊未归属费用；不是账号账单、余额或完整账单。名称来自当前元数据，不读取密钥。</p>
+    ${!available ? '<div class="empty">当前响应没有 Key 明细，不能据此判断各 Key 用量为零。</div>' : rows ? `<div class="usage-key-scroll" data-usage-key-scroll tabindex="0" role="region" aria-label="按 Key 用量明细，可横向滚动"><table class="tbl"><thead><tr><th>Key / 来源</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">失败</th><th class="num">已记录估算</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">这段时间尚无可按 Key 归属的调用记录。</div>'}
+    ${invalid ? '<p class="hint">部分 Key 明细格式不可用，未将其当作零或分配给其他 Key。</p>' : ""}</details>`;
+}
+
 function renderUsage() {
   const pending = !!usageRequest;
   const header = `<div class="section-head"><h2>用量</h2>
@@ -1580,8 +1617,25 @@ function renderUsage() {
     </div>
     <div class="section-head"><h2>按模型来源</h2></div>
     <div class="card">${providerRows ? `<table class="tbl"><tr><th>来源</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">缓存命中</th><th class="num">失败</th><th class="num">估算花费</th></tr>${providerRows}</table>` : `<div class="empty">还没有用量</div>`}</div>
+    ${usageKeyDetails()}
     <div class="section-head"><h2>按 Agent</h2></div>
     <div class="card">${harnessRows ? `<table class="tbl"><tr><th>Agent</th><th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">失败</th><th class="num">估算花费</th></tr>${harnessRows}</table>` : `<div class="empty">还没有用量</div>`}</div>`;
+}
+
+// A horizontally read detail must not jump back or lose keyboard focus on poll.
+function preserveUsageKeyScroll(host) {
+  if (page !== "usage") return () => {};
+  const region = host?.querySelector?.("[data-usage-key-scroll]");
+  if (!region) return () => {};
+  const left = region.scrollLeft, focused = document.activeElement === region;
+  const navigation = pageNavigationVersion, range = usageRange;
+  return () => {
+    if (page !== "usage" || pageNavigationVersion !== navigation || usageRange !== range) return;
+    const next = host.querySelector?.("[data-usage-key-scroll]");
+    if (!next) return;
+    next.scrollLeft = left;
+    if (focused) next.focus({preventScroll:true});
+  };
 }
 
 /** Replace only usage output: budget fields and other pages keep their live DOM/focus. */
@@ -1589,6 +1643,7 @@ function updateUsageView() {
   if (page !== "usage") return;
   const host = $("#usage-content");
   if (!host) return;
+  const restoreKeyScroll = preserveUsageKeyScroll(host);
   const active = document.activeElement;
   const focused = host.contains?.(active);
   const focusKey = focused ? ["range", "currency", "metric", "usageRetry"].find(key => Object.hasOwn(active?.dataset ?? {}, key)) : null;
@@ -1598,6 +1653,7 @@ function updateUsageView() {
   // Keep keyboard selection on the same control when its data/status changes.
   if (focusKey) [...host.querySelectorAll("button")].find(button => Object.hasOwn(button.dataset, focusKey) && button.dataset[focusKey] === focusValue)?.focus({ preventScroll: true });
   if (focusKeep) [...host.querySelectorAll("details[data-keep]")].find(details => details.dataset.keep === focusKeep)?.querySelector("summary")?.focus({ preventScroll: true });
+  restoreKeyScroll();
   requestAnimationFrame(drawChart);
 }
 
@@ -1701,6 +1757,7 @@ function render() {
   renderHeader();
   const main = $("#page");
   const restoreFocus = preserveActionFocus(main);
+  const restoreKeyScroll = preserveUsageKeyScroll(main);
   renderedPage = page;
   try {
     if (PANEL) {
@@ -1715,16 +1772,18 @@ function render() {
       main.innerHTML = `${page === "settings" ? globalThis.EasySwitchTheme?.controls() ?? "" : ""}<div class="card empty">连不上 EasySwitch 核心服务。从菜单栏启动它，或在终端运行 <code>node core/src/main.ts</code>。</div>`;
       return;
     }
+    if (typeof resolveDoctorDestination === "function") resolveDoctorDestination();
     const views = { agents: renderAgents, providers: renderProviders, settings: renderSettings, accounts: renderSettings, sessions: renderSessions, usage: renderUsage, doctor: typeof renderDoctor === "function" ? renderDoctor : renderAgents };
     main.innerHTML = page === "usage" ? `<section id="usage-content">${renderUsage()}</section>` : (views[page] ?? renderAgents)();
     if (typeof automaticToolCard === "function" && page === "agents") main.innerHTML = automaticToolCard() + main.innerHTML;
     if (typeof automaticPoolCard === "function" && page === "agents") main.innerHTML = automaticPoolCard() + main.innerHTML;
     if (typeof firstRunResumeCard === "function") main.innerHTML = firstRunResumeCard() + main.innerHTML;
+    if (typeof doctorDestinationNotice === "function") main.innerHTML = doctorDestinationNotice() + main.innerHTML;
     if (!PANEL && page === "agents" && typeof gatewaySessionsCard === "function") main.innerHTML += gatewaySessionsCard();
     if (page === "usage" && typeof budgetSettingsCard === "function") main.innerHTML += budgetSettingsCard();
     if (page === "sessions") requestAnimationFrame(drawFlowLines);
     if (page === "usage") requestAnimationFrame(drawChart);
-  } finally { restoreFocus(); }
+  } finally { restoreFocus(); restoreKeyScroll(); if (typeof focusDoctorDestination === "function") focusDoctorDestination(); }
 }
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
@@ -1815,6 +1874,7 @@ async function refresh(force = false) {
         const nextAgents = await loadAgents(current, read);
         if (!current()) return false;
         agentList = nextAgents ?? agentList;
+        if (nextAgents) agentListNavigationVersion = navigation;
         if (nextAgents) force = true;
       }
     }
@@ -1906,7 +1966,7 @@ document.addEventListener("click", async e => {
   const sourceMode = t.closest("[data-source-add-mode]");
   if (sourceMode) { await chooseSourceAdd(sourceMode.dataset.sourceAddMode); return; }
   const sourceTab = t.closest("[data-source-segment]");
-  if (sourceTab) { sourceSegment = sourceTab.dataset.sourceSegment; planConfirmOut = null; render(); return; }
+  if (sourceTab) { if (typeof doctorDestination !== "undefined") doctorDestination = null; sourceSegment = sourceTab.dataset.sourceSegment; planConfirmOut = null; render(); return; }
 
   const client = t.closest("[data-agent-select]");
   if (client) { selectClient(client.dataset.agentSelect); return; }
@@ -2302,7 +2362,7 @@ document.addEventListener("click", async e => {
   }
 
   const toggle = t.closest("[data-toggle]");
-  if (toggle) { openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
+  if (toggle) { if (typeof doctorDestination !== "undefined") doctorDestination = null; openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
 });
 
 document.addEventListener("change", async e => {

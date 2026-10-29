@@ -6,6 +6,64 @@ let doctorBusy = false;
 let doctorConfirmation = null;
 let doctorController = null;
 let doctorHelperHelp = false;
+// A diagnostic link identifies an object, not a label or a persistent setting.
+let doctorDestination = null;
+const doctorSafeTarget = id => typeof id === "string" && /^(?!es-session-|sk-)[a-z][a-z0-9-]{0,79}$/.test(id);
+function currentDoctorDestination() {
+  return doctorDestination?.page === page && doctorDestination.navigation === pageNavigationVersion ? doctorDestination : null;
+}
+async function navigateDoctorDestination(next, id) {
+  doctorDestination = id === undefined ? null : {page:next,id,navigation:pageNavigationVersion + 1,pending:true,focus:true,message:""};
+  await navigatePage(next);
+}
+function resolveDoctorDestination() {
+  const target = currentDoctorDestination();
+  if (!target) return;
+  if (!target.pending) {
+    if (!target.message && (page === "providers" ? !state.providers.some(p => p.id === target.id) : !agentList?.some(a => a.id === target.id))) {
+      target.message = "此对象已变化或不在当前列表，请从列表重新选择；没有自动选择其他对象。";
+      if (page === "providers") openProvider = null;
+      else selectedAgent = null;
+    }
+    if (!target.message && page === "agents" && !target.experimental) {
+      const agent = agentList.find(a => a.id === target.id);
+      // Installation metadata may change while this target stays selected.
+      // Follow that same ID across segments, never fall back to a neighbour.
+      agentSegment = agent.installed ? "installed" : "available";
+      selectedAgent = agent.id;
+    }
+    return;
+  }
+  target.pending = false;
+  const valid = doctorSafeTarget(target.id);
+  if (page === "providers") {
+    sourceSegment = "all"; openProvider = null;
+    if (valid && state.providers.some(p => p.id === target.id)) openProvider = target.id;
+    else target.message = "此来源已变化或不在当前列表，请从列表重新选择；没有修改任何来源。";
+  } else if (page === "agents") {
+    selectedAgent = null;
+    const fresh = agentListNavigationVersion === pageNavigationVersion;
+    const agent = valid && fresh && agentList?.find(a => a.id === target.id);
+    if (agent) {
+      target.experimental = agent.id === "claude-desktop";
+      selectedAgent = target.experimental ? null : agent.id; agentSegment = agent.installed ? "installed" : "available";
+      if (target.experimental) openDetails.add("experimental-agents");
+      chatgptConfirm = null; claudeDesktopConfirm = false;
+      levelsEditor = null; guideOpen = null; guideData = null; guideReveal = false;
+    } else target.message = fresh ? "此客户端已变化或不在当前列表，请从列表重新选择；没有启动或安装程序。" : "未能读取最新客户端列表，无法确认自检对象。请刷新后从列表重新选择；没有启动程序。";
+  }
+}
+function doctorDestinationNotice() {
+  const target = currentDoctorDestination();
+  return target ? `<div class="card msg" style="padding:12px;overflow-wrap:anywhere" role="status" tabindex="-1" data-doctor-destination>${esc(target.message || `已定位自检对象：${target.id}。请查看详情，再决定是否操作。`)}</div>` : "";
+}
+function focusDoctorDestination() {
+  const target = currentDoctorDestination();
+  if (!target?.focus || target.pending) return;
+  target.focus = false;
+  const node = target.message ? document.querySelector("[data-doctor-destination]") : document.querySelector(page === "providers" ? `[data-source-detail="${target.id}"]` : target.experimental ? 'details[data-keep="experimental-agents"] > summary' : `[data-agent-select="${target.id}"]`);
+  node?.focus?.({preventScroll:true}); node?.scrollIntoView?.({block:"nearest"});
+}
 async function loadDoctor() {
   try { doctorReport = await call("GET", "/api/doctor"); doctorError = ""; }
   catch (error) { doctorReport = null; doctorError = userErrorMessage(error); }
@@ -26,6 +84,7 @@ function renderDoctor() {
 document.addEventListener("click", async event => {
   const button=event.target.closest?.("[data-doctor-action]");if(!button)return;
   event.preventDefault();event.stopImmediatePropagation();
+  if(page!=="doctor")return; // Ignore a second queued click from the page we already left.
   const action=button.dataset.doctorAction;
   if(action==="cancel"){cancelDoctorCheck();if(!doctorBusy)render();return;}
   if(doctorBusy||button.disabled)return;
@@ -36,7 +95,7 @@ document.addEventListener("click", async event => {
     doctorConfirmation={kind:action==="probe-provider"?"provider":"agent-help",id};render();return;
   }
   const targets={"open-providers":"providers","open-login":"providers","open-agents":"agents","open-sessions":"sessions","open-budget":"usage","open-settings":"settings"};
-  if(targets[action]){pageNavigationVersion++;page=targets[action];history.replaceState(null,"",`#${page}`);doctorConfirmation=null;await refresh(true);}
+  if(targets[action]){doctorConfirmation=null;await navigateDoctorDestination(targets[action],["open-providers","open-login","open-agents"].includes(action)?button.dataset.doctorTarget:undefined);}
 });
 document.addEventListener("submit", async event=>{
   if(!event.target.matches?.("[data-doctor-confirm]"))return;
