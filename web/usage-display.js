@@ -61,5 +61,39 @@
     return `${currency}仅为已记录估算，非供应商账单，不保证包含全部费用。日期按核心服务本地日历，7/30 天含今天。已有记录最多读取日志末尾 50,000 行；无法解析的行会跳过，不代表完整历史。`;
   }
 
-  Object.assign(globalThis, { usageMoney, usageCostPresentation, usageCoverage, usageDisplayLimits });
+  /** Local daily summary export. A strict allowlist excludes identifiers, prompts,
+   * credentials and arbitrary text; numeric unknowns must never become zero. */
+  function usageDailyCsv(summary) {
+    const ranges = { today: "今天", "7d": "近7天", "30d": "近30天", all: "已有记录" };
+    if (!summary || !Object.hasOwn(ranges, summary.range) || !Array.isArray(summary.days)
+        || !summary.days.length || summary.days.length > 10000) throw new Error("Invalid usage export");
+    const fields = ["calls", "errors", "inputTokens", "outputTokens", "cachedTokens", "unmetered", "unpriced",
+      "subscription", "recordedCostCalls", "missingCostCalls", "partialCostCalls", "usageIncompleteCalls", "usageCompletenessUnknownCalls"];
+    const sources = ["user", "legacy", "unpriced", "subscription", "unknown"];
+    const header = ["行类型", "日期（核心服务本地日历）", "范围", "调用次数", "失败次数", "已记录输入Token", "已记录输出Token",
+      "已记录缓存Token", "未报告用量次数", "未定价次数", "订阅次数", "有记录金额次数", "费用缺失次数", "部分费用次数",
+      "用量不完整次数", "用量完整性未知次数", "已记录估算USD（空白表示无金额记录）", "自填价次数", "旧参考价次数", "未定价出处次数", "订阅出处次数", "出处未知次数", "说明"];
+    const note = "仅为已记录估算，非供应商账单；不保证包含全部费用。原始USD，不使用显示汇率。已有记录最多读取日志末尾50000行，无法解析行跳过，不代表完整历史。";
+    const metrics = value => {
+      if (!value || fields.some(key => !Number.isFinite(value[key]) || value[key] < 0
+          || (!key.endsWith("Tokens") && !Number.isSafeInteger(value[key])))
+          || sources.some(key => !Number.isSafeInteger(value.pricingSources?.[key]) || value.pricingSources[key] < 0)
+          || !Number.isFinite(value.costUsd) || value.costUsd < 0) throw new Error("Invalid usage metrics");
+      return [...fields.map(key => value[key]), value.recordedCostCalls > 0 ? value.costUsd : "", ...sources.map(key => value.pricingSources[key])];
+    };
+    let previous = "";
+    const rows = summary.days.map(day => {
+      if (typeof day?.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day.day) || day.day <= previous
+          || !Number.isFinite(Date.parse(day.day + "T00:00:00Z"))
+          || new Date(day.day + "T00:00:00Z").toISOString().slice(0,10) !== day.day) throw new Error("Invalid usage day");
+      previous = day.day;
+      return ["每日", day.day, ranges[summary.range], ...metrics(day), note];
+    });
+    rows.unshift(["合计", "", ranges[summary.range], ...metrics(summary.totals), note]);
+    // Every string is fixed copy or a validated date. Quoting preserves CSV
+    // structure; no untrusted names/formulas or raw object fields are exported.
+    return "\uFEFF" + [header, ...rows].map(row => row.map(value => '"' + String(value).replaceAll('"', '""') + '"').join(",")).join("\r\n") + "\r\n";
+  }
+
+  Object.assign(globalThis, { usageMoney, usageCostPresentation, usageCoverage, usageDisplayLimits, usageDailyCsv });
 })();

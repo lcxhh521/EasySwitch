@@ -227,3 +227,45 @@ test("all limits output to 10,000 local daily slots without truncating totals or
     assert.equal(JSON.stringify(rows), before);
   }
 }));
+
+
+function exportCsv(summary: unknown): string {
+  const context=vm.createContext({summary}); vm.runInContext(source,context);
+  return vm.runInContext('usageDailyCsv(summary)',context);
+}
+test("CSV daily export keeps exact numeric evidence, unknown blanks and no untrusted fields", () => {
+  const summary=summarizeRows([row({costUsd:0}),row({costUsd:1e-8,usageComplete:false}),row(),row({costNote:'subscription'})]);
+  const before=JSON.stringify(summary); const csv=exportCsv(summary);
+  assert.ok(csv.startsWith('\uFEFF')); assert.ok(csv.endsWith('\r\n'));
+  assert.equal(csv.split('\r\n').length,4); assert.match(csv,/"1e-8"/);
+  assert.match(csv,/原始USD/); assert.match(csv,/50000/); assert.match(csv,/非供应商账单/);
+  assert.doesNotMatch(csv,/fixture|codex|keyId|providerId/); assert.equal(JSON.stringify(summary),before);
+  const unknown=exportCsv(summarizeRows([row()]));
+  const fields=unknown.split('\r\n')[1]!.split(','); assert.equal(fields[16],'""');
+  const zero=exportCsv(summarizeRows([row({costUsd:0})])).split('\r\n')[1]!.split(',');assert.equal(zero[16],'"0"');
+  for(const entries of [[],[row({costNote:'subscription'})]]) assert.equal(exportCsv(summarizeRows(entries)).split('\r\n')[1]!.split(',')[16],'""');
+});
+test("CSV validates every metric and date; arbitrary object text never reaches a spreadsheet", () => {
+  const base=summarizeRows([row({costUsd:0})]);
+  for(const date of ['=1+1','+SUM(1)','2026-02-30','2026-1-01','2026-01-01\r\n=evil']) {
+    const s=structuredClone(base);s.days[0]!.day=date;assert.throws(()=>exportCsv(s));
+  }
+  for(const value of [undefined,NaN,Infinity,-1,0.5,Number.MAX_SAFE_INTEGER+1,'=1+1']) {
+    const s:any=structuredClone(base);s.days[0].calls=value;assert.throws(()=>exportCsv(s));
+  }
+  for(const range of ['__proto__','constructor','=1+1']) assert.throws(()=>exportCsv({...base,range}));
+  assert.throws(()=>exportCsv({...base,days:[]}));
+  assert.throws(()=>exportCsv({...base,days:[base.days[0],base.days[0]]}));
+  const s:any=structuredClone(base);s.secret='sk-secret';s.days[0].prompt='=WEBSERVICE(secret)';
+  s.byKey={'sk-secret':{secret:'secret'}};
+  assert.doesNotMatch(exportCsv(s),/sk-secret|WEBSERVICE|prompt/);
+});
+test("CSV records selected range and includes every local calendar day for all range choices", () => {
+  for(const range of ['today','7d','30d','all'] as const) {
+    const summary=summarize([row()],range,NOW),csv=exportCsv(summary);
+    assert.equal(csv.split('\r\n').length,summary.days.length+3);
+    for(const day of summary.days) assert.ok(csv.includes('"'+day.day+'"'));
+    assert.equal(csv.split('\r\n')[0]!.replace('\uFEFF','').split(',').length,23);
+    assert.equal(csv.split('\r\n')[1]!.split(',').length,23);
+  }
+});

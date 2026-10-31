@@ -44,10 +44,14 @@ function ui(rows: GatewayLogEntry[]) {
   const chart = { innerHTML: "", clientWidth: 600, append(node: any) { tip = node; }, getBoundingClientRect: () => ({ left: 0, top: 0 }),
     querySelector: () => ({ addEventListener(name: string, handler: (event: any) => unknown) { chartHandlers[name] = handler; } }) };
   const location = { search: "", hash: "#usage" };
-  const document = { activeElement: null as any, addEventListener(name: string, fn: any) { (handlers[name] ??= []).push(fn); },
+  const downloads: any[] = [], blobs: Blob[] = [], revoked: string[] = [];
+  let removed = 0;
+  const document = { body: { append() {} }, activeElement: null as any, addEventListener(name: string, fn: any) { (handlers[name] ??= []).push(fn); },
     querySelector: (selector: string) => selector === "#page" ? main : selector === "#usage-content" ? usageMounted ? usageNode : null : selector === "#chart" ? chart : null,
-    querySelectorAll: () => [], createElement: () => ({ style: {}, hidden: true }) };
-  const context = vm.createContext({ URLSearchParams, AbortController, console, location,
+    querySelectorAll: () => [], createElement: (tag: string) => tag === "a" ? { href: "", download: "", hidden: false,
+      click() { downloads.push({ href: this.href, download: this.download }); }, remove() { removed++; } } : ({ style: {}, hidden: true }) };
+  const context = vm.createContext({ URLSearchParams, AbortController, console, location, Blob,
+    URL: { createObjectURL(blob: Blob) { blobs.push(blob); return `blob:fixture-${blobs.length}`; }, revokeObjectURL(url: string) { revoked.push(url); } },
     window: { addEventListener(name: string, fn: any) { (windowHandlers[name] ??= []).push(fn); } },
     history: { replaceState(_state: unknown, _title: string, hash: string) { location.hash = hash; } }, document,
     localStorage: { getItem: () => null, setItem() {} },
@@ -76,7 +80,10 @@ function ui(rows: GatewayLogEntry[]) {
     const target: any = { dataset, closest: (s: string) => s === selector ? target : null };
     for (const handler of handlers.click ?? []) await handler({ target, preventDefault() {} });
   };
-  return { run, document, html: (): string => usageMounted ? usageHtml : html, chart, messages: (): string[] => run("messages"),
+  return { run, document, downloads, blobs, revoked, removed: () => removed,
+    exportCsv: () => click("[data-usage-export]"),
+    cleanDownloads: () => { for (const [id, timer] of timers) if (timer.delay === 1000) { timers.delete(id); timer.callback(); } },
+    html: (): string => usageMounted ? usageHtml : html, chart, messages: (): string[] => run("messages"),
     clickRange: (range: string) => click("[data-range]", { range }), retry: () => click("[data-usage-retry]"),
     metric: (metric: string) => click("[data-metric]", { metric }),
     nav: (page: string) => click("#nav button, [data-go]", { page }), manualRefresh: () => click("#refresh"),
@@ -443,4 +450,49 @@ test('per-key scroll restoration never takes focus back after navigation or a ne
  const rangeApp=ui([row({keyId:'k-1234abcd',costUsd:1})]);rangeApp.keyRegion().scrollLeft=120;rangeApp.keyRegion().focus();
  const change=rangeApp.clickRange('30d');rangeApp.run("requests[0].resolve({...fixtureUsage,range:'30d'})");await change;
  assert.equal(rangeApp.keyRegion().scrollLeft,0);assert.notEqual(rangeApp.document.activeElement,rangeApp.keyRegion());
+});
+
+
+test("daily export downloads only the displayed summary, retains USD and releases its URL", async () => {
+  const app = ui([row({costUsd: 0.00000001})]);
+  app.run("state.display={currency:'CNY',usdToCny:8}");
+  await app.exportCsv();
+  assert.deepEqual(app.downloads, [{href:'blob:fixture-1',download:'easyswitch-daily-usage-today.csv'}]);
+  const csv = await app.blobs[0]!.text();
+  assert.match(csv, /1e-8/); assert.doesNotMatch(csv, /8e-8|fixture|codex/);
+  assert.equal(app.removed(), 1); assert.equal(app.revoked.length,0);
+  app.cleanDownloads(); assert.deepEqual(app.revoked,['blob:fixture-1']);
+  assert.equal(app.run('requests.length+otherRequests.length'),0);
+  assert.match(app.messages().at(-1)!, /已请求下载/); assert.doesNotMatch(app.messages().at(-1)!, /已保存/);
+});
+
+test("export stays guarded during refresh, failure, range mismatch, no data and navigation", async () => {
+  for (const change of ["usageRequest={}", "usageError='failed'", "usageRange='7d'", "usage=null", "page='agents'"]) {
+    const app=ui([row({costUsd:0})]); app.run(change); await app.exportCsv();
+    assert.equal(app.downloads.length,0,change); assert.equal(app.blobs.length,0,change);
+  }
+  const app=ui([row({costUsd:0})]);
+  const pending=app.retry(); await turn(); await app.exportCsv(); assert.equal(app.downloads.length,0);
+  app.run("requests[0].reject(new Error('bad'))"); await pending;
+  await app.exportCsv(); assert.equal(app.downloads.length,0);
+  const retry=app.retry(); await turn(); app.run("requests[1].resolve(fixtureUsage)"); await retry;
+  await app.exportCsv(); assert.equal(app.downloads.length,1);
+});
+
+test("export focus survives polling and cleanup runs even when browser click fails", async () => {
+  const app=ui([row({costUsd:0})]); app.focusUsage('usageExport','');
+  const pending=app.retry(); await turn();
+  assert.equal(app.document.activeElement?.dataset.usageExport,'');
+  app.run("requests[0].resolve(fixtureUsage)"); await pending;
+  assert.equal(app.document.activeElement?.dataset.usageExport,'');
+  app.run("document.createElement=()=>({click(){throw new Error('blocked')},remove(){}})");
+  await app.exportCsv(); app.cleanDownloads();
+  assert.deepEqual(app.revoked,['blob:fixture-1']); assert.match(app.messages().at(-1)!, /未能导出/);
+});
+
+test("malformed export fails safely without downloading or exposing payload", async () => {
+  const app=ui([row({costUsd:0})]);
+  app.run("usage.days[0].day='=WEBSERVICE(secret)'"); await app.exportCsv();
+  assert.equal(app.blobs.length,0); assert.equal(app.downloads.length,0);
+  assert.doesNotMatch(app.messages().join(' '),/WEBSERVICE|secret/);
 });

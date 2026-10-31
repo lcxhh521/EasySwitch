@@ -1721,12 +1721,34 @@ function usageKeyDetails() {
     ${invalid ? '<p class="hint">部分 Key 明细格式不可用，未将其当作零或分配给其他 Key。</p>' : ""}</details>`;
 }
 
+function downloadUsageCsv() {
+  if (page !== "usage" || usageRequest || usageError || !usage || usage.range !== usageRange) return;
+  let url, link;
+  try {
+    const csv = usageDailyCsv(usage);
+    url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    link = document.createElement("a");
+    link.href = url;
+    link.download = `easyswitch-daily-usage-${usageRange}.csv`;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    toast("已请求下载每日用量 CSV（原始 USD）；是否保存请查看浏览器下载列表。");
+  } catch {
+    toast("未能导出每日用量。请刷新用量后重试，或检查浏览器下载设置。");
+  } finally {
+    link?.remove();
+    if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
 function renderUsage() {
   const pending = !!usageRequest;
   const header = `<div class="section-head"><h2>用量</h2>
     <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <nav class="seg" id="currency"><button data-currency="CNY" class="${state?.display?.currency === "CNY" ? "on" : ""}">¥</button><button data-currency="USD" class="${state?.display?.currency !== "CNY" ? "on" : ""}">$</button></nav>
       <nav class="seg" id="range">${Object.entries(usageRanges).map(([k, v]) => `<button data-range="${k}" class="${usageRange === k ? "on" : ""}">${v}</button>`).join("")}</nav>
+      <button class="btn secondary" data-usage-export aria-disabled="${!!(!usage || usage.range !== usageRange || pending || usageError)}" ${!usage || usage.range !== usageRange || pending || usageError ? 'style="opacity:.55"' : ""} title="仅下载当前范围每日汇总，原始 USD；不含 Key、账号或请求内容">导出每日 CSV</button>
       <button class="btn secondary" data-usage-retry aria-disabled="${pending}" ${pending ? 'style="opacity:.55;cursor:wait"' : ""}>${pending ? "正在读取…" : usageError ? "重试" : "刷新用量"}</button>
     </span></div>`;
   const status = usageError ? `${usageError}${usage ? "当前显示上次成功读取的数据，可能已过期。" : "请重试或选择其他时间范围。"}`
@@ -1796,7 +1818,7 @@ function updateUsageView() {
   const restoreKeyScroll = preserveUsageKeyScroll(host);
   const active = document.activeElement;
   const focused = host.contains?.(active);
-  const focusKey = focused ? ["range", "currency", "metric", "usageRetry"].find(key => Object.hasOwn(active?.dataset ?? {}, key)) : null;
+  const focusKey = focused ? ["range", "currency", "metric", "usageRetry", "usageExport"].find(key => Object.hasOwn(active?.dataset ?? {}, key)) : null;
   const focusKeep = focused && active?.tagName === "SUMMARY" ? active.parentElement?.dataset.keep : null;
   const focusValue = focusKey ? active.dataset[focusKey] : null;
   host.innerHTML = renderUsage();
@@ -2422,6 +2444,7 @@ document.addEventListener("click", async e => {
   const metric = t.closest("[data-metric]");
   if (metric) { chartMetric = metric.dataset.metric; updateUsageView(); return; }
 
+  if (t.closest("[data-usage-export]")) { downloadUsageCsv(); return; }
   if (t.closest("[data-usage-retry]")) { if (!usageRequest) await loadUsage(); return; }
   const range = t.closest("[data-range]");
   if (range) {
