@@ -47,3 +47,24 @@ test("an older cancelled read cannot clear the busy state or replace results of 
  f.run("pending[0]({previewId:'old',sources:[],candidates:[]})");await first;assert.equal(f.run("providerImportBusy"),true);assert.equal(f.run("providerImportPreview"),null);
  f.run("pending[1]({previewId:'new',sources:[],candidates:[]})");await second;assert.equal(f.run("providerImportBusy"),false);assert.equal(f.run("providerImportPreview.previewId"),"new");
 });
+
+
+test("OpenCode choice is explicit, fixed-file scope disclosed and selection sends only source id",async()=>{
+ const f=fixture();await f.open();assert.match(f.html(),/OpenCode 自定义 API 来源/);assert.doesNotMatch(f.html(),/data-opencode-import-scope/);assert.equal(f.requests.length,0);
+ await f.dispatch("change","[data-provider-import-source]",{dataset:{providerImportSource:"opencode"},checked:true});
+ const html=f.html();for(const text of ["opencode.jsonc","auth.json","项目配置","两者同时存在","模型显示名称不迁移","不展开环境变量"])assert.ok(html.includes(text));assert.equal(f.requests.length,0);
+ await f.scan();assert.equal(JSON.stringify(f.requests[0]),JSON.stringify(["POST","/api/provider-import/preview",{sources:["opencode"]}]));assert.equal(f.run("providerImportChosen.size"),0);
+});
+test("OpenCode blocked source and unsupported candidate cannot be imported or expose key fields",async()=>{
+ const f=fixture();await f.open();f.run(`providerImportSources.add('opencode');call=async()=>({previewId:'p',sources:[{source:'opencode',status:'blocked',message:'secret-config-path'}],candidates:[{id:'no',source:'opencode',name:'Needs header',baseUrl:'https://relay.invalid',models:['m'],importable:false,keyCount:1,reason:'额外请求头不支持',apiKey:'secret-key'}]})`);await f.scan();
+ assert.match(f.html(),/OpenCode 自定义 API 来源：无法安全读取/);assert.doesNotMatch(f.html(),/secret-config-path|secret-key/);await f.choose(true,'no');assert.equal(f.run('providerImportChosen.size'),0);await f.commit();assert.equal(f.requests.length,0);
+});
+test("OpenCode preview selection clears on source uncheck and cancel with no auto request",async()=>{
+ const f=fixture();await f.open();await f.dispatch("change","[data-provider-import-source]",{dataset:{providerImportSource:"opencode"},checked:true});await f.scan();await f.choose();await f.dispatch("change","[data-provider-import-source]",{dataset:{providerImportSource:"opencode"},checked:false});assert.equal(f.run('providerImportPreview'),null);assert.equal(f.run('providerImportChosen.size'),0);assert.doesNotMatch(f.html(),/data-opencode-import-scope/);assert.equal(f.requests.length,1);await f.cancel();assert.equal(f.html(),'');
+});
+
+test("unconfirmed OpenCode save does not claim failure or encourage blind repeat",async()=>{
+ const f=fixture();await f.open();await f.dispatch("change","[data-provider-import-source]",{dataset:{providerImportSource:"opencode"},checked:true});await f.scan();await f.choose();f.run(`call=async()=>{throw new Error('private-source-key')}`);await f.commit();assert.match(f.html(),/导入结果未确认/);assert.match(f.html(),/可能已经保存/);assert.match(f.html(),/不要直接重复导入/);assert.doesNotMatch(f.html(),/private-source-key/);assert.equal(f.run('providerImportPreview'),null);assert.equal(f.run('providerImportBusy'),false);
+});
+
+test("import review has a scoped shrinkable grid and wrapping long candidate metadata",async()=>{const f=fixture();await f.open();assert.match(f.html(),/provider-import-panel/);const css=readFileSync(new URL('../../web/style.css',import.meta.url),'utf8');assert.match(css,/\.provider-import-panel \{ min-width:0; grid-template-columns:minmax\(0,1fr\)/);assert.match(css,/\.provider-import-panel \.hint[^}]+overflow-wrap:anywhere/);});

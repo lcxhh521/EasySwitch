@@ -117,3 +117,74 @@ test("ambiguous Claude credentials and unknown opencodex adapters remain explici
  f.file(".opencodex/config.json",{providers:{odd:{...oc().providers.relay,adapter:"undocumented-protocol"}}});
  const p=await f.service.preview({sources:["claude","opencodex"]});assert.equal(p.candidates.length,2);assert.ok(p.candidates.every(c=>!c.importable&&c.reason));
 });
+
+const openCode = (key="fixture-opencode-key") => ({model:"relay/model/b",provider:{relay:{npm:"@ai-sdk/openai-compatible",name:"OpenCode Relay",options:{baseURL:"https://opencode-relay.invalid/v1",apiKey:key},models:{"model/a":{name:"Display A"},"model/b":{}}}}});
+
+test("OpenCode explicit global JSON imports literal custom API chat sources off without reading auth or environment",async t=>{
+ const f=fixture(t);f.file(".config/opencode/opencode.json",openCode());f.file(".local/share/opencode/auth.json","not-json native token fixture");f.environment.OPENCODE_CONFIG="/must-not-read";f.environment.OPENCODE_CONFIG_CONTENT="must-not-parse";const before=snap(f.home);
+ const preview=await f.service.preview({sources:["opencode"]});assert.equal(preview.sources[0]!.status,"ready");assert.equal(preview.candidates.length,1);assert.deepEqual(preview.candidates[0]!.models,["model/b","model/a"]);assert.equal(preview.candidates[0]!.importable,true);assert.doesNotMatch(JSON.stringify(preview),/fixture-opencode-key|Display A|native token/);assert.deepEqual(f.counts(),{envReads:0,writes:0,reads:0});
+ const result=await f.service.commit({previewId:preview.previewId,chosen:[preview.candidates[0]!.id]});assert.equal(result.imported.length,1);const saved=f.store.providers()[0]!;assert.equal(saved.off,true);assert.equal(saved.defaultModel,"model/b");assert.deepEqual(saved.protocols,["chat"]);assert.equal(saved.route,"chat-translate");assert.equal(f.values.get(saved.id),"fixture-opencode-key");assert.deepEqual(snap(f.home),before);assert.equal(f.counts().envReads,0);
+});
+
+test("OpenCode JSONC supports comments and trailing commas without mangling URL slashes or quoted comment markers",async t=>{
+ const f=fixture(t);f.file(".config/opencode/opencode.jsonc",`{ // a comment\n "provider": { "relay": {"npm":"@ai-sdk/openai-compatible", "name":"Comment /* literal */", "options":{"baseURL":"https://relay.invalid/v1", "apiKey":"fixture-jsonc-key",}, "models":{"model":{},},},}, /* tail */ }`);
+ const p=await f.service.preview({sources:["opencode"]});assert.equal(p.sources[0]!.status,"ready");assert.equal(p.candidates[0]!.importable,true);assert.equal(p.candidates[0]!.name,"Comment /* literal */");assert.equal(p.candidates[0]!.baseUrl,"https://relay.invalid/v1");
+});
+
+test("OpenCode dual global files, aliases, malformed JSONC, duplicate keys, depth and special paths fail closed",async t=>{
+ for(const kind of ["both","symlink","hardlink","malformed","duplicate","escaped-duplicate","prototype","depth","json-comments","oversized"]){const f=fixture(t),base=".config/opencode/opencode.jsonc";f.file(base,openCode());
+ if(kind==="both")f.file(".config/opencode/opencode.json",openCode());
+ if(kind==="symlink"){rmSync(join(f.home,base));symlinkSync(f.file("outside.json",openCode()),join(f.home,base));}
+ if(kind==="hardlink"){rmSync(join(f.home,base));linkSync(f.file("outside.json",openCode()),join(f.home,base));}
+ if(kind==="malformed")f.file(base,'{"provider": {} /* unclosed');
+ if(kind==="duplicate")f.file(base,'{"provider": {}, "provider": {}}');
+ if(kind==="escaped-duplicate")f.file(base,'{"provider": {}, "provi\\u0064er": {}}');
+ if(kind==="prototype")f.file(base,'{"__proto__": {"polluted": true}}');
+ if(kind==="depth")f.file(base,'{"x":'+"[".repeat(70)+'0'+"]".repeat(70)+'}');
+ if(kind==="json-comments"){rmSync(join(f.home,base));f.file(".config/opencode/opencode.json",'{/*comment*/"provider":{}}');}
+ if(kind==="oversized")f.file(base," ".repeat(4*1024*1024+1));
+ const p=await f.service.preview({sources:["opencode"]});assert.equal(p.sources[0]!.status,"blocked",kind);assert.deepEqual(p.candidates,[],kind);assert.equal(f.values.size,0);}
+});
+
+test("OpenCode rejects unsupported provider, model and option semantics rather than silently losing configuration",async t=>{
+ const mutations:Array<(c:any)=>void>=[c=>c.provider.relay.npm="@ai-sdk/openai",c=>c.provider.relay.options.headers={Authorization:"private-header-value"},c=>c.provider.relay.options.timeout=1000,c=>c.provider.relay.api="other",c=>c.provider.relay.models["model/b"].id="remapped",c=>c.provider.relay.models["model/b"].provider={npm:"@ai-sdk/anthropic"},c=>c.provider.relay.models["model/b"].limit={context:123},c=>c.provider.relay.models["model/b"].options={},c=>c.provider.relay.models=[],c=>c.provider.relay.models={},c=>c.model="relay/missing",c=>c.disabled_providers=["relay"],c=>c.enabled_providers=["other"]];
+ for(const mutate of mutations){const f=fixture(t),config=openCode();mutate(config);f.file(".config/opencode/opencode.json",config);const p=await f.service.preview({sources:["opencode"]});assert.equal(p.candidates.length,1);assert.equal(p.candidates[0]!.importable,false);assert.doesNotMatch(JSON.stringify(p),/private-header-value|fixture-opencode-key/);await assert.rejects(f.service.commit({previewId:p.previewId,chosen:[p.candidates[0]!.id]}));assert.equal(f.values.size,0);}
+});
+
+test("OpenCode does not expand file/environment/command references or read implicit environment",async t=>{
+ for(const value of ["{env:MY_KEY}","{file:~/.private-key}","prefix-${KEY}","$(echo key)","`echo key`"]){for(const field of ["key","url","name","model"]){const f=fixture(t),config=openCode();if(field==="key")config.provider.relay.options.apiKey=value;if(field==="url")config.provider.relay.options.baseURL=`https://relay.invalid/${value}`;if(field==="name")config.provider.relay.name=value;if(field==="model")(config.provider.relay.models as any)[value]={};f.file(".config/opencode/opencode.json",config);f.environment.MY_KEY="must-not-resolve";
+ const p=await f.service.preview({sources:["opencode"]});assert.equal(p.candidates[0]!.importable,false,`${field} ${value}`);assert.equal(f.counts().envReads,0);assert.doesNotMatch(JSON.stringify(p),/must-not-resolve/);}}
+});
+
+test("OpenCode source changes and second fixed file appearing invalidate preview before secret writes",async t=>{
+ for(const kind of ["changed","second","removed"]){const f=fixture(t);const path=f.file(".config/opencode/opencode.json",openCode());const p=await f.service.preview({sources:["opencode"]});if(kind==="changed")f.file(".config/opencode/opencode.json",openCode("changed-fixture-key"));if(kind==="second")f.file(".config/opencode/opencode.jsonc",openCode());if(kind==="removed")rmSync(path);
+ await assert.rejects(f.service.commit({previewId:p.previewId,chosen:[p.candidates[0]!.id]}),/来源配置已变化/);assert.equal(f.counts().writes,0);}
+});
+
+test("OpenCode source changes while a credential write awaits roll back without persisting stale provider",async t=>{
+ const f=fixture(t);f.file(".config/opencode/opencode.json",openCode());const p=await f.service.preview({sources:["opencode"]});f.secrets.set=async(slot,value)=>{f.values.set(slot,value);f.file(".config/opencode/opencode.json",openCode("changed-during-save"));};const result=await f.service.commit({previewId:p.previewId,chosen:[p.candidates[0]!.id]});assert.equal(result.rolledBack,true);assert.equal(f.store.providers().length,0);assert.equal(f.values.size,0);
+});
+
+test("rollback preserves a concurrently edited earlier provider and its credentials after a later failure",async t=>{
+ const f=fixture(t),config=openCode();(config.provider as any).second={...config.provider.relay,name:"Second",options:{...config.provider.relay.options,apiKey:"fixture-second-key"}};f.file(".config/opencode/opencode.json",config);const p=await f.service.preview({sources:["opencode"]});let count=0;const upsert=f.store.upsertProvider.bind(f.store);f.store.upsertProvider=provider=>{if(++count===2){const previous=f.store.providers()[0]!;upsert({...previous,name:"Concurrent user edit"});throw new Error("synthetic failure");}upsert(provider);};
+ const result=await f.service.commit({previewId:p.previewId,chosen:p.candidates.map(c=>c.id)});assert.equal(result.rolledBack,false);assert.match(result.failed[0]!.reason,/未能确认/);assert.equal(f.store.providers().length,1);const kept=f.store.providers()[0]!;assert.equal(kept.name,"Concurrent user edit");assert.equal(f.values.get(kept.id),"fixture-opencode-key");assert.equal(f.values.size,1);
+});
+
+test("OpenCode does not resolve apiKey references even when environment scanning is separately authorized",async t=>{
+ const f=fixture(t);f.file(".config/opencode/opencode.json",openCode("{env:OPENAI_API_KEY}"));f.environment.OPENAI_API_KEY="fixture-explicit-env-key";const p=await f.service.preview({sources:["opencode","environment"]});assert.equal(p.candidates.find(c=>c.source==="opencode")!.importable,false);assert.equal(p.candidates.find(c=>c.source==="environment")!.importable,true);assert.equal(f.counts().envReads,1);assert.doesNotMatch(JSON.stringify(p),/fixture-explicit-env-key/);
+});
+
+
+test("OpenCode invalid UTF-8 is rejected instead of rewriting key bytes with replacement characters",async t=>{
+ const f=fixture(t),path=f.file(".config/opencode/opencode.json",openCode());const raw=Buffer.from(JSON.stringify(openCode())),at=raw.indexOf("fixture-opencode-key");raw[at]=0xff;writeFileSync(path,raw);const p=await f.service.preview({sources:["opencode"]});assert.equal(p.sources[0]!.status,"blocked");assert.deepEqual(p.candidates,[]);assert.equal(f.values.size,0);assert.equal(f.counts().writes,0);
+});
+
+
+test("all imported providers remain unpublished until every awaited secret write completes",async t=>{
+ const f=fixture(t),config=openCode();(config.provider as any).second={...config.provider.relay,name:"Second",options:{...config.provider.relay.options,apiKey:"fixture-stage-second"}};f.file(".config/opencode/opencode.json",config);const p=await f.service.preview({sources:["opencode"]});let writes=0;f.secrets.set=async(slot,value)=>{f.values.set(slot,value);assert.equal(f.store.providers().length,0,"no partial rows during await");writes++;await Promise.resolve();assert.equal(f.store.providers().length,0);};
+ const result=await f.service.commit({previewId:p.previewId,chosen:p.candidates.map(c=>c.id)});assert.equal(writes,2);assert.equal(result.imported.length,2);assert.equal(f.store.providers().length,2);
+});
+
+test("rollback preserves a credential whose application revision changed during awaited lookup",async t=>{
+ const f=fixture(t);f.file(".config/opencode/opencode.json",openCode());const p=await f.service.preview({sources:["opencode"]});f.secrets.set=async(slot,value)=>{f.values.set(slot,value);throw new Error("synthetic write failure");};f.secrets.get=async slot=>{const old=f.values.get(slot);f.store.touchCredentialRevision(slot);f.values.set(slot,"concurrent-fixture-key");return old;};const result=await f.service.commit({previewId:p.previewId,chosen:[p.candidates[0]!.id]});assert.equal(result.rolledBack,false);assert.deepEqual([...f.values.values()],["concurrent-fixture-key"]);assert.equal(f.store.providers().length,0);assert.doesNotMatch(JSON.stringify(result),/concurrent-fixture-key/);
+});

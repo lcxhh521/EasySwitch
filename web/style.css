@@ -501,3 +501,19 @@ body:not(.panel) .seg button { min-height: var(--control-height); padding: 3px 1
 .profile-review-columns > div, .profile-review .hint { min-width: 0; overflow-wrap: anywhere; }
 .profile-review-columns strong { display: block; margin-bottom: 6px; }
 @media (max-width: 600px) { .profile-review-columns { grid-template-columns: minmax(0,1fr); gap: 12px; } }
+
+/* Model discovery is a bounded, explicit review rather than a model test. */
+.catalog-review { display:grid; gap:12px; border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
+.catalog-models { display:grid; gap:8px; max-height:280px; overflow:auto; min-width:0; }
+.catalog-models label { display:flex; align-items:flex-start; gap:8px; min-width:0; }
+.catalog-models .mono { overflow-wrap:anywhere; white-space:normal; min-width:0; }
+.catalog-models input { flex:none; margin-top:3px; }
+
+/* Explicit import reviews must wrap inside the source-add grid, including long IDs. */
+.provider-import-panel { min-width:0; grid-template-columns:minmax(0,1fr); }
+.provider-import-panel > *, .provider-import-panel form, .provider-import-panel .controls { min-width:0; max-width:100%; }
+.provider-import-panel .row { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; padding:12px 0; }
+.provider-import-panel label { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+.provider-import-panel .row label { display:flex; align-items:flex-start; gap:6px; }
+.provider-import-panel input[type="checkbox"] { flex:none; }
+.provider-import-panel .hint, .provider-import-panel .msg, .provider-import-panel .row .sub { white-space:normal; overflow-wrap:anywhere; }

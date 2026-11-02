@@ -49,3 +49,10 @@ test("HTTP save failure rolls back even a secret write that threw afterward, wit
  assert.doesNotMatch(JSON.stringify(result.body),/fixture-error-secret|fixture-environment-key|Bearer/);
  const files=readdirSync(f.store.dir,{recursive:true,withFileTypes:true}).filter(e=>e.isFile()).map(e=>readFileSync(join(e.parentPath,e.name),"utf8")).join("\n");assert.doesNotMatch(files,/fixture-error-secret|fixture-environment-key/);
 });
+
+test("OpenCode HTTP preview and commit use fixed global config only and expose no literal key",async t=>{
+ const f=await fixture(t);const file=f.put(".config/opencode/opencode.json",{provider:{relay:{npm:"@ai-sdk/openai-compatible",options:{baseURL:"http://127.0.0.1:1/v1",apiKey:"fixture-opencode-http-key"},models:{"synthetic-model":{name:"Synthetic"}}}}});f.put(".local/share/opencode/auth.json",{key:"native-login-must-not-read"});const before=readFileSync(file);
+ const preview=await f.api("POST","/api/provider-import/preview",{sources:["opencode"]});assert.equal(preview.status,200);assert.equal(preview.body.candidates.length,1);const c=preview.body.candidates[0];assert.equal(c.importable,true);assert.equal(c.source,"opencode");assert.doesNotMatch(JSON.stringify(preview.body),/fixture-opencode-http-key|native-login/);assert.deepEqual(f.counts(),{reads:0,writes:0,envReads:0});
+ const saved=await f.api("POST","/api/provider-import/commit",{previewId:preview.body.previewId,chosen:[c.id]});assert.equal(saved.status,200);assert.equal(saved.body.imported.length,1);const p=f.store.providers()[0]!;assert.equal(p.off,true);assert.deepEqual(p.protocols,["chat"]);assert.equal(f.keys.get(p.id),"fixture-opencode-http-key");assert.equal(f.counts().envReads,0);assert.deepEqual(readFileSync(file),before);
+ assert.equal((await f.api("POST","/api/provider-import/commit",{previewId:preview.body.previewId,chosen:[c.id]})).status,409);assert.equal((await f.api("POST","/api/provider-import/preview",{sources:["opencode"],configPath:"/elsewhere"})).status,400);
+});

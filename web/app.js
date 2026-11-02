@@ -599,7 +599,7 @@ function validProfilePreview(data, id) {
 }
 async function loadProfileReview(id) {
   if (profileApplyFlight || !/^f-[a-f0-9]+$/.test(id ?? "")) return;
-  cancelProfileReview();
+  cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();
   profileSelectedId = id;
   const flight = { controller: new AbortController(), navigation: pageNavigationVersion };
   profileReviewFlight = flight;
@@ -1210,6 +1210,7 @@ function providerRow(p) {
         <div class="hint">按来源文档勾选它支持的协议。与客户端相同的协议优先；需要转换时，按这里的显示顺序选择。单个模型可独立设置。</div>
         <div class="controls"><button class="btn secondary" type="submit">保存协议</button><button class="btn secondary" type="button" data-protocol-auto>恢复默认</button></div>
       </fieldset></form></details>`}
+      ${typeof catalogReviewHtml === "function" ? catalogReviewHtml(p) : ""}
       ${modelContextForm(p)}
       ${p.cliTextBridge ? `<p class="hint">${esc(cliTextSourceNotice(p))}</p>` : `<div class="controls">
         <label class="hint">测试用模型</label>
@@ -1960,10 +1961,10 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return profileReview || profileApplyFlight || sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return (typeof catalogReview !== "undefined" && (catalogReview || catalogApplying)) || profileReview || profileApplyFlight || sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
-  if (e.target.matches?.("[data-profile-pick]")) { if (profileApplyFlight) return; profileSelectedId = e.target.value; cancelProfileReview(); render(); return; }
+  if (e.target.matches?.("[data-profile-pick]")) { if (profileApplyFlight) return; profileSelectedId = e.target.value; cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview(); render(); return; }
   const fallback=e.target.closest?.("[data-fallback-select]");
   if(fallback){fallback.disabled=true;try{await call("PUT",`/api/bindings/${encodeURIComponent(fallback.dataset.fallbackSelect)}/fallback`,{model:fallback.value});toast(fallback.value?"已保存备用模型":"已取消备用模型");}catch(error){showError(error);}finally{fallback.disabled=false;await refresh(true);}return;}
   const health=e.target.closest?.("[data-source-health]");
@@ -2076,7 +2077,7 @@ async function navigatePage(value) {
   claudeDesktopConfirm = false;
   if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
-  cancelProfileReview();
+  cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();
   pageNavigationVersion++;
   cancelOverviewLoad();
   cancelUsageLoad();
@@ -2106,6 +2107,7 @@ document.addEventListener("click", async e => {
   if(healthCheck){e.stopImmediatePropagation();if(healthCheck.disabled)return;healthCheck.disabled=true;try{await call("POST",`/api/providers/${encodeURIComponent(healthCheck.dataset.sourceHealthCheck)}/health/check`,{});await refresh(true);}catch(error){showError(error);}finally{healthCheck.disabled=false;}return;}
 
   const t = e.target;
+  if(t.closest("[data-catalog-preview], [data-catalog-cancel], [data-catalog-apply], [data-catalog-select]")) return;
   if (t.closest("[data-panel-refresh]")) { await refresh(true); return; }
   if (popover && !popover.contains(t) && !t.closest("[data-pick], #guard-chip")) closePopover();
 
@@ -2146,7 +2148,7 @@ document.addEventListener("click", async e => {
   if (client) { selectClient(client.dataset.agentSelect); return; }
   const segment = t.closest("[data-agent-segment]");
   if (segment) { selectClient(null, segment.dataset.agentSegment); return; }
-  if (t.closest("[data-profiles-toggle]")) { if (profileApplyFlight) return; cancelProfileReview(); profilesOpen = !profilesOpen; profileNaming = false; render(); return; }
+  if (t.closest("[data-profiles-toggle]")) { if (profileApplyFlight) return; cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview(); profilesOpen = !profilesOpen; profileNaming = false; render(); return; }
   const effort = t.closest("[data-effort-choice]");
   if (effort) {
     if (effortSaving) return;
@@ -2392,15 +2394,15 @@ document.addEventListener("click", async e => {
     await refresh(true);
     return;
   }
-  if (t.closest("[data-profile-new]")) { if(profileApplyFlight)return; cancelProfileReview(); profileNaming = true; render(); return; }
+  if (t.closest("[data-profile-new]")) { if(profileApplyFlight)return; cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview(); profileNaming = true; render(); return; }
   if (t.closest("[data-profile-cancel]")) { profileNaming = false; render(); return; }
-  if (t.closest("[data-profile-preview-cancel]")) { if (!profileApplyFlight) { cancelProfileReview(); render(); document.querySelector("[data-profile-apply]")?.focus(); } return; }
+  if (t.closest("[data-profile-preview-cancel]")) { if (!profileApplyFlight) { cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview(); render(); document.querySelector("[data-profile-apply]")?.focus(); } return; }
   if (t.closest("[data-profile-preview-retry]")) { await loadProfileReview(profileReview?.id); return; }
   if (t.closest("[data-profile-preview-confirm]")) { await confirmProfileReview(); return; }
   if (t.closest("[data-profile-apply]")) { await loadProfileReview(document.querySelector("[data-profile-pick]")?.value); return; }
   if (t.closest("[data-profile-del]")) {
     if (profileApplyFlight) return;
-    cancelProfileReview();
+    cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();
     const id = document.querySelector("[data-profile-pick]")?.value;
     try { await call("DELETE", `/api/profiles/${id}`); toast("已删除这个方案"); } catch (error) { showError(error); }
     await refresh(true);
@@ -2536,7 +2538,7 @@ document.addEventListener("click", async e => {
   }
 
   const toggle = t.closest("[data-toggle]");
-  if (toggle) { if (typeof doctorDestination !== "undefined") doctorDestination = null; openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
+  if (toggle) { if(typeof cancelCatalogReview === "function") cancelCatalogReview(); if (typeof doctorDestination !== "undefined") doctorDestination = null; openProvider = openProvider === toggle.dataset.toggle ? null : toggle.dataset.toggle; render(); }
 });
 
 document.addEventListener("change", async e => {
@@ -2733,7 +2735,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
 window.addEventListener("resize", () => { if (popover && pickerReturnFocus?.isConnected) placePopover(popover, pickerReturnFocus); if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

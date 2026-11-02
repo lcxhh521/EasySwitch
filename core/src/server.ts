@@ -80,6 +80,7 @@ import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { ProfilePreviewError } from "./profile-preview.ts";
+import { ModelCatalogPreviews, ModelCatalogError } from "./model-catalog-preview.ts";
 import { slugify, type Store } from "./store.ts";
 import { expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "./upstream.ts";
 import { officialThinkingProfile, upstreamModelId } from "./quirks.ts";
@@ -238,6 +239,7 @@ function repeatedGatewayCredential(req: IncomingMessage): boolean {
 export function createEasySwitchServer(deps: ServerDeps): Server {
   const { store, port } = deps;
   const secrets = revisionedSecrets(store, deps.secrets);
+  const modelCatalog = new ModelCatalogPreviews(store, secrets);
   const automaticConsole = new AutomaticPoolConsole(store, secrets);
   const activity = new InferenceActivity();
   const automaticFailures = new AutomaticFailureLedger();
@@ -1644,6 +1646,24 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       const windows = await refreshPlanUsage(provider, (await pickKey(secrets, provider)).apiKey);
       if (!windows) { json(res, 502, { error: "没能读到额度（厂商没有回答，或返回的格式不认识）" }); return; }
       json(res, 200, { quota: { text: describeQuota(quotaOf(provider.id)) ?? "", ...(exhaustedUntil(provider.id) ? { exhaustedUntil: exhaustedUntil(provider.id)! } : {}) } });
+      return;
+    }
+    const catalogMatch = /^\/api\/providers\/([a-z0-9-]+)\/catalog-(preview|apply)$/.exec(path);
+    if (catalogMatch && method === "POST") {
+      const controller = new AbortController();
+      const cancel = () => { if (!res.writableEnded) controller.abort(); };
+      res.once("close", cancel);
+      try {
+        const preview = catalogMatch[2] === "preview";
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !(preview ? [] : ["token", "models"]).includes(key))) {
+          throw new ModelCatalogError(400, "模型列表请求格式无效");
+        }
+        const result = preview ? await modelCatalog.preview(catalogMatch[1]!, controller.signal) : await modelCatalog.apply(catalogMatch[1]!, body.token, body.models, controller.signal);
+        json(res, 200, result);
+      } catch (error) {
+        if (error instanceof ModelCatalogError) json(res, error.status, { error: error.message, code: error.code });
+        else json(res, 500, { error: "模型列表操作未完成，请刷新后检查来源", code: "MODEL_CATALOG_ERROR" });
+      } finally { res.off("close", cancel); }
       return;
     }
     const providerMatch = /^\/api\/providers\/([a-z0-9-]+)(?:\/(probe|route|protocols|switch))?$/.exec(path);

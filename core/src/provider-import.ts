@@ -4,15 +4,16 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { parseImportJson } from "./import-jsonc.ts";
 import type { Provider, ApiProtocol } from "./types.ts";
 import type { Store } from "./store.ts";
 import type { SecretStore } from "./secrets.ts";
 
-export const IMPORT_SOURCES = ["cc-switch", "opencodex", "environment", "codex", "claude"] as const;
+export const IMPORT_SOURCES = ["cc-switch", "opencodex", "opencode", "environment", "codex", "claude"] as const;
 export type ImportSource = typeof IMPORT_SOURCES[number];
 export interface ImportCandidate { id: string; source: ImportSource; name: string; baseUrl: string; models: string[]; defaultModel?: string; keyCount: number; importable: boolean; reason?: string }
 export interface ImportPreview { previewId: string; candidates: ImportCandidate[]; sources: Array<{ source: ImportSource; status: "ready" | "missing" | "blocked"; message: string }> }
-export interface ProviderImportDeps { home: string; environment: () => Record<string, string | undefined>; store: Pick<Store, "providers" | "provider" | "upsertProvider" | "removeProvider">; secrets: SecretStore; now?: () => number }
+export interface ProviderImportDeps { home: string; environment: () => Record<string, string | undefined>; store: Pick<Store, "providers" | "provider" | "upsertProvider" | "removeProvider"> & Partial<Pick<Store, "credentialRevision">>; secrets: SecretStore; now?: () => number }
 export interface ProviderImportResult { imported: Array<{ candidateId: string; providerId: string }>; failed: Array<{ candidateId: string; reason: string }>; rolledBack: boolean }
 export class ProviderImportError extends Error { readonly code = "invalid_input"; readonly status: number; constructor(message: string, status = 400) { super(message); this.status = status; } }
 type Json = Record<string, unknown>;
@@ -26,7 +27,7 @@ const digest = (v: string | Buffer) => createHash("sha256").update(v).digest("he
 const fail = () => new ProviderImportError("配置格式不支持或不安全，请检查来源设置后重试。");
 const keyValue = (v: unknown): string[] => typeof v === "string" && v.length > 0 ? [v] : [];
 const usableKey = (v: string) => v.length <= 16_384 && !/[\s\0]/.test(v) && !/^(?:es-session-|sk-ant-oat|gho_|ghu_|ghr_)/.test(v) && !/^\$\{|^\$\(|^`/.test(v);
-const PATHS: Record<Exclude<ImportSource,"environment">,string> = { "cc-switch": ".cc-switch/cc-switch.db", opencodex: ".opencodex/config.json", codex: ".codex/config.toml", claude: ".claude/settings.json" };
+const PATHS: Record<Exclude<ImportSource,"environment"|"opencode">,string> = { "cc-switch": ".cc-switch/cc-switch.db", opencodex: ".opencodex/config.json", codex: ".codex/config.toml", claude: ".claude/settings.json" };
 const ENV = [
   { key: "OPENAI_API_KEY", base: "OPENAI_BASE_URL", url: "https://api.openai.com/v1", model: "OPENAI_MODEL", name: "OpenAI", protocol: "responses" },
   { key: "ANTHROPIC_API_KEY", base: "ANTHROPIC_BASE_URL", url: "https://api.anthropic.com", model: "ANTHROPIC_MODEL", name: "Anthropic", protocol: "messages" },
@@ -115,6 +116,42 @@ function opencodexRows(config:Json):Raw[] {
       ...(p.authMode!==undefined&&p.authMode!=="key"?{reason:"原生订阅透传或未知鉴权来源不导入。"}:p.adapter!==undefined&&!["openai-chat","openai-responses","anthropic","claude","anthropic-chat"].includes(String(p.adapter))?{reason:"此适配器格式尚未支持，请手动添加。"}:Object.keys(obj(p.headers)).length?{reason:"此来源带额外请求头，请手动核对后添加。"}:{})};
   });
 }
+const OPENCODE_PATHS = [".config/opencode/opencode.json", ".config/opencode/opencode.jsonc"] as const;
+const literal = (v: unknown): v is string => typeof v === "string" && !/\{(?:env|file):|\$\{|\$\(|`|[\u0000-\u001f\u007f]/i.test(v);
+const record = (v: unknown): v is Json => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+/** Fixed global file only. OpenCode's merged runtime, auth store and variable expansion are not imported. */
+function opencodeRows(home: string): { rows: Raw[]; stamp: string } {
+  const locate = () => {
+    const present = OPENCODE_PATHS.filter(tail => { try { checkedPath(home, tail); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } });
+    if (!present.length) { const missing = new Error("missing") as NodeJS.ErrnoException; missing.code = "ENOENT"; throw missing; }
+    if (present.length !== 1) throw fail();
+    return present[0]!;
+  };
+  const tail = locate(), file = safeRead(home, tail);
+  if (locate() !== tail) throw fail();
+  const config = parseImportJson(new TextDecoder("utf-8", { fatal: true }).decode(file.bytes), tail.endsWith(".jsonc"));
+  if (config.provider !== undefined && !record(config.provider)) throw fail();
+  const rows = Object.entries(obj(config.provider)).slice(0, MAX_CANDIDATES + 1).map(([id, value], index): Raw => {
+    const p = obj(value), options = obj(p.options), models = obj(p.models);
+    const keys = keyValue(options.apiKey);
+    let reason: string | undefined;
+    if (!record(value) || Object.keys(p).some(k => !["npm", "name", "options", "models"].includes(k)) || p.npm !== "@ai-sdk/openai-compatible") reason = "仅支持明确配置的 OpenAI-compatible 自定义 API 来源；其他适配器或来源设置请手动核对。";
+    else if (!record(p.options) || Object.keys(options).some(k => !["baseURL", "apiKey"].includes(k))) reason = "此来源包含额外请求头、鉴权或未支持的选项，不能安全自动迁移。";
+    else if (!literal(options.baseURL) || !literal(options.apiKey) || !options.apiKey || (p.name !== undefined && !literal(p.name)) || !literal(id)) reason = "只支持直接填写的地址、名称和静态 API Key；不读取环境变量、外部文件或原生登录。";
+    else if (!record(p.models) || !Object.keys(models).length || Object.keys(models).length > 200 || Object.entries(models).some(([id, m]) => !literal(id) || !record(m) || Object.keys(m).some(k => k !== "name") || (m.name !== undefined && !literal(m.name)))) reason = "模型列表含未支持的映射、选项或能力设置；本批只导入模型 ID，不迁移模型显示名称。";
+    else if (config.model !== undefined && !literal(config.model)) reason = "默认模型使用动态引用或无效格式，请先改成明确的模型 ID。";
+    else if ([config.enabled_providers, config.disabled_providers].some(v => v !== undefined && (!Array.isArray(v) || v.some(id => !literal(id))))) reason = "来源启用范围格式不支持，请手动核对。";
+    else if (strings(config.disabled_providers).includes(id) || config.enabled_providers !== undefined && !strings(config.enabled_providers).includes(id)) reason = "此来源被 OpenCode 的全局启用范围排除，未自动迁移。";
+    const ids = Object.keys(models);
+    const selected = typeof config.model === "string" && config.model.startsWith(`${id}/`) ? config.model.slice(id.length + 1) : undefined;
+    if (!reason && selected !== undefined && !ids.includes(selected)) reason = "全局默认模型不在此来源的静态模型列表内，请手动核对。";
+    if (selected && ids.includes(selected)) ids.splice(ids.indexOf(selected), 1), ids.unshift(selected);
+    // Unsupported fields may contain arbitrary secrets. Do not echo their names, URLs or model metadata.
+    return reason ? { source: "opencode", name: `OpenCode 配置项 ${index + 1}`, baseUrl: "", models: [], keys, protocol: "chat", reason }
+      : { source: "opencode", name: p.name ?? id, baseUrl: options.baseURL, models: ids, keys, protocol: "chat" };
+  });
+  return { rows, stamp: JSON.stringify([tail, file.stamp, "other-fixed-file-absent"]) };
+}
 function ccRows(home:string):{rows:Raw[];stamp:string} {
   const tail=PATHS["cc-switch"],before=safeRead(home,tail,DB_LIMIT);
   for(const suffix of ["-wal","-shm","-journal"]){try{lstatSync(before.path+suffix);throw fail();}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw fail();}}
@@ -162,6 +199,7 @@ export class ProviderImportService {
     for(const source of sources){try{
       if(source==="environment") {for(const entry of ENV){const key=env(entry.key);if(key)raw.push({source,name:entry.name,baseUrl:env(entry.base)??entry.url,models:keyValue(env(entry.model)),keys:[key],protocol:entry.protocol});}}
       else if(source==="cc-switch"){const cc=ccRows(this.#deps.home);raw.push(...cc.rows);stamps.push([source,cc.stamp]);}
+      else if(source==="opencode"){const scan=opencodeRows(this.#deps.home);raw.push(...scan.rows);stamps.push([source,scan.stamp]);}
       else {const file=safeRead(this.#deps.home,PATHS[source]);stamps.push([source,file.stamp]);const text=file.bytes.toString("utf8");
         if(source==="opencodex")raw.push(...opencodexRows(jsonFile(text)));
         else if(source==="codex")raw.push(...codexRows(text,source,env));
@@ -189,21 +227,35 @@ export class ProviderImportService {
     if(fresh.fingerprint!==preview.fingerprint||indices.some(i=>!fresh.candidates[i]?.public.importable))throw new ProviderImportError("来源配置已变化，请重新预览后再导入。",409);
     const selected=indices.map(i=>({...fresh.candidates[i]!,public:preview.candidates[i]!.public}));
     this.#previews.delete(value.previewId);this.#busy=true;
-    const created:string[]=[],written:string[]=[],imported:ProviderImportResult["imported"]=[];
+    const created=new Map<string,string>(),written:Array<{slot:string;owner:string;value:string}>=[],staged:Array<{provider:Provider;candidateId:string}>=[],imported:ProviderImportResult["imported"]=[];
     try {
       for(const candidate of selected as Saved[]){
         const c=candidate.public,id=`import-${randomUUID()}`;if(this.#deps.store.provider(id))throw fail();
         const p:Provider={id,name:c.name,baseUrl:c.baseUrl,models:c.models,...(c.defaultModel?{defaultModel:c.defaultModel}:{}),protocols:[candidate.protocol],route:candidate.protocol==="responses"?"responses-native":"chat-translate",routePinned:true,streamUsage:true,off:true,createdAt:new Date(now).toISOString(),...(candidate.protocol==="messages"?{anthropicBaseUrl:c.baseUrl,messagesRoute:"anthropic-native"}:{})};
         // Retain the primary slot for console compatibility; every pool key has fresh metadata and a fresh slot.
-        written.push(id);await this.#deps.secrets.set(id,candidate.keys[0]!);
-        if(candidate.keys.length>1){p.keys=[];for(const [index,key]of candidate.keys.entries()){const kid=`k-${randomUUID()}`,slot=`${id}#${kid}`;written.push(slot);await this.#deps.secrets.set(slot,key);p.keys.push({id:kid,label:`导入密钥 ${index+1}`,enabled:true,addedAt:p.createdAt});}}
-        created.push(id);this.#deps.store.upsertProvider(p);imported.push({candidateId:c.id,providerId:id});
+        written.push({slot:id,owner:id,value:candidate.keys[0]!});await this.#deps.secrets.set(id,candidate.keys[0]!);
+        if(candidate.keys.length>1){p.keys=[];for(const [index,key]of candidate.keys.entries()){const kid=`k-${randomUUID()}`,slot=`${id}#${kid}`;written.push({slot,owner:id,value:key});await this.#deps.secrets.set(slot,key);p.keys.push({id:kid,label:`导入密钥 ${index+1}`,enabled:true,addedAt:p.createdAt});}}
+        staged.push({provider:p,candidateId:c.id});
       }
+      // Keep ALL rows private while native secret writes can await. Otherwise an
+      // earlier row could be edited/bound by another request before a later failure.
+      if(this.#scan(preview.sources).fingerprint!==preview.fingerprint||staged.some(({provider})=>this.#deps.store.provider(provider.id)))throw fail();
+      // No await between final validation and publication of the complete batch.
+      for(const {provider,candidateId} of staged){created.set(provider.id,JSON.stringify(provider));this.#deps.store.upsertProvider(provider);imported.push({candidateId,providerId:provider.id});}
       return {imported,failed:[],rolledBack:false};
     }catch{
       let complete=true;
-      for(const id of created.reverse())try{this.#deps.store.removeProvider(id);}catch{complete=false;}
-      for(const key of written.reverse())try{await this.#deps.secrets.delete(key);}catch{complete=false;}
+      for(const [id,receipt] of [...created].reverse())try{const current=this.#deps.store.provider(id);if(current&&JSON.stringify(current)!==receipt){complete=false;continue;}if(current)this.#deps.store.removeProvider(id);}catch{complete=false;}
+      for(const key of written.reverse())try{
+        // A changed/surviving row owns its keys. A changed key is not ours to delete.
+        if(this.#deps.store.provider(key.owner)){complete=false;continue;}
+        const revision=this.#deps.store.credentialRevision?.(key.slot);
+        const current=await this.#deps.secrets.get(key.slot);
+        if(this.#deps.store.credentialRevision?.(key.slot)!==revision){complete=false;continue;}
+        if(current===undefined)continue;
+        if(current!==key.value||this.#deps.store.provider(key.owner)){complete=false;continue;}
+        await this.#deps.secrets.delete(key.slot);
+      }catch{complete=false;}
       return {imported:[],failed:value.chosen.map(candidateId=>({candidateId,reason:complete?"保存失败，本次新增来源和密钥已回滚。":"保存失败，部分清理未能确认；请在来源页和钥匙串检查本次新增项。"})),rolledBack:complete};
     }finally{this.#busy=false;}
   }
