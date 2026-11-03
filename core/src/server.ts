@@ -115,6 +115,8 @@ export interface ServerDeps {
   codeBuddyExecutor?: QoderExecutor;
   /** Metadata-only test seam; never controlled by an HTTP request. */
   cliTextBinaryInspector?: CliTextBinaryInspector;
+  /** Metadata-only detection and clock for fixture tests; never configurable over HTTP. */
+  agentDetection?: { detect: () => Promise<DetectedAgent[]>; now?: () => number };
   /** In-process test seam; never configurable over HTTP or environment variables. */
   interactiveRuntime?: {
     findBinary: (id: string) => Promise<string | undefined>;
@@ -202,8 +204,6 @@ export function priceEntry(store: Store, entry: GatewayLogEntry): void {
   entry.pricingProvenance = estimateProvenance(priced, entry.cachedTokens);
 }
 
-let agentCache: { at: number; list: DetectedAgent[] } | undefined;
-
 async function runOpen(appPath: string): Promise<void> {
   await promisify(execFile)("open", [appPath]);
 }
@@ -238,6 +238,30 @@ function repeatedGatewayCredential(req: IncomingMessage): boolean {
 
 export function createEasySwitchServer(deps: ServerDeps): Server {
   const { store, port } = deps;
+  // Per server, so fixture instances and different stores never share detection.
+  let agentCache: { at: number; list: DetectedAgent[] } | undefined;
+  let agentScan: Promise<DetectedAgent[]> | undefined;
+  let agentScanGeneration = 0;
+  const detectionNow = deps.agentDetection?.now ?? Date.now;
+  function invalidateAgentCache(): void {
+    agentScanGeneration++;
+    agentCache = undefined;
+    agentScan = undefined;
+  }
+  function detectedAgents(refresh = false): Promise<DetectedAgent[]> {
+    // Concurrent explicit clicks and ordinary loads share one read-only scan.
+    if (agentScan) return agentScan;
+    if (!refresh && agentCache && detectionNow() - agentCache.at <= 30_000) return Promise.resolve(agentCache.list);
+    const generation = agentScanGeneration;
+    // A failed refresh must not leave old installed=true entries launchable.
+    agentCache = undefined;
+    const pending = Promise.resolve().then(() => deps.agentDetection?.detect() ?? detectAgents()).then(list => {
+      if (generation === agentScanGeneration) agentCache = { at: detectionNow(), list };
+      return list;
+    }).finally(() => { if (agentScan === pending) agentScan = undefined; });
+    agentScan = pending;
+    return pending;
+  }
   const secrets = revisionedSecrets(store, deps.secrets);
   const modelCatalog = new ModelCatalogPreviews(store, secrets);
   const automaticConsole = new AutomaticPoolConsole(store, secrets);
@@ -296,7 +320,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (deps.interactiveRuntime) return deps.interactiveRuntime.findBinary(id);
     if (id === "codex") return findCodex();
     if (id === "claude") return findClaude();
-    const found = (agentCache?.list ?? (agentCache = { at: Date.now(), list: await detectAgents() }).list).find(a => a.id === id);
+    const found = (agentCache?.list ?? await detectedAgents()).find(a => a.id === id);
     return found?.installed && found.where && !found.where.endsWith(".app") ? found.where : undefined;
   }
 
@@ -631,7 +655,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     } catch { tokens = {storeAvailable:false}; }
     const agents = deps.doctor?.agents?.() ?? AGENTS.map(a => {
       const detected=agentCache?.list.find(x=>x.id===a.id);
-      return {id:a.id,installed:detected ? detected.installed : null,helpAllowed:Boolean(detected?.installed && detected.where && LAUNCHERS[a.id]),help:doctorHelp.get(a.id)};
+      return {id:a.id,installed:detected && detected.detection !== "error" ? detected.installed : null,helpAllowed:Boolean(detected?.installed && detected.where && LAUNCHERS[a.id]),help:doctorHelp.get(a.id)};
     });
     const recent=log.find(e=>e.status>=400);
     return {gateway:{reachable:true},helper:secrets.health?.({passive:true}) ?? null,tokens,agents,
@@ -909,7 +933,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if (!mine.length) { json(res, 404, { error: "没有这个订阅" }); return; }
       if (typeof body.on !== "boolean") { json(res, 400, { error: "需要 on: true 或 false" }); return; }
       for (const p of mine) { if (body.on) delete p.off; else p.off = true; store.upsertProvider(p); }
-      agentCache = undefined;
+      invalidateAgentCache();
       json(res, 200, { ok: true, on: body.on });
       return;
     }
@@ -1270,10 +1294,13 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
     // --- every agent we know of, with what is installed on this Mac ---------
     if (path === "/api/agents" && method === "GET") {
-      if (!agentCache || Date.now() - agentCache.at > 30_000) agentCache = { at: Date.now(), list: await detectAgents() };
-      await Promise.all(agentCache.list.filter(a => a.installed && LAUNCHERS[a.id]).map(a => levelsOf(a.id)));
-      const matrix = capabilityMatrix(agentCache.list);
-      json(res, 200, { agents: agentCache.list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null, caps: matrix[a.id], ...((GUIDE_IDS as readonly string[]).includes(a.id) ? { guide: true } : {}) })), coverage: coverage(matrix), features: FEATURES });
+      if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "missing x-easyswitch header" }); return; }
+      const refresh = new URL(req.url ?? "", "http://x").searchParams.get("refresh") === "1";
+      const list = await detectedAgents(refresh);
+      // Installation refresh must not start a shell or a client, including --help
+      // and debug models. Launch-specific effort discovery remains explicit.
+      const matrix = capabilityMatrix(list);
+      json(res, 200, { agents: list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null, caps: matrix[a.id], ...((GUIDE_IDS as readonly string[]).includes(a.id) ? { guide: true } : {}) })), coverage: coverage(matrix), features: FEATURES });
       return;
     }
     // The manual-setup helper: what to type into an app that has no per-launch override. Nothing is written for the person.
@@ -1313,7 +1340,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     }
     const agentOpen = /^\/api\/agents\/([a-z0-9-]+)\/open$/.exec(path);
     if (agentOpen && method === "POST") {
-      const found = (agentCache?.list ?? await detectAgents()).find(a => a.id === agentOpen[1]);
+      const found = (agentCache?.list ?? await detectedAgents()).find(a => a.id === agentOpen[1]);
       if (!found?.installed || !found.where) {
         json(res, 404, { error: "没有检测到这个 agent" });
         return;

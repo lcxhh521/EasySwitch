@@ -9,7 +9,7 @@ import { validateLocalReport } from "./test-local-report.ts";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const home = mkdtempSync(join(tmpdir(), "es-local-tests-home-"));
 const files = [
-  "accounts-auto",
+  "accounts-auto", "agents-detection", "agents-api", "client-recovery-ui",
   "automatic-dispatch", "automatic-approval", "automatic-policy", "automatic-pools-ui", "automatic-api", "automatic-console-races",
   "automatic-tool-auth", "automatic-tool-policy", "automatic-tool-output", "automatic-tool-sessions",
   "automatic-tool-api", "automatic-tool-ui", "automatic-tool-dispatch",

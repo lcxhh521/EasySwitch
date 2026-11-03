@@ -1,3 +1,43 @@
+"use strict";
+// Curated official instructions, checked 2026-11-03. Display/copy only, never execute.
+const CLIENT_INSTALL_GUIDES = Object.freeze({
+  codex:{url:"https://github.com/openai/codex#installing-and-running-codex-cli",command:"npm install -g @openai/codex",note:"这是 Codex 命令行安装示例，需要已有 npm；不是 ChatGPT 桌面应用安装或登录。"},
+  claude:{url:"https://code.claude.com/docs/en/setup",command:"brew install --cask claude-code",note:"这是 macOS Homebrew 安装示例，需要已有 Homebrew；其他系统与安装方式请看官方说明。"},
+  opencode:{url:"https://opencode.ai/docs/",command:"npm install -g opencode-ai",note:"这是官方 OpenCode 1 的 npm 安装示例。V1 与 V2 共用 opencode 命令，可能互相替换；先核对版本，不能凭发现命令认定兼容。"},
+  "gemini-cli":{url:"https://geminicli.com/docs/get-started/installation/",command:"npm install -g @google/gemini-cli",note:"需要 Node.js 20 或更新版本及 npm；系统要求以官方说明为准。"},
+  "qwen-code":{url:"https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",command:"npm install -g @qwen-code/qwen-code@latest",note:"需要 Node.js 22 或更新版本及 npm；安装后的登录由你在原生客户端完成。"}
+});
+function clientDetection(a) {
+  if (agentDetectionState === "loading") return "loading";
+  if (agentDetectionState === "error") return "error";
+  return a?.detection ?? (a?.installed ? "found" : "not_found");
+}
+function clientFound(a) { return clientDetection(a) === "found"; }
+function clientDetectionLabel(a) {return {found:"已发现",not_found:"未发现",error:"检测失败",loading:"检测中"}[clientDetection(a)] || "状态未知";}
+function clientRecoveryHtml(a) {
+  const status=clientDetection(a), guide=Object.hasOwn(CLIENT_INSTALL_GUIDES,a.id)?CLIENT_INSTALL_GUIDES[a.id]:null;
+  return `<section class="client-detail-section client-recovery" aria-label="客户端检测与安装"><h3>${esc(clientDetectionLabel(a))}</h3>
+    <p class="hint">${status==="found" ? "已找到客户端文件；这不验证版本、登录或增强会话兼容性。" : status==="error" ? "本次检测未完成，不能据此判断是否安装；已有模型配置仍保留。请重试或检查 EasySwitch 的运行环境。" : status==="loading" ? "正在只读检查客户端位置，已有配置不会改变。" : "当前 EasySwitch 服务进程的 PATH 和已知位置没有找到客户端，不代表电脑上一定未安装。"}</p>
+    <p class="hint">此按钮的检测不会运行客户端或读取登录配置。终端可用但这里找不到时，请核对 EasySwitch 的启动环境；自行安装后可重启 EasySwitch，让新 PATH 生效，再重新检测。</p>
+    <button class="btn secondary" data-client-recheck="${esc(a.id)}" aria-disabled="${status==="loading"}">${status==="loading"?"正在检测…":"重新检测客户端"}</button>
+    ${status==="found" ? "" : guide ? `<details class="client-install-guide" data-keep="client-install-${esc(a.id)}" ${keepOpen(`client-install-${a.id}`)}><summary>官方安装指引 · 自行执行</summary><p class="hint">${esc(guide.note)}</p><a href="${esc(guide.url)}" target="_blank" rel="noopener noreferrer">查看官方安装说明</a><div class="client-command"><code>${esc(guide.command)}</code><button class="btn secondary" data-copy="${esc(guide.command)}">复制安装示例</button></div><p class="hint">复制不会安装。请先阅读官方要求，再自行决定是否运行；安装会修改系统中的软件。核实日期：2026-11-03。</p></details>` : `<p class="hint">此客户端暂无已核实的安装指引，请从厂商官方渠道核对。这里不会猜测或执行安装命令。</p>`}
+  </section>`;
+}
+async function recheckClients() {
+  if(agentDetectionState==="loading" || page!=="agents")return;
+  const navigation=pageNavigationVersion, id=selectedAgent;
+  const controller=new AbortController();
+  let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error("Detection timeout"));},15000);});
+  const current=()=>page==="agents"&&pageNavigationVersion===navigation;
+  try {
+    const next=await loadAgents(current,path=>Promise.race([call("GET",path,undefined,{signal:controller.signal}).then(result=>{if(controller.signal.aborted)throw new Error("Detection timeout");return result;}),deadline]),true);
+    if(!current())return;
+    if(next){agentList=next;agentListNavigationVersion=navigation;
+      if(selectedAgent===id&&id){const chosen=next.find(a=>a.id===id);if(chosen)agentSegment=chosen.installed?"installed":"available";}}
+  } finally {clearTimeout(timer);if(current())render();}
+}
+
 // EasySwitch console. Plain JS, no build step; talks only to the local core.
 // Layout ideas from Magpie (agent rows, model picker, provider list, live routing,
 // usage tiles) and opencodex (overview figures, status chips); see PROVENANCE.md.
@@ -58,11 +98,21 @@ let pageNavigationVersion = 0; // A response must not override newer user naviga
 let agentList = null; // every agent we know of, from /api/agents
 let agentListNavigationVersion = -1; // Diagnostic targeting must not use an older cached list.
 let agentCoverage = null; // { coverage, features } from the same call: what is done for which agent
-async function loadAgents(current = () => true, read = path => call("GET", path)) {
-  const r = await read("/api/agents").catch(() => null);
-  if (!r || !current()) return null;
-  agentCoverage = { coverage: r.coverage ?? [], features: r.features ?? [] };
-  return r.agents;
+let agentDetectionState = "unread";
+let agentReadVersion = 0;
+async function loadAgents(current = () => true, read = path => call("GET", path), forceDetection = false) {
+  const version = ++agentReadVersion;
+  agentDetectionState = "loading";
+  if (page === "agents" && state && agentList) render();
+  const valid = () => current() && version === agentReadVersion;
+  try {
+    const r = await read(forceDetection ? "/api/agents?refresh=1" : "/api/agents");
+    if (!valid()) return null;
+    if (!r || r.coverage !== undefined && !Array.isArray(r.coverage) || r.features !== undefined && !Array.isArray(r.features) || !Array.isArray(r.agents) || r.agents.some(a => !a || typeof a.id !== "string" || !a.id || typeof a.installed !== "boolean" || a.detection !== undefined && (!["found","not_found","error"].includes(a.detection) || a.installed !== (a.detection === "found"))) || new Set(r.agents.map(a=>a.id)).size !== r.agents.length) throw new Error("Invalid detection result");
+    agentCoverage = { coverage: r.coverage ?? [], features: r.features ?? [] };
+    agentDetectionState = "ready";
+    return r.agents;
+  } catch { if(valid())agentDetectionState="error";return null; }
 }
 
 const CAP_STATE = {
@@ -504,7 +554,7 @@ function guidePanel(a) {
 }
 
 function genericAgentRow(a, detailed = false) {
-  const can = a.installed && a.can && !a.where?.endsWith(".app") ? a.can : null;
+  const can = a.can && !a.where?.endsWith(".app") ? a.can : null;
   const binding = state.bindings?.[a.id];
   const provider = binding && providerById(binding.providerId);
   const face = binding
@@ -520,9 +570,9 @@ function genericAgentRow(a, detailed = false) {
     ${can && typeof automaticPoolEntry === "function" ? automaticPoolEntry(a.id) : ""}
     <div class="acts">
       ${a.guide ? `<button class="btn" data-guide="${esc(a.id)}">配置向导</button>` : ""}
-      ${can?.interactive ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding && !(a.id === "opencode" && typeof automaticToolFlight !== "undefined" && (automaticToolFlight || automaticToolUncertain)) ? "" : "disabled"}>启动</button>` : ""}
-      ${can?.interactive && typeof automaticToolEntry === "function" ? automaticToolEntry(a.id) : ""}
-      ${!detailed ? a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">未安装</span>` : ""}
+      ${can?.interactive && clientFound(a) ? `<button class="btn" data-agent-launch="${esc(a.id)}" ${binding && !(a.id === "opencode" && typeof automaticToolFlight !== "undefined" && (automaticToolFlight || automaticToolUncertain)) ? "" : "disabled"}>启动</button>` : ""}
+      ${can?.interactive && clientFound(a) && typeof automaticToolEntry === "function" ? automaticToolEntry(a.id) : ""}
+      ${!detailed ? clientFound(a) ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开</button>` : `<span class="hint">${esc(clientDetectionLabel(a))}</span>` : ""}
     </div>
   </div>${a.guide ? guidePanel(a) : ""}${can ? agentEditor(a.id) : ""}`;
 }
@@ -746,21 +796,22 @@ function clientCard(a) {
   return `<button class="client-card ${selectedAgent === a.id ? "selected" : ""}" data-agent-select="${esc(a.id)}" aria-pressed="${selectedAgent === a.id}" aria-controls="client-detail">
     <span class="client-card-head">${icon(a.icon, "lg")}<span><strong>${esc(a.name)}</strong><small>${esc(a.vendor)}</small></span>${SUPPORT_CHIP[a.support] ?? ""}</span>
     <span class="client-card-model">${esc(model)}</span>${source ? `<small>${esc(source)}</small>` : ""}
-    <ul class="client-capabilities">${clientCapabilities(a, true)}</ul>
+    <span class="chip">${esc(clientDetectionLabel(a))}</span><ul class="client-capabilities">${clientCapabilities(a, true)}</ul>
   </button>`;
 }
 
 function clientDetail(a) {
-  const builtin = Object.hasOwn(HARNESS, a.id) && (a.id === "codex" ? state.codexPath : state.claudePath);
-  const command = a.installed && a.can?.interactive && !a.where?.endsWith(".app") ? `es ${a.id}` : "";
+  const builtin = clientFound(a) && Object.hasOwn(HARNESS, a.id) && (a.id === "codex" ? state.codexPath : state.claudePath);
+  const command = clientFound(a) && a.can?.interactive && !a.where?.endsWith(".app") ? `es ${a.id}` : "";
   const capabilities = clientCapabilities(a);
   return `<section class="card client-detail" id="client-detail" aria-label="${esc(a.name)} 设置">
     ${builtin ? agentRow(a.id, true) : genericAgentRow(a, true)}
     ${a.id === "codex" ? chatgptCard() : ""}
     <div class="client-detail-section"><h3>启动与原生使用</h3>
       ${command ? `<div class="client-command"><code>${esc(command)}</code><button class="btn secondary" data-copy="${esc(command)}">复制启动命令</button></div><p class="hint">在终端运行命令才会启动；设置在新开的增强会话中生效。</p>` : ""}
-      ${a.installed ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开原生客户端</button><p class="hint">如需退回原生，请关闭原来的增强窗口，再打开原生客户端。此按钮不会结束已有增强会话。</p>` : `<p class="hint">安装客户端后刷新检测；已有配置向导仍可提前查看。</p>`}
+      ${clientFound(a) ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开原生客户端</button><p class="hint">如需退回原生，请关闭原来的增强窗口，再打开原生客户端。此按钮不会结束已有增强会话。</p>` : `<p class="hint">可先选择模型或查看配置向导，随后按下方指引核对安装。</p>`}
     </div>
+    ${clientRecoveryHtml(a)}
     ${capabilities ? `<div class="client-detail-section"><h3>能做什么</h3><ul class="client-capabilities full">${capabilities}</ul></div>` : ""}
   </section>`;
 }
@@ -785,12 +836,13 @@ function renderAgents() {
   if (!list.some(a => a.id === selectedAgent)) selectedAgent = diagnosticTarget?.message || diagnosticTarget?.experimental ? null : list[0]?.id ?? null;
   const chosen = list.find(a => a.id === selectedAgent);
   return `<div class="client-toolbar">
-      <div class="seg" role="group" aria-label="客户端范围"><button data-agent-segment="installed" aria-pressed="${agentSegment === "installed"}">已安装 ${installed.length}</button><button data-agent-segment="available" aria-pressed="${agentSegment === "available"}">可以接入 ${available.length}</button></div>
+      <div class="seg" role="group" aria-label="客户端范围"><button data-agent-segment="installed" aria-pressed="${agentSegment === "installed"}">${agentDetectionState === "error" || agentDetectionState === "loading" ? "上次已发现" : "已发现"} ${installed.length}</button><button data-agent-segment="available" aria-pressed="${agentSegment === "available"}">待检测 / 未发现 ${available.length}</button></div>
       <button class="btn secondary" data-profiles-toggle aria-expanded="${profilesOpen}">方案${state.profiles?.length ? ` · ${state.profiles.length}` : ""}</button>
     </div>
     ${profilesOpen ? profileBar() : ""}
+    <p class="hint" role="status">${agentDetectionState === "loading" ? "正在检测客户端…" : agentDetectionState === "error" ? "客户端检测失败，以下可能是旧结果；不能据此判断未安装。" : "已发现仅表示找到文件，不等于已登录或兼容验证。"}</p><button class="btn secondary" data-client-recheck="all" aria-disabled="${agentDetectionState === "loading"}">重新检测客户端</button>
     <div class="client-layout"><div class="client-grid" aria-label="选择客户端">
-      ${list.map(clientCard).join("") || `<div class="card empty">${agentList ? agentSegment === "installed" ? "还没有检测到客户端，切换到「可以接入」查看。" : "已检测到列表中的全部客户端。" : "正在检测客户端…"}</div>`}
+      ${list.map(clientCard).join("") || `<div class="card empty">${agentList ? agentSegment === "installed" ? "还没有检测到客户端，切换到「待检测 / 未发现」查看。" : "已检测到列表中的全部客户端。" : agentDetectionState === "error" ? "客户端检测失败，请重新检测；不能据此判断未安装。" : "正在检测客户端…"}</div>`}
     </div>${chosen ? clientDetail(chosen) : ""}</div>
     ${state.providers.length ? "" : onboarding()}
     ${experimentalAgentsCard()}`;
@@ -1911,7 +1963,7 @@ function preserveActionFocus(main) {
   return () => {
     const matches = candidates();
     const target = matches.length === 1 ? matches[0] : null;
-    if (target && !target.disabled && target.getAttribute?.("aria-disabled") !== "true" && !target.closest?.("[hidden], [inert]")) target.focus({ preventScroll: true });
+    if (target && !target.disabled && (target.getAttribute?.("aria-disabled") !== "true" || target.matches?.('[data-client-recheck], [data-first-action="detect"]')) && !target.closest?.("[hidden], [inert]")) target.focus({ preventScroll: true });
   };
 }
 
@@ -2078,7 +2130,7 @@ async function navigatePage(value) {
   if (typeof automaticPoolInvalidate === "function") automaticPoolInvalidate();
   if (typeof cancelDoctorCheck === "function" && page === "doctor") cancelDoctorCheck();
   cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();
-  pageNavigationVersion++;
+  pageNavigationVersion++; agentReadVersion++; if(agentDetectionState === "loading") agentDetectionState="unread";
   cancelOverviewLoad();
   cancelUsageLoad();
   page = next;
@@ -2107,6 +2159,7 @@ document.addEventListener("click", async e => {
   if(healthCheck){e.stopImmediatePropagation();if(healthCheck.disabled)return;healthCheck.disabled=true;try{await call("POST",`/api/providers/${encodeURIComponent(healthCheck.dataset.sourceHealthCheck)}/health/check`,{});await refresh(true);}catch(error){showError(error);}finally{healthCheck.disabled=false;}return;}
 
   const t = e.target;
+  if(t.closest("[data-client-recheck]")){await recheckClients();return;}
   if(t.closest("[data-catalog-preview], [data-catalog-cancel], [data-catalog-apply], [data-catalog-select]")) return;
   if (t.closest("[data-panel-refresh]")) { await refresh(true); return; }
   if (popover && !popover.contains(t) && !t.closest("[data-pick], #guard-chip")) closePopover();
@@ -2735,7 +2788,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();pageNavigationVersion++;cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();pageNavigationVersion++; agentReadVersion++; if(agentDetectionState === "loading") agentDetectionState="unread";cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
 window.addEventListener("resize", () => { if (popover && pickerReturnFocus?.isConnected) placePopover(popover, pickerReturnFocus); if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

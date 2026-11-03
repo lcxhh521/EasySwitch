@@ -1047,3 +1047,15 @@ test('a stalled core read times out, releases polling, and cannot replace recove
   app.run("lateRead({version:'stale',providers:[]})"); await new Promise(resolve=>setImmediate(resolve));
   assert.equal(app.run('state.version'),'shell-fixture');
 });
+
+test("read-only detection controls retain keyboard focus while busy without moving it back from another action", async () => {
+  const app=shell({hash:'#agents'});await app.refresh();
+  app.run(`renderAgents=()=>'<div id="client-detail"><button data-client-recheck="opencode" aria-disabled="'+(agentDetectionState==='loading')+'">Detect</button><button data-other="keep">Other</button></div>';render()`);
+  app.node('[data-client-recheck]').focus();app.run("agentDetectionState='loading';render()");
+  assert.equal(app.document.activeElement,app.node('[data-client-recheck]'));
+  app.run("agentDetectionState='ready';render()");assert.equal(app.document.activeElement,app.node('[data-client-recheck]'));
+  app.run("agentDetectionState='loading';render()");app.node('[data-other]').focus();app.run("agentDetectionState='ready';render()");
+  assert.equal(app.document.activeElement,app.node('[data-other]'));
+  app.node('[data-client-recheck]').focus();app.run(`renderAgents=()=>'<div id="client-detail"><button data-client-recheck="claude" aria-disabled="false">Detect</button></div>';render()`);
+  assert.equal(app.document.activeElement,null,'A different client must not inherit the old action focus');
+});

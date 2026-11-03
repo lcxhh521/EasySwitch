@@ -8,7 +8,7 @@ import { test } from "node:test";
 function ui() {
   const handlers: Record<string, Array<(e: any) => unknown>> = {};
   const host = { innerHTML: "", textContent: "" };
-  const context = vm.createContext({ URLSearchParams, location: { search: "", hash: "#agents" },
+  const context = vm.createContext({ AbortController, URLSearchParams, location: { search: "", hash: "#agents" },
     window: { addEventListener() {} }, history: { pushState() {}, replaceState() {} }, console,
     document: { addEventListener(n: string, f: (e: any) => unknown) { (handlers[n] ??= []).push(f); }, querySelector: (s: string) => s === "#page" ? host : { innerHTML: "", textContent: "", className: "" }, querySelectorAll: () => [], activeElement: null },
     setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame() {},

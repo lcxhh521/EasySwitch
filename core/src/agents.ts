@@ -1,10 +1,7 @@
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { constants, type Stats } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
-
-const run = promisify(execFile);
+import { join, posix, win32 } from "node:path";
 
 /**
  * Every coding agent we know of, and how far EasySwitch can go with each.
@@ -85,44 +82,131 @@ export const AGENTS: AgentInfo[] = [
   A("doubao", "豆包", "字节跳动", "desktop", "open", [], "letter:豆", "聊天客户端，没有自定义端点入口；只能检测并打开（豆包的模型可通过火山方舟接入）", { apps: ["Doubao", "豆包"] }),
 ];
 
+export type AgentDetectionState = "found" | "not_found" | "error";
+
 export interface DetectedAgent extends AgentInfo {
+  /** Metadata-only result, not a claim about version, login or launch compatibility. */
+  detection: AgentDetectionState;
+  /** Backward-compatible flag: an inconclusive check is never installed. */
   installed: boolean;
-  /** Where it was found (a path), when installed. */
+  /** Where it was found (a path), only when detection is found. */
   where?: string;
+  /** Fixed safe explanation; never contains filesystem errors or local output. */
+  detectionError?: string;
 }
 
-function appPath(name: string): string | undefined {
-  for (const dir of ["/Applications", join(homedir(), "Applications")]) {
-    const p = join(dir, `${name}.app`);
-    if (existsSync(p)) return p;
+export const AGENT_DETECTION_ERROR = "安装位置检测未完成，请检查 EasySwitch 的运行环境或读取权限后重试。";
+
+/** In-process fixture inputs only. Never accepted from HTTP or stored settings. */
+export interface AgentDetectionRuntime {
+  platform: NodeJS.Platform;
+  home: string;
+  path: string;
+  pathExt: string;
+  stat: (path: string) => Promise<Pick<Stats, "isFile" | "isDirectory">>;
+  access: (path: string, mode: number) => Promise<void>;
+  /** One bounded budget for the whole scan, including stalled filesystem probes. */
+  timeoutMs: number;
+}
+
+type ProbeResult = { state: "found"; where: string } | { state: "not_found" | "error" };
+const NOT_FOUND: ProbeResult = { state: "not_found" };
+const PROBE_ERROR: ProbeResult = { state: "error" };
+
+/**
+ * Read only filesystem metadata. In particular do not start a login shell:
+ * sourcing its startup files is code execution, even for command -v.
+ * PATH means the EasySwitch service's PATH, not a separate terminal's PATH.
+ */
+export async function detectAgents(agents: readonly AgentInfo[] = AGENTS, fixtures: Partial<AgentDetectionRuntime> = {}): Promise<DetectedAgent[]> {
+  const runtime: AgentDetectionRuntime = {
+    platform: process.platform, home: homedir(), path: process.env.PATH ?? "",
+    pathExt: process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD", stat, access, timeoutMs: 10_000,
+    ...fixtures,
+  };
+  const paths = runtime.platform === "win32" ? win32 : posix;
+  const deadline = Date.now() + Math.max(1, runtime.timeoutMs);
+  const probes = new Map<string, Promise<ProbeResult>>();
+  function probe(path: string, kind: "bin" | "app" | "path"): Promise<ProbeResult> {
+    const key = `${kind}\0${path}`;
+    const existing = probes.get(key); if (existing) return existing;
+    const pending = (async (): Promise<ProbeResult> => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return PROBE_ERROR;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const inspection = (async (): Promise<ProbeResult> => {
+        try {
+          const info = await runtime.stat(path);
+          if (kind === "app" ? !info.isDirectory() : kind === "bin" ? !info.isFile() : !info.isFile() && !info.isDirectory()) return NOT_FOUND;
+          // A directory named after a command, or a non-executable file, must
+          // never be handed to existing launch callers as a runnable binary.
+          if (kind === "bin" || (kind === "path" && info.isFile())) {
+            await runtime.access(path, runtime.platform === "win32" ? constants.F_OK : constants.X_OK);
+          }
+          return { state: "found", where: path };
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException | null)?.code;
+          return code === "ENOENT" || code === "ENOTDIR" ? NOT_FOUND : PROBE_ERROR;
+        }
+      })();
+      try {
+        return await Promise.race([inspection, new Promise<ProbeResult>(resolve => { timer = setTimeout(() => resolve(PROBE_ERROR), remaining); })]);
+      } finally { if (timer) clearTimeout(timer); }
+    })();
+    probes.set(key, pending);
+    return pending;
   }
-  return undefined;
-}
 
-/** One login-shell pass for every command name, so the user's real PATH is used. */
-async function resolveBins(names: string[]): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-  if (!names.length) return found;
-  try {
-    const script = names.map(n => `p=$(command -v ${JSON.stringify(n)} 2>/dev/null) && printf '%s\\t%s\\n' ${JSON.stringify(n)} "$p"`).join("; ");
-    const { stdout } = await run("/bin/zsh", ["-lc", script], { timeout: 10_000 });
-    for (const line of stdout.split("\n")) {
-      const [name, path] = line.split("\t");
-      if (name && path?.startsWith("/")) found.set(name, path);
+  const pathEntries = runtime.path.split(runtime.platform === "win32" ? ";" : ":");
+  const dirs = [...new Set(pathEntries.filter(Boolean))];
+  // Relative PATH entries depend on a mutable working directory and cannot be
+  // returned safely to a later launch. Treat that portion as inconclusive.
+  const relativePath = pathEntries.some(dir => !dir || !paths.isAbsolute(dir));
+  const binResults = new Map<string, Promise<ProbeResult>>();
+  function bin(name: string): Promise<ProbeResult> {
+    const existing = binResults.get(name); if (existing) return existing;
+    const pending = (async (): Promise<ProbeResult> => {
+      if (!/^[a-zA-Z0-9._-]+$/.test(name)) return PROBE_ERROR;
+      let failed = relativePath;
+      const suffixes = runtime.platform === "win32"
+        ? ["", ...runtime.pathExt.split(";").filter(ext => /^\.[a-zA-Z0-9]+$/.test(ext))]
+        : [""];
+      for (const dir of dirs.filter(dir => paths.isAbsolute(dir))) {
+        for (const suffix of suffixes) {
+          const result = await probe(paths.join(dir, `${name}${suffix}`), "bin");
+          if (result.state === "found") return result;
+          failed ||= result.state === "error";
+        }
+      }
+      return failed ? PROBE_ERROR : NOT_FOUND;
+    })();
+    binResults.set(name, pending);
+    return pending;
+  }
+
+  return Promise.all(agents.map(async agent => {
+    let failed = false;
+    let found: string | undefined;
+    for (const name of agent.bins ?? []) {
+      const result = await bin(name);
+      if (result.state === "found") { found = result.where; break; }
+      failed ||= result.state === "error";
     }
-  } catch {
-    // A shell that fails to start just means nothing is found on PATH.
-  }
-  return found;
-}
-
-export async function detectAgents(agents: readonly AgentInfo[] = AGENTS): Promise<DetectedAgent[]> {
-  const bins = await resolveBins([...new Set(agents.flatMap(a => a.bins ?? []))]);
-  return agents.map(a => {
-    const where =
-      (a.bins ?? []).map(b => bins.get(b)).find(Boolean)
-      ?? (a.paths ?? []).find(p => existsSync(p))
-      ?? (a.apps ?? []).map(appPath).find(Boolean);
-    return { ...a, installed: Boolean(where), ...(where ? { where } : {}) };
-  });
+    if (!found) for (const path of agent.paths ?? []) {
+      // Catalogued macOS app-internal paths do not prove installation elsewhere.
+      if (runtime.platform !== "darwin" && /(^|\/)Applications\//.test(path)) continue;
+      const result = paths.isAbsolute(path) ? await probe(path, "path") : PROBE_ERROR;
+      if (result.state === "found") { found = result.where; break; }
+      failed ||= result.state === "error";
+    }
+    if (!found && runtime.platform === "darwin") outer: for (const app of agent.apps ?? []) {
+      for (const dir of ["/Applications", paths.join(runtime.home, "Applications")]) {
+        const result = await probe(paths.join(dir, `${app}.app`), "app");
+        if (result.state === "found") { found = result.where; break outer; }
+        failed ||= result.state === "error";
+      }
+    }
+    const detection: AgentDetectionState = found ? "found" : failed ? "error" : "not_found";
+    return { ...agent, detection, installed: detection === "found", ...(found ? { where: found } : {}), ...(detection === "error" ? { detectionError: AGENT_DETECTION_ERROR } : {}) };
+  }));
 }

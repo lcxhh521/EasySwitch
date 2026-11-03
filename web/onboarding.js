@@ -33,7 +33,7 @@ function firstRunPresets() {
 function firstRunAgents() {
   const uses = new Map();
   for (const entry of state?.log ?? []) if (entry.harness) uses.set(entry.harness, (uses.get(entry.harness) ?? 0) + 1);
-  return (agentList ?? []).filter(a => a.installed && a.can?.interactive && /^[a-z0-9-]+$/.test(a.id))
+  return (agentList ?? []).filter(a => clientFound(a) && a.can?.interactive && /^[a-z0-9-]+$/.test(a.id))
     .sort((a, b) => (uses.get(b.id) ?? 0) - (uses.get(a.id) ?? 0));
 }
 function firstRunSync() {
@@ -138,7 +138,7 @@ function firstRunCard() {
         <div class="controls"><button class="btn" type="submit" ${disabled || !preset ? "disabled" : ""}>${firstRun.busy ? "正在添加并检测…" : "添加并检测"}</button><button class="btn secondary" type="button" data-first-action="subscription" ${disabled}>用我的订阅</button><button class="btn secondary" type="button" data-first-action="providers" ${disabled}>完整添加页</button></div></form>`;
   } else if (firstRun.step === 2) {
     content = `<p>来源：${esc(p?.name ?? "已移除")} ${firstRun.tested ? "· 接入时检测已通过" : "· 尚未验证真实推理"}</p>`;
-    if (!agents.length) content += `<p class="msg bad">还没有可启动的 Agent：这台电脑尚未检测到支持增强会话的程序，请先安装一个，再点重新检测。</p><div class="controls"><button class="btn secondary" data-first-action="detect" ${disabled}>重新检测已安装程序</button><button class="btn secondary" data-first-action="agents" ${disabled}>查看 Agent 列表</button></div>`;
+    if (!agents.length) content += `<p class="msg bad">${agentDetectionState === "loading" ? "正在检测客户端，已有选择保留。" : (agentDetectionState === "error" || (agentList ?? []).some(a => a.can?.interactive && clientDetection(a) === "error")) ? "客户端检测失败，不能判断是否已安装；请重新检测，已有选择保留。" : "当前服务环境未发现支持增强会话的程序，不代表电脑上一定未安装。可查看 Agent 列表中的官方指引，自行安装后重新检测。"}</p><div class="controls"><button class="btn secondary" data-first-action="detect" aria-disabled="${firstRun.busy}">重新检测已安装程序</button><button class="btn secondary" data-first-action="agents" ${disabled}>查看 Agent 列表</button></div>`;
     else {
       const models = modelsOf(p).filter(m => selectableModelNames().includes(`${p.id}/${m}`));
       const staleAgent = firstRun.agent && !a ? `<option value="${esc(firstRun.agent)}" selected disabled>${esc(firstRun.agent)}（已不可用，选择仍保留）</option>` : "";
@@ -149,7 +149,7 @@ function firstRunCard() {
     content = `<p>设置已保存：${esc(a?.name ?? "Agent 已不可用")} 将使用 ${esc(p?.name ?? "已移除")} / ${esc(firstRun.model)}。</p><p class="hint">启动会打开独立增强会话，不修改你平时的配置；后续使用可能产生费用或消耗套餐额度。也可以复制命令，在自己的 bash/zsh 终端运行。</p><div class="controls"><button class="btn" data-first-action="launch" ${unavailable}>${firstRun.busy ? "正在启动…" : "启动增强会话"}</button><button class="btn secondary" data-first-action="copy" ${unavailable}>复制 es 命令</button><button class="btn secondary" data-first-action="back" ${disabled}>更换程序或模型</button></div><p><code>${esc(firstRunCommand())}</code></p>`;
   }
   if (!firstRun.done && !p && firstRun.providerId && firstRun.step > 1) content += `<button class="btn secondary" data-first-action="reset-source" ${disabled}>重新接入来源</button>`;
-  if ((issue === "client_not_installed" || firstRun.errorCode === "client_not_installed") && (firstRun.step !== 2 || agents.length)) content += `<button class="btn secondary" data-first-action="detect" ${disabled}>重新检测已安装程序</button>`;
+  if ((issue === "client_not_installed" || firstRun.errorCode === "client_not_installed") && (firstRun.step !== 2 || agents.length)) content += `<button class="btn secondary" data-first-action="detect" aria-disabled="${firstRun.busy}">重新检测已安装程序</button>`;
   const issueText = issue ? `<p class="msg">${esc(firstRunErrorInfo({ code: issue }, "launch").reason)}</p>` : "";
   const uncertain = firstRun.launchUncertain ? `<p class="msg" role="status">上次启动结果尚未确认，请先检查是否已有窗口，再决定是否重试或运行命令，避免重复启动。</p>` : "";
   return `<section class="card" id="first-run" style="padding:20px"><div class="section-head"><h2>第一次使用，两步准备好</h2><button class="btn secondary" data-first-action="dismiss" ${disabled}>暂时跳过</button></div><ol class="steps"><li${firstRun.step === 1 ? ' aria-current="step"' : ""}>接入来源</li><li${firstRun.step > 1 ? ' aria-current="step"' : ""}>确认并启动</li></ol>${content}${firstRun.message ? `<p class="msg" role="status">${esc(firstRun.message)}</p>` : ""}${issueText}${uncertain}${recovery && !firstRun.done ? `<button class="btn secondary" data-first-action="recover" ${disabled}>${esc(recovery.label)}</button>` : ""}</section>`;
@@ -274,7 +274,7 @@ document.addEventListener("click", async event => {
   firstRun.busy = true; firstRun.message = ""; firstRun.errorAction = null; firstRun.errorCode = ""; render();
   try {
     if (action === "probe") await firstRunProbe();
-    if (action === "detect") agentList = await loadAgents();
+    if (action === "detect") await recheckClients();
     if (action === "launch") await firstRunLaunch(firstRunSelection());
     if (action === "copy") {
       const issue = firstRunSelectionIssue(); if (issue) throw { code: issue };
@@ -283,5 +283,5 @@ document.addEventListener("click", async event => {
   } catch (error) {
     if (action === "copy") firstRun.message = "没有复制成功：请检查当前选择；有效时也可选中上面的命令，手动复制到终端。";
     else firstRunSetError(error, action === "launch" ? "launch" : "source");
-  } finally { firstRun.busy = false; await refresh(true); firstRunSaveDraft(); }
+  } finally { firstRun.busy = false; if (action === "detect") render(); else await refresh(true); firstRunSaveDraft(); }
 });

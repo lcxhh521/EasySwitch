@@ -137,7 +137,7 @@ test("failed inference checks retain one saved source and retry never duplicates
 test("empty installed list explains recovery without offering an invalid launch", async () => {
   const app=ui();app.run('renderActual();agentList=[]');
   await app.dispatch('submit',app.form('source',{presetId:'example',apiKey:'fixture-key'}));
-  assert.match(app.html(),/还没有可启动的 Agent/);assert.match(app.html(),/重新检测已安装程序/);
+  assert.match(app.html(),/当前服务环境未发现支持增强会话的程序/);assert.match(app.html(),/重新检测已安装程序/);
   assert.doesNotMatch(app.html(),/data-first-action="launch"/);
 });
 
