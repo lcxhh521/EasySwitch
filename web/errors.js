@@ -2,6 +2,11 @@
 (function (root) {
   "use strict";
   const rows = [
+    ["client_model_menu_conflict", "短名单设置已变化，尚未应用", "客户端设置、方案或可选目录已变化，旧预览不能覆盖当前状态", "重新读取并预览", "current"],
+    ["client_model_menu_invalid", "短名单无法安全保存", "名单包含不支持的标识、重复项或当前不可添加的模型", "检查并重新编辑", "current"],
+    ["client_model_menu_agent_not_found", "找不到所选的客户端", "这个客户端不在当前支持列表中，尚未更改任何菜单设置", "查看客户端列表", "agents"],
+    ["codex_model_catalog_unavailable", "无法准备本次模型目录", "当前无法读取受支持的目录模板，不能确认短名单在增强会话中生效", "检查客户端后重试", "agents"],
+
     ["profile_preview_conflict", "设置已变化，尚未应用", "当前设置、保存的方案或相关来源已变化；旧预览不能用于覆盖新设置", "重新预览后确认", "current"],
     ["profile_preview_invalid", "这套设置无法安全预览", "保存的方案或当前设置不完整，或含有不能确认的设置字段", "检查并重新保存方案", "current"],
     ["service_unavailable", "暂时连不上服务", "本地服务或模型来源暂时没有响应，可能是服务未启动或网络连接中断", "检查服务和连接", "doctor"],
@@ -30,6 +35,7 @@
   const dictionary = new Map(entries.map(entry => [entry.code, entry]));
   const fallback = Object.freeze({ code: "unknown_error", title: "这次操作没有完成", reason: "暂时无法判断具体原因，需要先检查连接和配置", action: Object.freeze({ label: "打开问题检查", target: "doctor" }) });
   const aliases = new Map(Object.entries({
+    CLIENT_MODEL_MENU_CONFLICT: "client_model_menu_conflict", CLIENT_MODEL_MENU_INVALID: "client_model_menu_invalid", CLIENT_MODEL_MENU_AGENT_NOT_FOUND: "client_model_menu_agent_not_found", CODEX_MODEL_CATALOG_UNAVAILABLE: "codex_model_catalog_unavailable",
     PROFILE_PREVIEW_CONFLICT: "profile_preview_conflict", PROFILE_PREVIEW_INVALID: "profile_preview_invalid",
     ECONNREFUSED: "service_unavailable", ECONNRESET: "service_unavailable", ENOTFOUND: "service_unavailable", EAI_AGAIN: "service_unavailable", ERR_NETWORK: "service_unavailable", provider_unavailable: "service_unavailable",
     ETIMEDOUT: "request_timeout", UND_ERR_CONNECT_TIMEOUT: "request_timeout", UND_ERR_HEADERS_TIMEOUT: "request_timeout", UND_ERR_BODY_TIMEOUT: "request_timeout",

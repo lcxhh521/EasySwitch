@@ -612,6 +612,7 @@ function profileSettingsText(value) {
   const prefs = value?.prefs ?? {};
   const lines = [`主模型：${binding ? binding.providerId + "/" + binding.model : "无外接主模型（原生/默认）"}`,
     `思考档位：${prefs.effort || "默认"}`, `备用模型：${prefs.fallbackModel || "无"}`];
+  lines.push(prefs.modelMenu === undefined ? "模型短名单：全部模型" : `模型短名单：${prefs.modelMenu.length ? prefs.modelMenu.join(" → ") : "空（不额外列出模型）"}`);
   const tiers = Object.entries(prefs.tiers ?? {});
   lines.push(tiers.length ? "辅助模型：" + tiers.map(([key, model]) => `${key} = ${model || "跟随/默认"}`).join("；") : "辅助模型：无覆盖（跟随/默认）");
   return lines.map(line => `<div>${esc(line)}</div>`).join("");
@@ -624,7 +625,7 @@ function profileReviewHtml() {
   const data = review.data;
   return `<section class="profile-review" aria-label="方案应用预览">
     <h3 tabindex="-1" data-profile-preview-heading>确认切换到「${esc(data.name)}」？</h3>
-    <p class="hint">将完整替换所有客户端的主模型、思考档位、备用与辅助模型设置；方案未包含的现有设置会清空。只影响后续增强会话，不修改原生配置，不启动客户端，不改来源或模型池。</p>
+    <p class="hint">将完整替换所有客户端的主模型、思考档位、备用与辅助模型、模型短名单设置；方案未包含的现有设置会清空。只影响后续增强会话，不修改原生配置，不启动客户端，不改来源或模型池。</p>
     <p>${data.summary.clients} 个客户端 · ${data.summary.changed} 个有变化 · ${data.summary.clearedBindings} 个外接主模型将清空</p>
     ${(data.warnings ?? []).map(w => `<p class="hint">${esc(w)}</p>`).join("")}
     <div class="profile-review-changes">${data.changes.map(change => `<article class="profile-review-client"><h4>${esc(change.harness)} · ${change.changed ? "将变更" : "保持不变"}</h4><div class="profile-review-columns"><div><strong>现在</strong>${profileSettingsText(change.before)}</div><div><strong>应用后</strong>${profileSettingsText(change.after)}</div></div>${change.warnings.map(w => `<p class="hint">${esc(w)}</p>`).join("")}</article>`).join("") || '<p>当前与方案均无客户端设置。</p>'}</div>
@@ -637,8 +638,9 @@ function validProfilePreview(data, id) {
   const object = value => !!value && typeof value === "object" && !Array.isArray(value);
   const strings = value => Array.isArray(value) && value.every(item => typeof item === "string");
   const settings = value => object(value) && (value.binding === null || object(value.binding) && typeof value.binding.providerId === "string" && typeof value.binding.model === "string") &&
-    object(value.prefs) && Object.keys(value.prefs).every(key => ["effort", "fallbackModel", "tiers"].includes(key)) &&
+    object(value.prefs) && Object.keys(value.prefs).every(key => ["effort", "fallbackModel", "tiers", "modelMenu"].includes(key)) &&
     [value.prefs.effort, value.prefs.fallbackModel].every(item => item === undefined || typeof item === "string") &&
+    (value.prefs.modelMenu === undefined || Array.isArray(value.prefs.modelMenu) && value.prefs.modelMenu.length <= 80 && value.prefs.modelMenu.every(id => typeof id === "string" && id.length <= 512 && id === id.trim() && id.indexOf("/") > 0 && id.indexOf("/") < id.length - 1 && !/[\p{C}\u2028\u2029]/u.test(id)) && new Set(value.prefs.modelMenu).size === value.prefs.modelMenu.length) &&
     (value.prefs.tiers === undefined || object(value.prefs.tiers) && Object.values(value.prefs.tiers).every(item => typeof item === "string"));
   return object(data) && data.profileId === id && typeof data.name === "string" && typeof data.fingerprint === "string" && /^[a-f0-9]{64}$/.test(data.fingerprint) &&
     object(data.summary) && ["clients", "changed", "clearedBindings"].every(key => Number.isSafeInteger(data.summary[key]) && data.summary[key] >= 0) &&
@@ -811,12 +813,14 @@ function clientDetail(a) {
       ${command ? `<div class="client-command"><code>${esc(command)}</code><button class="btn secondary" data-copy="${esc(command)}">复制启动命令</button></div><p class="hint">在终端运行命令才会启动；设置在新开的增强会话中生效。</p>` : ""}
       ${clientFound(a) ? `<button class="btn secondary" data-agent-open="${esc(a.id)}">打开原生客户端</button><p class="hint">如需退回原生，请关闭原来的增强窗口，再打开原生客户端。此按钮不会结束已有增强会话。</p>` : `<p class="hint">可先选择模型或查看配置向导，随后按下方指引核对安装。</p>`}
     </div>
+    ${typeof clientMenuCard === "function" ? clientMenuCard(a.id) : ""}
     ${clientRecoveryHtml(a)}
     ${capabilities ? `<div class="client-detail-section"><h3>能做什么</h3><ul class="client-capabilities full">${capabilities}</ul></div>` : ""}
   </section>`;
 }
 
 function selectClient(id, segment = agentSegment) {
+  if(typeof cancelClientMenu === "function")cancelClientMenu();
   closePopover();
   if (typeof doctorDestination !== "undefined") doctorDestination = null;
   selectedAgent = id; agentSegment = segment;
@@ -961,7 +965,7 @@ function openPicker(anchor, target) {
   el.className = "popover";
   el.innerHTML = `
     <div class="search"><span>🔍</span><input placeholder="搜索模型或来源…" autocomplete="off"></div>
-    <div class="picker-shortcuts"><button class="btn secondary" data-picker-scope="all" aria-pressed="true">全部模型</button><button class="btn secondary" data-picker-scope="configured" aria-pressed="false">本客户端已配置</button><button class="btn secondary" data-picker-current>定位当前配置</button></div>
+    <div class="picker-shortcuts"><button class="btn secondary" data-picker-scope="all" aria-pressed="true">全部模型</button><button class="btn secondary" data-picker-scope="shortlist" aria-pressed="false">我的短名单</button><button class="btn secondary" data-picker-scope="configured" aria-pressed="false">本客户端已配置</button><button class="btn secondary" data-picker-current>定位当前配置</button></div>
     <div class="hint picker-current" role="status" tabindex="0">${modelSelectionReason(savedName) ? `已保留 ${esc(savedName)}：${esc(modelSelectionReason(savedName))}。可重新选择或保留原设置。` : ""}</div>
     <div class="body"><div class="rail"></div><div class="list"></div></div>`;
   document.body.append(el);
@@ -970,6 +974,8 @@ function openPicker(anchor, target) {
   let filter = "";
   let only = null;
   let configuredOnly = false;
+  let shortlistOnly = Array.isArray(state?.prefs?.[harness]?.modelMenu);
+  const shortNames = () => Array.isArray(state?.prefs?.[harness]?.modelMenu) ? state.prefs[harness].modelMenu.filter(id=>typeof id === "string") : null;
   let kb = 0;
   const rail = el.querySelector(".rail");
   rail.innerHTML = `<button data-only="" class="on" title="全部">▦</button>` +
@@ -1001,6 +1007,7 @@ function openPicker(anchor, target) {
       if (q && !pool.name.toLowerCase().includes(q) && !"模型池 pool".includes(q)) continue;
       out.push({ provider: POOL_PROVIDER, model: pool.id, route: pool.strategy === "automatic" ? "pool-automatic" : "pool" });
     }
+    if(shortlistOnly && shortNames() !== null){const names=shortNames();return out.filter(o=>o.native||names.includes(`${o.provider.id}/${o.model}`)).sort((a,b)=>a.native?-1:b.native?1:names.indexOf(`${a.provider.id}/${a.model}`)-names.indexOf(`${b.provider.id}/${b.model}`));}
     return out;
   };
 
@@ -1026,6 +1033,10 @@ function openPicker(anchor, target) {
     const current = el.querySelector(".picker-current");
     const currentText = !state ? "核心状态暂时不可用；原设置已保留" : `当前配置：${savedName || (tier ? "跟随主模型" : "原生")}。${modelSelectionReason(savedName) || "配置不代表正在运行或模型已验证可用"}`;
     if (current && current.textContent !== currentText) current.textContent = currentText;
+    if (shortlistOnly && state) {
+      const names=shortNames();const invalid=(names??[]).filter(name=>modelSelectionReason(name));
+      el.querySelector(".list").innerHTML += `<p class="hint picker-explanation">${names===null?"本客户端尚未自定义短名单，当前沿用全部模型。":names.length?"按已保存短名单顺序显示；全部模型仍可选择，短名单不限制调用。":"这是空短名单；原生/跟随入口保留，可切换全部模型。"}</p>${invalid.map(name=>`<div class="picker-unavailable"><b>${esc(name)}</b><small>已保留：${esc(modelSelectionReason(name))}</small></div>`).join("")}`;
+    }
     if (configuredOnly && state) {
       const q = filter.trim().toLowerCase();
       const unavailable = [...configured].filter(([name]) => modelSelectionReason(name) && (!only || name.startsWith(`${only}/`)) && (!q || name.toLowerCase().includes(q) || (providerById(name.slice(0, name.indexOf("/")))?.name ?? "").toLowerCase().includes(q))).map(([name, roles]) => `<div class="picker-unavailable"><b>${esc(name)}</b><small>${esc(roles.join(" / "))} · 已保留：${esc(modelSelectionReason(name))}</small></div>`).join("");
@@ -1067,6 +1078,8 @@ function openPicker(anchor, target) {
   };
 
   let opts = draw();
+  el.querySelector('[data-picker-scope="all"]')?.setAttribute("aria-pressed",String(!shortlistOnly));
+  el.querySelector('[data-picker-scope="shortlist"]')?.setAttribute("aria-pressed",String(shortlistOnly));
   placePopover(el, anchor);
   const input = el.querySelector("input");
   const shortcuts = el.querySelector(".picker-shortcuts");
@@ -1075,15 +1088,16 @@ function openPicker(anchor, target) {
     const current = e.target.closest("[data-picker-current]");
     if (!scope && !current) return;
     if (popover !== el) return;
-    if (scope) { configuredOnly = scope.dataset.pickerScope === "configured"; kb = 0; }
+    if (scope) { configuredOnly = scope.dataset.pickerScope === "configured"; shortlistOnly=scope.dataset.pickerScope === "shortlist"; kb = 0; }
     else {
-      configuredOnly = false; only = null; filter = ""; input.value = "";
+      configuredOnly = false; shortlistOnly=false; only = null; filter = ""; input.value = "";
       for (const button of rail.children) button.classList.toggle("on", !button.dataset.only);
       binding = readBinding(); savedName = binding ? `${binding.providerId}/${binding.model}` : "";
       kb = options().findIndex(option => savedName ? !option.native && `${option.provider.id}/${option.model}` === savedName : option.native);
     }
-    shortcuts.querySelector?.('[data-picker-scope="all"]')?.setAttribute("aria-pressed", String(!configuredOnly));
+    shortcuts.querySelector?.('[data-picker-scope="all"]')?.setAttribute("aria-pressed", String(!configuredOnly && !shortlistOnly));
     shortcuts.querySelector?.('[data-picker-scope="configured"]')?.setAttribute("aria-pressed", String(configuredOnly));
+    shortcuts.querySelector?.('[data-picker-scope="shortlist"]')?.setAttribute("aria-pressed", String(shortlistOnly));
     opts = draw();
     if (current) { input.focus(); if (kb < 0) el.querySelector(".picker-current")?.scrollIntoView({block:"nearest"}); }
   });
@@ -2013,7 +2027,7 @@ function render() {
 
 /** Re-render unless the user is in the middle of something we would wipe out. */
 function busy() {
-  return (typeof catalogReview !== "undefined" && (catalogReview || catalogApplying)) || profileReview || profileApplyFlight || sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
+  return (typeof clientMenuEditor !== "undefined" && (clientMenuEditor || clientMenuApplying)) || (typeof catalogReview !== "undefined" && (catalogReview || catalogApplying)) || profileReview || profileApplyFlight || sourceAddBusy || effortSaving || (typeof automaticToolFlight !== "undefined" && automaticToolFlight) || (typeof automaticPoolReview !== "undefined" && automaticPoolReview?.busy) || (typeof providerImportOpen !== "undefined" && (providerImportOpen || providerImportBusy)) || (typeof poolSuggestionBusy !== "undefined" && poolSuggestionBusy) || (typeof doctorBusy !== "undefined" && doctorBusy) || (typeof firstRun !== "undefined" && firstRun.busy) || providerOperations.size > 0 || (typeof cliTextBusy !== "undefined" && cliTextBusy) || (typeof cliTextFormOpen !== "undefined" && cliTextFormOpen) || guideBusy || (typeof budgetSaving !== "undefined" && budgetSaving) || claudeDesktopBusy || claudeDesktopConfirm || popover || addForm || vertexForm || importFormOpen || poolForm || profileNaming || document.activeElement?.matches("input, select, textarea, [data-theme-choice]");
 }
 document.addEventListener("change", async e => {
   if (e.target.matches?.("[data-profile-pick]")) { if (profileApplyFlight) return; profileSelectedId = e.target.value; cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview(); render(); return; }
@@ -2124,6 +2138,7 @@ async function refresh(force = false) {
 
 // Explicit navigation adds one visit; hashchange handles Back/Forward without adding another.
 async function navigatePage(value) {
+  if(typeof cancelClientMenu === "function")cancelClientMenu();
   const next = pageOf(value);
   if (next === page) return;
   claudeDesktopConfirm = false;
@@ -2788,7 +2803,7 @@ document.addEventListener("toggle", e => {
   if (e.target.open) openDetails.add(id); else openDetails.delete(id);
   if (id === "experimental-agents" && !e.target.open && claudeDesktopConfirm) { claudeDesktopConfirm = false; render(); }
 }, true);
-window.addEventListener("hashchange",()=>{if(PANEL)return;const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();pageNavigationVersion++; agentReadVersion++; if(agentDetectionState === "loading") agentDetectionState="unread";cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
+window.addEventListener("hashchange",()=>{if(PANEL)return;if(typeof cancelClientMenu === "function")cancelClientMenu();const next=pageFromHash();if(next===page)return;claudeDesktopConfirm=false;if(typeof automaticPoolInvalidate==="function")automaticPoolInvalidate();cancelProfileReview(); if(typeof cancelCatalogReview === "function") cancelCatalogReview();pageNavigationVersion++; agentReadVersion++; if(agentDetectionState === "loading") agentDetectionState="unread";cancelUsageLoad();if(page==="doctor"&&typeof cancelDoctorCheck==="function")cancelDoctorCheck();page=next;closePopover();renderPageTransition();void refresh(true);});
 window.addEventListener("resize", () => { if (popover && pickerReturnFocus?.isConnected) placePopover(popover, pickerReturnFocus); if (page === "sessions") drawFlowLines(); if (page === "usage") drawChart(); });
 
 if (PANEL) document.body.classList.add("panel");

@@ -9,6 +9,8 @@ import type { Profile } from "./types.ts";
 import type { Account, AccountSettings, DisplaySettings, HarnessBinding, Pool, Provider, Settings } from "./types.ts";
 import { buildProfilePreview, profileBindings, ProfilePreviewError } from "./profile-preview.ts";
 import { automaticProviderConfiguration } from "./automatic-approval.ts";
+import { modelEfforts } from "./model-efforts.ts";
+import { buildClientModelMenuView, clientModelMenuConflict, clientModelMenuDigest, clientModelMenuPreviewGuard, clientSessionCatalog, normalizeClientModelMenu, readClientModelMenu, validateClientModelMenuChange, validClientModelId, type RequiredClientModel } from "./client-model-menu.ts";
 
 interface StateFile {
   version: 1;
@@ -18,6 +20,10 @@ interface StateFile {
   bindingRevisions?: Record<string, string>;
   /** Applying a profile replaces all bindings, including the choice to leave a harness unbound. */
   bindingProfileRevision?: string;
+  prefsRevisions?: Record<string, string>;
+  prefsProfileRevision?: string;
+  /** Provider/pool/profile writes invalidate menu reviews, including changed-back writes. */
+  modelMenuConfigurationRevision?: string;
   accounts?: Account[];
   accountSettings?: AccountSettings;
   display?: DisplaySettings;
@@ -40,6 +46,8 @@ interface StateFile {
 }
 
 export interface AgentPrefs {
+  /** Absent: all models. Empty: explicitly no optional menu entries. Ordered exact IDs. */
+  modelMenu?: string[];
   fallbackModel?: string;
   effort?: string;
   /** Tier id → `<provider>/<model>`. */
@@ -94,6 +102,12 @@ export class Store {
     renameSync(tmp, this.file);
   }
 
+  private saveMenuConfiguration(): void {
+    const before = this.state.modelMenuConfigurationRevision;
+    this.state.modelMenuConfigurationRevision = randomUUID();
+    try { this.save(); } catch (error) { this.state.modelMenuConfigurationRevision = before; throw error; }
+  }
+
   providers(): Provider[] {
     return structuredClone(this.state.providers);
   }
@@ -111,7 +125,7 @@ export class Store {
       this.state.providerConfigurationRevisions = { ...(revisions ?? {}), [provider.id]: randomUUID() };
     }
     this.state.providers = before.some(p=>p.id===provider.id) ? before.map(p=>p.id===provider.id?structuredClone(provider):p) : [...before,structuredClone(provider)];
-    try { this.save(); } catch(error) { this.state.providers=before; this.state.providerConfigurationRevisions=revisions; throw error; }
+    try { this.saveMenuConfiguration(); } catch(error) { this.state.providers=before; this.state.providerConfigurationRevisions=revisions; throw error; }
   }
 
   removeProvider(id: string): void {
@@ -120,7 +134,7 @@ export class Store {
     this.state.bindings = this.state.bindings.filter(b => b.providerId !== id);
     this.advanceBindingRevisions(bindings.filter(b => b.providerId === id).map(b => b.harness));
     this.state.providerConfigurationRevisions = { ...(revisions ?? {}), [id]: randomUUID() };
-    try { this.save(); } catch(error) { this.state.providers=before; this.state.bindings=bindings; this.state.providerConfigurationRevisions=revisions; this.state.bindingRevisions=bindingRevisions; throw error; }
+    try { this.saveMenuConfiguration(); } catch(error) { this.state.providers=before; this.state.bindings=bindings; this.state.providerConfigurationRevisions=revisions; this.state.bindingRevisions=bindingRevisions; throw error; }
   }
 
   private revision(map: Record<string, string> | undefined, id: string): string {
@@ -222,15 +236,16 @@ export class Store {
       name, bindings: structuredClone(this.state.bindings), prefs: structuredClone(this.state.prefs ?? {}),
       createdAt: new Date().toISOString(),
     };
+    const before = this.state.profiles;
     this.state.profiles = existing ? list.map(p => (p.id === existing.id ? profile : p)) : [...list, profile];
-    this.save();
+    try { this.saveMenuConfiguration(); } catch (error) { this.state.profiles = before; throw error; }
     return structuredClone(profile);
   }
 
   previewProfile(id: string) {
     const profile = (this.state.profiles ?? []).find(p => p.id === id);
     if (!profile) return undefined;
-    return buildProfilePreview(profile, { bindings: this.state.bindings, prefs: this.state.prefs ?? {}, revision: this.state.bindingProfileRevision, budgetBlocked: this.state.providers.filter(p => this.providerBudgetStopped(p)).map(p => p.id), bindingRevisions: this.state.bindingRevisions, providerRevisions: this.state.providerConfigurationRevisions }, this.state.providers, this.state.pools ?? []);
+    return buildProfilePreview(profile, { bindings: this.state.bindings, prefs: this.state.prefs ?? {}, revision: this.state.bindingProfileRevision, budgetBlocked: this.state.providers.filter(p => this.providerBudgetStopped(p)).map(p => p.id), bindingRevisions: this.state.bindingRevisions, providerRevisions: this.state.providerConfigurationRevisions, prefsRevisions: this.state.prefsRevisions, prefsProfileRevision: this.state.prefsProfileRevision, modelMenuConfigurationRevision: this.state.modelMenuConfigurationRevision }, this.state.providers, this.state.pools ?? []);
   }
 
   /** Puts every agent's settings back as they were when the profile was saved. Providers and pools are not touched. */
@@ -240,17 +255,19 @@ export class Store {
     if (expectedPreview !== undefined && this.previewProfile(id)?.fingerprint !== expectedPreview) {
       throw new ProfilePreviewError("设置已变化，请重新预览后确认", 409, "PROFILE_PREVIEW_CONFLICT");
     }
-    const bindings = this.state.bindings, prefs = this.state.prefs, revision = this.state.bindingProfileRevision;
+    const bindings = this.state.bindings, prefs = this.state.prefs, revision = this.state.bindingProfileRevision, prefsRevision = this.state.prefsProfileRevision;
     this.state.bindings = profileBindings(profile, this.state.providers, this.state.pools ?? []);
     this.state.prefs = structuredClone(profile.prefs);
     this.state.bindingProfileRevision = randomUUID();
-    try { this.save(); } catch(error) { this.state.bindings=bindings; this.state.prefs=prefs; this.state.bindingProfileRevision=revision; throw error; }
+    this.state.prefsProfileRevision = randomUUID();
+    try { this.save(); } catch(error) { this.state.bindings=bindings; this.state.prefs=prefs; this.state.bindingProfileRevision=revision; this.state.prefsProfileRevision=prefsRevision; throw error; }
     return structuredClone(profile);
   }
 
   removeProfile(id: string): void {
+    const before = this.state.profiles;
     this.state.profiles = (this.state.profiles ?? []).filter(p => p.id !== id);
-    this.save();
+    try { this.saveMenuConfiguration(); } catch (error) { this.state.profiles = before; throw error; }
   }
 
   pools(): Pool[] {
@@ -268,7 +285,7 @@ export class Store {
     const at = list.findIndex(p => p.id === pool.id);
     if (at >= 0) list[at] = structuredClone(pool); else list.push(structuredClone(pool));
     this.state.pools = list;
-    try { this.save(); } catch (error) { this.state.pools = old; throw error; }
+    try { this.saveMenuConfiguration(); } catch (error) { this.state.pools = old; throw error; }
   }
 
   /** Creates a new confirmed pool and its binding in one replacement. Never modifies an old pool. */
@@ -281,7 +298,7 @@ export class Store {
     this.state.pools = [...(pools ?? []), structuredClone(pool)];
     this.state.bindings = [...bindings.filter(b => b.harness !== harness), { harness, providerId: "pool", model: pool.id }];
     this.advanceBindingRevisions([harness]);
-    try { this.save(); } catch(error) { this.state.pools=pools; this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
+    try { this.saveMenuConfiguration(); } catch(error) { this.state.pools=pools; this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
   }
 
   dismissedPoolSuggestions(): string[] {
@@ -305,7 +322,7 @@ export class Store {
     this.state.pools = (this.state.pools ?? []).filter(p => p.id !== id);
     this.state.bindings = this.state.bindings.filter(b => !(b.providerId === "pool" && b.model === id));
     this.advanceBindingRevisions(bindings.filter(b => b.providerId === "pool" && b.model === id).map(b => b.harness));
-    try { this.save(); } catch(error) { this.state.pools=pools; this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
+    try { this.saveMenuConfiguration(); } catch(error) { this.state.pools=pools; this.state.bindings=bindings; this.state.bindingRevisions=revisions; throw error; }
   }
 
   /** Every model an agent can be given: each provider's, then the pools. */
@@ -336,9 +353,13 @@ export class Store {
   }
 
   /** Changes one agent's preferences. `effort: ""` clears the level; a tier set to `""` clears that tier. */
-  setPrefs(agent: string, patch: { effort?: string; tiers?: Record<string, string>; fallbackModel?: string }): AgentPrefs {
+  setPrefs(agent: string, patch: { effort?: string; tiers?: Record<string, string>; fallbackModel?: string; modelMenu?: string[] | null }): AgentPrefs {
     const cur = this.prefs(agent);
     const next: AgentPrefs = { ...cur };
+    if (Object.hasOwn(patch, "modelMenu")) {
+      const menu = normalizeClientModelMenu(patch.modelMenu);
+      if (menu === undefined) delete next.modelMenu; else next.modelMenu = menu;
+    }
     if (patch.fallbackModel !== undefined) { if (patch.fallbackModel) next.fallbackModel = patch.fallbackModel; else delete next.fallbackModel; }
     if (patch.effort !== undefined) { if (patch.effort) next.effort = patch.effort; else delete next.effort; }
     if (patch.tiers) {
@@ -346,11 +367,70 @@ export class Store {
       for (const [k, v] of Object.entries(patch.tiers)) { if (v) tiers[k] = v; else delete tiers[k]; }
       if (Object.keys(tiers).length) next.tiers = tiers; else delete next.tiers;
     }
-    const before = this.state.prefs;
+    const before = this.state.prefs, revisions = this.state.prefsRevisions;
+    this.state.prefsRevisions = { ...(revisions ?? {}), [agent]: randomUUID() };
     this.state.prefs = { ...(this.state.prefs ?? {}) };
     if (Object.keys(next).length) this.state.prefs[agent] = next; else delete this.state.prefs[agent];
-    try { this.save(); } catch(error) { this.state.prefs=before; throw error; }
+    try { this.save(); } catch(error) { this.state.prefs=before; this.state.prefsRevisions=revisions; throw error; }
     return structuredClone(next);
+  }
+
+  /** Opaque write generation: same-value preference writes and profile replacement invalidate reviews. */
+  prefsRevision(agent: string): string {
+    return clientModelMenuDigest([this.revision(this.state.prefsRevisions, agent), this.state.prefsProfileRevision ?? ""]);
+  }
+
+  clientModelMenuGuard(agent: string): string {
+    return clientModelMenuDigest({ version: 1, agent,
+      prefs: this.state.prefs, prefsRevisions: this.state.prefsRevisions, prefsProfileRevision: this.state.prefsProfileRevision,
+      bindings: this.state.bindings, bindingRevisions: this.state.bindingRevisions, bindingProfileRevision: this.state.bindingProfileRevision,
+      configurationRevision: this.state.modelMenuConfigurationRevision, providerRevisions: this.state.providerConfigurationRevisions,
+      providers: this.state.providers, pools: this.state.pools, profiles: this.state.profiles, catalog: this.catalog() });
+  }
+
+  private requiredClientModels(agent: string, tierIds: readonly string[], mainOverride?: string): RequiredClientModel[] {
+    if (agent !== "codex") return [];
+    const catalog = this.catalog(), binding = this.binding(agent), prefs = this.prefs(agent);
+    const main = mainOverride ?? (binding ? `${binding.providerId}/${binding.model}` : catalog[0] ? `${catalog[0].providerId}/${catalog[0].model}` : "");
+    const refs = [{ id: main, reason: "main" }, ...tierIds.map(tier => ({ id: prefs.tiers?.[tier] ?? "", reason: `tier:${tier}` }))];
+    const required = new Map<string, RequiredClientModel>();
+    for (const { id, reason } of refs) {
+      if (!validClientModelId(id)) continue;
+      let model = catalog.find(m => `${m.providerId}/${m.model}` === id);
+      if (!model) {
+        const slash = id.indexOf("/"), provider = this.provider(id.slice(0, slash)), name = id.slice(slash + 1);
+        if (!provider || provider.off || provider.cliTextBridge?.kind === "droid" || this.providerBudgetStopped(provider)) continue;
+        const context = providerContext(provider, name);
+        model = { providerId: provider.id, providerName: provider.name, model: name, efforts: modelEfforts(provider, name), ...(context ? { context } : {}) };
+      }
+      const entry = required.get(id);
+      if (entry) entry.reasons.push(reason); else required.set(id, { model, reasons: [reason] });
+    }
+    return [...required.values()];
+  }
+
+  clientModelMenu(agent: string, tierIds: readonly string[] = [], mainOverride?: string) {
+    const modelMenu = readClientModelMenu(this.prefs(agent).modelMenu);
+    return buildClientModelMenuView({ agentId: agent, modelMenu, baseGuard: this.clientModelMenuGuard(agent), catalog: this.catalog(), required: this.requiredClientModels(agent, tierIds, mainOverride) });
+  }
+
+  previewClientModelMenu(agent: string, menu: unknown, baseGuard: string, tierIds: readonly string[] = []) {
+    if (baseGuard !== this.clientModelMenuGuard(agent)) throw clientModelMenuConflict();
+    const modelMenu = normalizeClientModelMenu(menu), before = readClientModelMenu(this.prefs(agent).modelMenu), catalog = this.catalog();
+    validateClientModelMenuChange(modelMenu, before, catalog);
+    return { ...buildClientModelMenuView({ agentId: agent, modelMenu, baseGuard, catalog, required: this.requiredClientModels(agent, tierIds) }),
+      before: before ?? null, previewGuard: clientModelMenuPreviewGuard(agent, baseGuard, modelMenu), changed: JSON.stringify(before) !== JSON.stringify(modelMenu) };
+  }
+
+  applyClientModelMenu(agent: string, menu: unknown, baseGuard: string, previewGuard: string, tierIds: readonly string[] = []) {
+    const preview = this.previewClientModelMenu(agent, menu, baseGuard, tierIds);
+    if (preview.previewGuard !== previewGuard) throw clientModelMenuConflict();
+    this.setPrefs(agent, { modelMenu: preview.modelMenu });
+    return this.clientModelMenu(agent, tierIds);
+  }
+
+  clientModelMenuCatalog(agent: string, tierIds: readonly string[] = [], mainOverride?: string): CatalogModel[] {
+    return clientSessionCatalog(this.catalog(), readClientModelMenu(this.prefs(agent).modelMenu), this.requiredClientModels(agent, tierIds, mainOverride));
   }
 
   /** Where "Sign in with ChatGPT" keeps its account records. */

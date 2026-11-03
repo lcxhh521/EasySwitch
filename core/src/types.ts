@@ -99,7 +99,7 @@ export interface Profile {
   id: string;
   name: string;
   bindings: HarnessBinding[];
-  prefs: Record<string, { effort?: string; tiers?: Record<string, string>; fallbackModel?: string }>;
+  prefs: Record<string, { effort?: string; tiers?: Record<string, string>; fallbackModel?: string; modelMenu?: string[] }>;
   createdAt: string;
 }
 

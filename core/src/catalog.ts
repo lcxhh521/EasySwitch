@@ -190,15 +190,15 @@ export function codexCatalog(template: Json, models: readonly CatalogModel[]): J
 
 /** Writes the catalog for the next Codex launch; undefined when no template could be made. */
 export async function writeCodexCatalog(
-  codexPath: string, dataDir: string, providers: readonly Provider[], opts: { includeNative?: boolean; models?: readonly CatalogModel[] } = {},
+  codexPath: string, dataDir: string, providers: readonly Provider[], opts: { includeNative?: boolean; models?: readonly CatalogModel[]; outputDir?: string; loadNative?: typeof nativeCatalog } = {},
 ): Promise<string | undefined> {
   const models = opts.models ?? catalogModels(providers);
   if (!models.length) return undefined;
-  const native = await nativeCatalog(codexPath, dataDir);
+  const native = await (opts.loadNative ?? nativeCatalog)(codexPath, dataDir);
   const template = native ? pickTemplate(native) : undefined;
   if (!native || !template) return undefined;
   const ours = codexCatalog(template, models).models as Json[];
-  const file = join(dataDir, "codex-catalog.json");
+  const file = join(opts.outputDir ?? dataDir, "codex-catalog.json");
   // For the desktop app the native entries are kept, so one picker holds both.
   writeAtomic(file, JSON.stringify(opts.includeNative ? { models: [...native, ...ours] } : { models: ours }));
   return file;

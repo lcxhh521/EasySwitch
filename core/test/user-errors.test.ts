@@ -32,6 +32,11 @@ test("every dictionary entry contains plain-language explanation and a fixed cor
 
 test("existing error paths map to useful fixed categories", () => {
   const cases: Array<[unknown, string]> = [
+    [{ code: "CLIENT_MODEL_MENU_CONFLICT", message: "private details" }, "client_model_menu_conflict"],
+    [{ code: "CLIENT_MODEL_MENU_INVALID", message: "private details" }, "client_model_menu_invalid"],
+    [{ code: "CLIENT_MODEL_MENU_AGENT_NOT_FOUND", message: "private details" }, "client_model_menu_agent_not_found"],
+    [{ code: "CODEX_MODEL_CATALOG_UNAVAILABLE", message: "private details" }, "codex_model_catalog_unavailable"],
+
     [{ status: 409, code: "PROFILE_PREVIEW_CONFLICT", message: "private snapshot" }, "profile_preview_conflict"],
     [{ status: 422, code: "PROFILE_PREVIEW_INVALID", message: "private profile" }, "profile_preview_invalid"],
     [new TypeError("Failed to fetch"), "service_unavailable"],

@@ -134,3 +134,6 @@ test("malformed, foreign or fingerprint-free preview cannot downgrade to legacy 
   await app.run("confirmProfileReview()");assert.equal(app.run("requests.length"),1);
  }
 });
+
+test('profile preview shows ordered shortlist and old-profile reset-to-all explicitly',()=>{const app=ui();ready(app);app.run(`profileReview.data.changes[0].before.prefs.modelMenu=['p/z','p/<x>'];profileReview.data.changes[0].after.prefs.modelMenu=[]`);assert.equal(app.run(`validProfilePreview(profileReview.data,'f-abcd')`),true);let html=app.run('profileReviewHtml()');assert.match(html,/p\/z → p\/&lt;x&gt;/);assert.match(html,/空（不额外列出模型）/);app.run('delete profileReview.data.changes[0].after.prefs.modelMenu');html=app.run('profileReviewHtml()');assert.match(html,/模型短名单：全部模型/);});
+test('profile menu validator rejects duplicate controls oversized or malformed ids',()=>{for(const bad of [['p/a','p/a'],['p/\u0001'],['p/\u202e'],['p/'],['p/'+'x'.repeat(511)],Array.from({length:81},(_,i)=>'p/'+i)]){const app=ui();ready(app);app.run(`profileReview.data.changes[0].after.prefs.modelMenu=${JSON.stringify(bad)}`);assert.equal(app.run(`validProfilePreview(profileReview.data,'f-abcd')`),false);}});

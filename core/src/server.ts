@@ -80,6 +80,7 @@ import { nativeFiles } from "./native.ts";
 import { listModels, probeProvider } from "./probe.ts";
 import type { SecretStore } from "./secrets.ts";
 import { ProfilePreviewError } from "./profile-preview.ts";
+import { ClientModelMenuError, clientModelMenuConflict, parseClientModelMenuRequest } from "./client-model-menu.ts";
 import { ModelCatalogPreviews, ModelCatalogError } from "./model-catalog-preview.ts";
 import { slugify, type Store } from "./store.ts";
 import { expandUrl, UnresolvedPlaceholder, upstreamHeaders } from "./upstream.ts";
@@ -122,6 +123,8 @@ export interface ServerDeps {
     findBinary: (id: string) => Promise<string | undefined>;
     newSessionDir: () => string;
     launchInTerminal: typeof launchInTerminal;
+    /** Synthetic installed catalog only; no subprocess is needed by tests. */
+    readCodexCatalog?: (bin: string, dataDir: string) => Promise<Record<string, unknown>[] | undefined>;
   };
   /** Explicit dependency injection for local fixture tests; never accepted from HTTP input. */
   claudeDesktop?: Pick<ClaudeDesktopOptions, "executable" | "baseDir" | "parentEnv" | "platform">;
@@ -329,7 +332,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
 
   /** The levels the installed program itself reports (asked once, remembered), else the launcher's fallback. */
   async function levelsOf(id: string): Promise<string[] | undefined> {
-    await discoverEfforts(id, await agentBinary(id));
+    if (!deps.interactiveRuntime) await discoverEfforts(id, await agentBinary(id));
     return effortsOf(id);
   }
 
@@ -358,15 +361,17 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
   }
 
   /** The interactive command for an agent on EasySwitch, for one launch: the Terminal button and the `es` command both use it. */
-  async function interactiveSpec(id: string, opts: { model?: string; effort?: string; automaticTools?: boolean; automaticToolsApprovalId?: string; automaticToolsLaunchReviewId?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; cleanup: () => Promise<void> } | { error: string; status: number; code: string }> {
+  async function interactiveSpec(id: string, opts: { model?: string; effort?: string; automaticTools?: boolean; automaticToolsApprovalId?: string; automaticToolsLaunchReviewId?: string }): Promise<{ spec: LaunchSpec; sessionDir: string; model: string; name: string; session: { id: string; expiresAt: string }; modelMenu?: ReturnType<Store["clientModelMenu"]>; cleanup: () => Promise<void> } | { error: string; status: number; code: string }> {
     if (opts.automaticTools && id !== "opencode") return { status: 400, code: "tool_session_unsupported", error: "工具会话试用目前只提供 OpenCode 的普通函数工具入口。" };
     if (opts.automaticTools && opts.automaticToolsLaunchReviewId !== automaticToolLaunchReviewId(id)) return { status: 409, code: "tool_session_review_changed", error: "程序模型或小模型设置已经变化，请重新核对后新开工具会话。" };
-    const reviewedPrefs = opts.automaticTools ? store.prefs(id) : undefined;
+    const codexGuard = id === "codex" ? store.clientModelMenuGuard(id) : undefined;
+    const reviewedPrefs = opts.automaticTools || id === "codex" ? store.prefs(id) : undefined;
     const bindingRevision = store.bindingRevision(id);
     const launcher = LAUNCHERS[id];
     const known = AGENTS.find(a => a.id === id);
     if (!known || !launcher?.interactive) return { status: 409, code: "agent_not_integrated", error: "这个 agent 还没有接入交互启动" };
     const bin = await agentBinary(id);
+    if (codexGuard !== undefined && codexGuard !== store.clientModelMenuGuard(id)) throw clientModelMenuConflict();
     if (!bin) return { status: 404, code: "agent_not_found", error: "没有检测到这个 agent 的命令" };
     const b = store.binding(id);
     const first = store.catalog()[0];
@@ -390,8 +395,15 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       automaticTools = { version: 1, poolId: pool.id, approvalId: opts.automaticToolsApprovalId };
     }
     const tiers = tiersFor(id, reviewedPrefs);
-    if (reviewedPrefs && (LAUNCHERS[id]?.tiers ?? []).some(tier => reviewedPrefs.tiers?.[tier.id] && !Object.hasOwn(tiers, tier.id))) {
+    if (opts.automaticTools && reviewedPrefs && (LAUNCHERS[id]?.tiers ?? []).some(tier => reviewedPrefs.tiers?.[tier.id] && !Object.hasOwn(tiers, tier.id))) {
       return { status: 409, code: "tool_session_tier_unavailable", error: "已设置的小模型或子任务模型当前不可用，请恢复该来源或显式重新选择；不会偷偷改为主模型。" };
+    }
+    if (codexGuard !== undefined && codexGuard !== store.clientModelMenuGuard(id)) throw clientModelMenuConflict();
+    const codexTierIds = (LAUNCHERS.codex?.tiers ?? []).map(t => t.id);
+    const codexModels = id === "codex" ? store.clientModelMenuCatalog(id, codexTierIds, model) : undefined;
+    const menuMetadata = id === "codex" ? store.clientModelMenu(id, codexTierIds, model) : undefined;
+    if (codexModels && reviewedPrefs?.modelMenu !== undefined && [model, ...Object.values(tiers)].some(id => !codexModels.some(m => `${m.providerId}/${m.model}` === id))) {
+      throw new ClientModelMenuError("当前主模型或辅助模型不能安全加入自定义目录，请先检查其完整模型标识；未修改原设置");
     }
     const sessionDir = deps.interactiveRuntime?.newSessionDir() ?? newSessionDir();
     let token: string | undefined;
@@ -400,9 +412,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     const issued = auth.issue(id, { depth: 0, allowMcp: false, allowNativeClaude: keepLogin, ...(automaticTools ? { automaticTools } : {}) });
     token = issued.token;
     if (automaticTools) { toolSessionId = issued.id; automaticToolSessions.register(issued); }
-    const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: store.catalog() }) : undefined;
+    const catalog = id === "codex" ? await writeCodexCatalog(bin, store.dir, store.providers(), { models: codexModels!, outputDir: sessionDir,
+      ...(deps.interactiveRuntime ? { loadNative: deps.interactiveRuntime.readCodexCatalog ?? (async () => undefined) } : {}) }) : undefined;
+    if (codexGuard !== undefined && codexGuard !== store.clientModelMenuGuard(id)) throw clientModelMenuConflict();
+    if (id === "codex" && reviewedPrefs?.modelMenu !== undefined && !catalog) throw new ClientModelMenuError("无法读取此 Codex 版本的模型目录模板；没有启动会话，请检查安装后重试", 409, "CODEX_MODEL_CATALOG_UNAVAILABLE");
     const modelContexts = Object.fromEntries(store.catalog().filter(m => m.context).map(m => [`${m.providerId}/${m.model}`, m.context!]));
-    const models = modelsFor(model);
+    const models = codexModels ? codexModels.map(m => `${m.providerId}/${m.model}`) : modelsFor(model);
     // Explicit main/tier IDs may resolve without appearing in the bounded menu.
     const exposedModelEfforts = Object.fromEntries([...new Set([model, ...models, ...Object.values(tiers)])].filter(Boolean).map(name => {
       const pool = poolOf(store, name), resolved = resolveModel(store, name);
@@ -412,7 +427,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
     if (automaticTools) exposedModelEfforts[`pool/${automaticTools.poolId}`] = [];
     const spec = launcher.interactive({ bin, port, model, models, token, sessionDir, stateDir: store.dir, tiers, modelContexts, modelEfforts: exposedModelEfforts, claudeCaps: claudeCapabilities(store.catalog()), ...(keepLogin ? { keepLogin } : {}), ...(catalog ? { catalog } : {}), ...(effort ? { effort } : {}) });
     materialize(spec, sessionDir);
-    return { spec, sessionDir, model, name: known.name, session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
+    return { spec, sessionDir, model, name: known.name, ...(catalog && menuMetadata ? { modelMenu: menuMetadata } : {}), session: { id: issued.id, expiresAt: issued.expiresAt }, cleanup: async () => { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } } };
     } catch (error) { try { if (toolSessionId) automaticToolSessions.remove(toolSessionId); if (token) auth.revoke(token); } finally { await rm(sessionDir, { recursive: true, force: true }); } throw error; }
   }
 
@@ -1303,6 +1318,21 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 200, { agents: list.map(a => ({ ...a, can: hasLauncher(a.id) ?? null, caps: matrix[a.id], ...((GUIDE_IDS as readonly string[]).includes(a.id) ? { guide: true } : {}) })), coverage: coverage(matrix), features: FEATURES });
       return;
     }
+    const clientMenu = /^\/api\/agents\/([a-z0-9-]+)\/model-menu(?:\/(preview|apply))?$/.exec(path);
+    if (clientMenu) {
+      if (req.headers["x-easyswitch"] !== "1") { json(res, 403, { error: "missing x-easyswitch header" }); return; }
+      const id = clientMenu[1]!;
+      if (!AGENTS.some(a => a.id === id)) { json(res, 404, { error: "没有这个客户端", code: "CLIENT_MODEL_MENU_AGENT_NOT_FOUND" }); return; }
+      const tiers = (LAUNCHERS[id]?.tiers ?? []).map(t => t.id);
+      if (method === "GET" && !clientMenu[2]) { json(res, 200, store.clientModelMenu(id, tiers)); return; }
+      if (method === "POST" && clientMenu[2]) {
+        const apply = clientMenu[2] === "apply", input = parseClientModelMenuRequest(body, apply);
+        const result = apply ? { ok: true, ...store.applyClientModelMenu(id, input.modelMenu, input.baseGuard, input.previewGuard!, tiers) }
+          : store.previewClientModelMenu(id, input.modelMenu, input.baseGuard, tiers);
+        json(res, 200, result); return;
+      }
+      json(res, 405, { error: "请使用模型菜单的读取、预览或确认接口" }); return;
+    }
     // The manual-setup helper: what to type into an app that has no per-launch override. Nothing is written for the person.
     const guideMatch = /^\/api\/agents\/([a-z0-9-]+)\/setup$/.exec(path);
     if (guideMatch && method === "GET") { json(res, 405, { error: "请通过控制台 POST 显式生成限时设置令牌" }); return; }
@@ -1330,12 +1360,12 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       if ("error" in made) { json(res, made.status, { error: made.error, code: made.code }); return; }
       if (agentAction[2] === "command") {
         // For the `es` command: the caller runs this in its own terminal and removes sessionDir afterwards.
-        json(res, 200, { command: made.spec.command, args: made.spec.args, env: made.spec.env, unset: made.spec.unset ?? [], sessionDir: made.sessionDir, model: made.model, name: made.name, session: made.session });
+        json(res, 200, { command: made.spec.command, args: made.spec.args, env: made.spec.env, unset: made.spec.unset ?? [], sessionDir: made.sessionDir, model: made.model, name: made.name, session: made.session, ...(made.modelMenu ? { modelMenu: made.modelMenu } : {}) });
         return;
       }
       const launcher = LAUNCHERS[id]!;
       try { await (deps.interactiveRuntime?.launchInTerminal ?? launchInTerminal)(commandLine(made.spec), `${made.name} · ${made.model}（只在这个窗口生效，关掉窗口即回到原样${launcher.verified ? "" : "；这个启动方式还没在真实程序上实测"}）`); } catch (error) { await made.cleanup(); throw error; }
-      json(res, 200, { ok: true, model: made.model, verified: launcher.verified });
+      json(res, 200, { ok: true, model: made.model, verified: launcher.verified, ...(made.modelMenu ? { modelMenu: made.modelMenu } : {}) });
       return;
     }
     const agentOpen = /^\/api\/agents\/([a-z0-9-]+)\/open$/.exec(path);
@@ -2024,7 +2054,7 @@ export function createEasySwitchServer(deps: ServerDeps): Server {
       json(res, 404, { error: "not found" });
     } catch (error) {
       if (!res.headersSent) {
-        const authError = error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError || error instanceof ProfilePreviewError;
+        const authError = error instanceof GatewayIssuanceLimitError || error instanceof GatewaySessionStoreError || error instanceof ProfilePreviewError || error instanceof ClientModelMenuError;
         json(res, authError ? error.status : 500, { error: String((error as Error).message ?? error), ...(authError ? { code: error.code } : {}) });
       }
       else res.end();

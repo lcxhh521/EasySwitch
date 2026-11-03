@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validClientModelMenu } from "./client-model-menu.ts";
 import type { HarnessBinding, Profile, Provider, Pool } from "./types.ts";
 
 export class ProfilePreviewError extends Error {
@@ -10,8 +11,8 @@ export class ProfilePreviewError extends Error {
 }
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function validPrefs(value: unknown): boolean {
-  return record(value) && Object.values(value).every(p => record(p) && Object.keys(p).every(k => ["effort", "fallbackModel", "tiers"].includes(k)) &&
-    (p.effort === undefined || typeof p.effort === "string") && (p.fallbackModel === undefined || typeof p.fallbackModel === "string") &&
+  return record(value) && Object.values(value).every(p => record(p) && Object.keys(p).every(k => ["effort", "fallbackModel", "tiers", "modelMenu"].includes(k)) &&
+    (p.modelMenu === undefined || validClientModelMenu(p.modelMenu)) && (p.effort === undefined || typeof p.effort === "string") && (p.fallbackModel === undefined || typeof p.fallbackModel === "string") &&
     (p.tiers === undefined || record(p.tiers) && Object.values(p.tiers).every(v => typeof v === "string")));
 }
 function validBindings(value: unknown): value is HarnessBinding[] {
@@ -20,7 +21,7 @@ function validBindings(value: unknown): value is HarnessBinding[] {
 export function profileBindings(profile: Profile, providers: Provider[], pools: Pool[]): HarnessBinding[] {
   return structuredClone(profile.bindings).filter(b => b.providerId === "pool" ? pools.some(p => p.id === b.model) : providers.some(p => p.id === b.providerId));
 }
-export function buildProfilePreview(profile: Profile, current: { bindings: HarnessBinding[]; prefs: Profile["prefs"]; revision?: string; budgetBlocked?: string[]; bindingRevisions?: Record<string, string>; providerRevisions?: Record<string, string> }, providers: Provider[], pools: Pool[]) {
+export function buildProfilePreview(profile: Profile, current: { bindings: HarnessBinding[]; prefs: Profile["prefs"]; revision?: string; budgetBlocked?: string[]; bindingRevisions?: Record<string, string>; providerRevisions?: Record<string, string>; prefsRevisions?: Record<string, string>; prefsProfileRevision?: string; modelMenuConfigurationRevision?: string }, providers: Provider[], pools: Pool[]) {
   if (!validBindings(profile.bindings) || !validPrefs(profile.prefs) || !validBindings(current.bindings) || !validPrefs(current.prefs)) {
     throw new ProfilePreviewError("这套设置或当前设置不完整，无法安全预览；请重新保存后再试");
   }
@@ -28,7 +29,7 @@ export function buildProfilePreview(profile: Profile, current: { bindings: Harne
   const view = (bindings: HarnessBinding[], prefs: Profile["prefs"], harness: string) => {
     const b = bindings.find(item => item.harness === harness), p = prefs[harness];
     return { binding: b ? { providerId: b.providerId, model: b.model } : null,
-      prefs: p ? { ...(p.effort === undefined ? {} : { effort: p.effort }), ...(p.fallbackModel === undefined ? {} : { fallbackModel: p.fallbackModel }), ...(p.tiers === undefined ? {} : { tiers: structuredClone(p.tiers) }) } : {} };
+      prefs: p ? { ...(p.modelMenu === undefined ? {} : { modelMenu: [...p.modelMenu] }), ...(p.effort === undefined ? {} : { effort: p.effort }), ...(p.fallbackModel === undefined ? {} : { fallbackModel: p.fallbackModel }), ...(p.tiers === undefined ? {} : { tiers: structuredClone(p.tiers) }) } : {} };
   };
   const warning = (id: string): string[] => {
     if (!id) return [];
@@ -46,6 +47,7 @@ export function buildProfilePreview(profile: Profile, current: { bindings: Harne
     const warnings = [...(original && !after.binding ? ["主模型的来源或模型池已移除；应用后恢复原生"] : []),
       ...(original ? warning(`${original.providerId}/${original.model}`).map(w => `主模型：${w}`) : []),
       ...(prefs?.fallbackModel ? warning(prefs.fallbackModel).map(w => `备用模型：${w}`) : []),
+      ...(prefs?.modelMenu ?? []).flatMap(id => warning(id).map(w => `模型菜单：${w}`)),
       ...Object.entries(prefs?.tiers ?? {}).flatMap(([tier, id]) => warning(id).map(w => `${tier}：${w}`))];
     return { harness, before, after, changed: JSON.stringify(before) !== JSON.stringify(after), warnings };
   });
@@ -53,5 +55,5 @@ export function buildProfilePreview(profile: Profile, current: { bindings: Harne
     providers: providers.map(p => ({ id: p.id, off: p.off, models: p.models, defaultModel: p.defaultModel })), pools })).digest("hex");
   return { profileId: profile.id, name: profile.name, fingerprint, changes,
     summary: { clients: changes.length, changed: changes.filter(c => c.changed).length, clearedBindings: changes.filter(c => c.before.binding && !c.after.binding).length },
-    warnings: ["将替换全部客户端的主模型、思考级别、备用和辅助模型；未保存的设置会清除。来源、模型池、账号和原生客户端配置不变。预览不发起登录、探测或推理请求，不保证实际模型可用。"] };
+    warnings: ["将替换全部客户端的主模型、思考级别、备用、辅助模型和模型菜单；未保存的设置会清除。来源、模型池、账号和原生客户端配置不变。预览不发起登录、探测或推理请求，不保证实际模型可用。"] };
 }

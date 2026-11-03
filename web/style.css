@@ -522,3 +522,17 @@ body:not(.panel) .seg button { min-height: var(--control-height); padding: 3px 1
 .client-recovery .hint, .client-recovery a, .client-install-guide code { overflow-wrap:anywhere; white-space:normal; }
 .client-install-guide { margin-top:12px; }
 .client-install-guide summary { cursor:pointer; }
+
+/* Ordered per-client menu editor; long model IDs must not widen small windows. */
+.client-menu, .client-menu li, .client-menu .menu-preview > div { min-width: 0; }
+.client-menu p, .client-menu li span { overflow-wrap: anywhere; }
+.client-menu .menu-selected, .client-menu .menu-candidates { padding-left: 22px; max-height: 320px; overflow: auto; }
+.client-menu li { margin: 8px 0; }
+.client-menu .menu-candidates li { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.client-menu .menu-candidates li span { min-width: 0; flex: 1; }
+.client-menu .menu-candidates button { flex-shrink: 0; }
+.client-menu .controls { flex-wrap: wrap; }
+.client-menu label { display: block; margin: 12px 0; }
+.client-menu input { width: 100%; box-sizing: border-box; }
+.client-menu .menu-preview { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+@media (max-width: 600px) { .client-menu .menu-preview { grid-template-columns: minmax(0,1fr); } }

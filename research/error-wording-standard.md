@@ -10,6 +10,10 @@
 
 | 规范代码 | 发生了什么 | 原因 | 操作按钮 | 导航目标 | 已有路径依据 |
 |---|---|---|---|---|---|
+| client_model_menu_conflict | 短名单设置已变化，尚未应用 | 客户端设置、方案或可选目录已变化，旧预览不能覆盖当前状态 | 重新读取并预览 | current |
+| client_model_menu_invalid | 短名单无法安全保存 | 名单包含不支持的标识、重复项或当前不可添加的模型 | 检查并重新编辑 | current |
+| client_model_menu_agent_not_found | 找不到所选的客户端 | 这个客户端不在当前支持列表中，尚未更改任何菜单设置 | 查看客户端列表 | agents |
+| codex_model_catalog_unavailable | 无法准备本次模型目录 | 当前无法读取受支持的目录模板，不能确认短名单在增强会话中生效 | 检查客户端后重试 | agents |
 | profile_preview_conflict | 设置已变化，尚未应用 | 当前设置、保存的方案或相关来源已变化；旧预览不能用于覆盖新设置 | 重新预览后确认 | current | store.ts 方案预览指纹冲突，尚未应用 |
 | profile_preview_invalid | 这套设置无法安全预览 | 保存的方案或当前设置不完整，或含有不能确认的设置字段 | 检查并重新保存方案 | current | profile-preview.ts 结构检查，拒绝不完整的恢复预览 |
 | service_unavailable | 暂时连不上服务 | 本地服务或模型来源暂时没有响应，可能是服务未启动或网络连接中断 | 检查服务和连接 | doctor | 网页连接请求；gateway-route.ts 上游连接失败 |
